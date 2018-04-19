@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	sio "github.com/shadowsocks/go-shadowsocks2/io"
+	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -19,8 +21,38 @@ var config struct {
 	UDPTimeout time.Duration
 }
 
+type measuredReader struct {
+	io.Reader
+	count func(int)
+}
+
+func (r *measuredReader) Read(b []byte) (int, error) {
+	n, err := r.Reader.Read(b)
+	r.count(n)
+	return n, err
+}
+
+type measuredWriter struct {
+	io.Writer
+	count func(int)
+}
+
+func (r *measuredWriter) Write(b []byte) (int, error) {
+	n, err := r.Writer.Write(b)
+	r.count(n)
+	return n, err
+}
+
 // Listen on addr for incoming connections.
-func tcpRemote(addr string, shadow func(net.Conn) net.Conn) {
+func tcpRemote(addr string, cipher shadowaead.Cipher) {
+	receivedData := 0
+	sentData := 0
+	incrementReceivedData := func(n int) {
+		receivedData += n
+	}
+	incrementSentData := func(n int) {
+		sentData += n
+	}
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Printf("failed to listen on %s: %v", addr, err)
@@ -29,34 +61,48 @@ func tcpRemote(addr string, shadow func(net.Conn) net.Conn) {
 
 	log.Printf("listening TCP on %s", addr)
 	for {
-		c, err := l.Accept()
+		clientConn, err := l.(*net.TCPListener).AcceptTCP()
 		if err != nil {
 			log.Printf("failed to accept: %v", err)
 			return
 		}
 
 		go func() {
-			defer log.Printf("done")
-			defer c.Close()
-			c.(*net.TCPConn).SetKeepAlive(true)
-			c = shadow(c)
+			defer func() {
+				log.Printf("Total bytes received: %v\n", receivedData)
+				log.Printf("Total bytes send: %v\n", sentData)
+			}()
+			defer log.Printf("Done")
+			defer clientConn.Close()
+			clientConn.SetKeepAlive(true)
+			shadowReader := shadowaead.NewShadowsocksReader(
+				&measuredReader{clientConn, incrementReceivedData}, cipher)
+			shadowWriter := shadowaead.NewShadowsocksWriter(
+				&measuredWriter{clientConn, incrementSentData}, cipher)
 
-			tgt, err := socks.ReadAddr(c)
+			tgt, err := socks.ReadAddr(shadowReader)
 			if err != nil {
 				log.Printf("failed to get target address: %v", err)
 				return
 			}
 
-			rc, err := net.Dial("tcp", tgt.String())
+			c, err := net.Dial("tcp", tgt.String())
 			if err != nil {
 				log.Printf("failed to connect to target: %v", err)
 				return
 			}
-			defer rc.Close()
-			rc.(*net.TCPConn).SetKeepAlive(true)
+			tgtConn := c.(*net.TCPConn)
+			defer tgtConn.Close()
+			tgtConn.SetKeepAlive(true)
+			tgtReader := &measuredReader{tgtConn, incrementReceivedData}
+			tgtWriter := &measuredWriter{tgtConn, incrementSentData}
 
-			log.Printf("proxy %s <-> %s", c.RemoteAddr(), tgt)
-			_, _, err = sio.Relay(c, rc)
+			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
+			_, _, err = sio.Relay(
+				shadowReader, clientConn.CloseRead,
+				shadowWriter, clientConn.CloseWrite,
+				tgtReader, tgtConn.CloseRead,
+				tgtWriter, tgtConn.CloseWrite)
 			if err != nil {
 				log.Printf("relay error: %v", err)
 			}
@@ -87,9 +133,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	aead, ok := ciph.(shadowaead.Cipher)
+	if !ok {
+		log.Fatal("Only AEAD ciphers are supported")
+	}
 
 	// go udpRemote(addr, ciph.PacketConn)
-	go tcpRemote(flags.Server, ciph.StreamConn)
+	go tcpRemote(flags.Server, aead)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
