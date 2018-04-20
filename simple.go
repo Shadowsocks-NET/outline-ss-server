@@ -59,10 +59,10 @@ func (w *measuredWriter) ReadFrom(r io.Reader) (int64, error) {
 func tcpRemote(addr string, cipher shadowaead.Cipher) {
 	receivedData := 0
 	sentData := 0
-	incrementReceivedData := func(n int) {
+	incReceivedData := func(n int) {
 		receivedData += n
 	}
-	incrementSentData := func(n int) {
+	incSentData := func(n int) {
 		sentData += n
 	}
 	l, err := net.Listen("tcp", addr)
@@ -88,9 +88,9 @@ func tcpRemote(addr string, cipher shadowaead.Cipher) {
 			defer clientConn.Close()
 			clientConn.SetKeepAlive(true)
 			shadowReader := shadowaead.NewShadowsocksReader(
-				&measuredReader{clientConn, incrementReceivedData}, cipher)
+				&measuredReader{clientConn, incReceivedData}, cipher)
 			shadowWriter := shadowaead.NewShadowsocksWriter(
-				&measuredWriter{clientConn, incrementSentData}, cipher)
+				&measuredWriter{clientConn, incSentData}, cipher)
 
 			tgt, err := socks.ReadAddr(shadowReader)
 			if err != nil {
@@ -106,8 +106,8 @@ func tcpRemote(addr string, cipher shadowaead.Cipher) {
 			tgtConn := c.(*net.TCPConn)
 			defer tgtConn.Close()
 			tgtConn.SetKeepAlive(true)
-			tgtReader := &measuredReader{tgtConn, incrementReceivedData}
-			tgtWriter := &measuredWriter{tgtConn, incrementSentData}
+			tgtReader := &measuredReader{tgtConn, incReceivedData}
+			tgtWriter := &measuredWriter{tgtConn, incSentData}
 
 			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
 			_, _, err = sio.Relay(
