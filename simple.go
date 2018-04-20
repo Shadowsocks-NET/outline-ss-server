@@ -32,14 +32,26 @@ func (r *measuredReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
+func (r *measuredReader) WriteTo(w io.Writer) (int64, error) {
+	n, err := io.Copy(w, r.Reader)
+	r.count(int(n))
+	return n, err
+}
+
 type measuredWriter struct {
 	io.Writer
 	count func(int)
 }
 
-func (r *measuredWriter) Write(b []byte) (int, error) {
-	n, err := r.Writer.Write(b)
-	r.count(n)
+func (w *measuredWriter) Write(b []byte) (int, error) {
+	n, err := w.Writer.Write(b)
+	w.count(n)
+	return n, err
+}
+
+func (w *measuredWriter) ReadFrom(r io.Reader) (int64, error) {
+	n, err := io.Copy(w.Writer, r)
+	w.count(int(n))
 	return n, err
 }
 
