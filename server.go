@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fortuna/ss-example/metrics"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	sio "github.com/shadowsocks/go-shadowsocks2/io"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
@@ -24,41 +25,7 @@ var config struct {
 	UDPTimeout time.Duration
 }
 
-type measuredReader struct {
-	io.Reader
-	count func(int)
-}
-
-func (r *measuredReader) Read(b []byte) (int, error) {
-	n, err := r.Reader.Read(b)
-	r.count(n)
-	return n, err
-}
-
-func (r *measuredReader) WriteTo(w io.Writer) (int64, error) {
-	n, err := io.Copy(w, r.Reader)
-	r.count(int(n))
-	return n, err
-}
-
-type measuredWriter struct {
-	io.Writer
-	count func(int)
-}
-
-func (w *measuredWriter) Write(b []byte) (int, error) {
-	n, err := w.Writer.Write(b)
-	w.count(n)
-	return n, err
-}
-
-func (w *measuredWriter) ReadFrom(r io.Reader) (int64, error) {
-	n, err := io.Copy(w.Writer, r)
-	w.count(int(n))
-	return n, err
-}
-
-func findCipher(clientReader shadowaead.ShadowsocksReader, cipherList []shadowaead.Cipher) (shadowaead.Cipher, io.Reader, error) {
+func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowaead.Cipher, io.Reader, error) {
 	if len(cipherList) == 0 {
 		return nil, nil, errors.New("Empty cipher list")
 	} else if len(cipherList) == 1 {
@@ -121,12 +88,12 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
 			defer log.Printf("Done")
 			defer clientConn.Close()
 			clientConn.SetKeepAlive(true)
-			cipher, shadowReader, err := findCipher(&measuredReader{clientConn, incReceivedData}, cipherList)
+			cipher, shadowReader, err := findCipher(metrics.MeasureReader(clientConn, incReceivedData), cipherList)
 			if err != nil {
 				log.Printf("Failed to find a valid cipher: %v", err)
 			}
 			shadowWriter := shadowaead.NewShadowsocksWriter(
-				&measuredWriter{clientConn, incSentData}, cipher)
+				metrics.MeasureWriter(clientConn, incSentData), cipher)
 
 			tgt, err := socks.ReadAddr(shadowReader)
 			if err != nil {
@@ -142,8 +109,8 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
 			tgtConn := c.(*net.TCPConn)
 			defer tgtConn.Close()
 			tgtConn.SetKeepAlive(true)
-			tgtReader := &measuredReader{tgtConn, incReceivedData}
-			tgtWriter := &measuredWriter{tgtConn, incSentData}
+			tgtReader := metrics.MeasureReader(tgtConn, incReceivedData)
+			tgtWriter := metrics.MeasureWriter(tgtConn, incSentData)
 
 			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
 			_, _, err = sio.Relay(
