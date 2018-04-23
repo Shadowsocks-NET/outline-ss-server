@@ -1,6 +1,6 @@
 # ss-example
 
-This repository shows how to implement a custom Shadowsocks server using a [modified version](https://github.com/fortuna/go-shadowsocks2) of [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2).
+This repository shows how to implement a custom Shadowsocks server using a [modified version](https://github.com/fortuna/go-shadowsocks2/pull/1) of [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2).
 
 This custom server allows for measuring traffic, and supports multiple users on the same port.
 
