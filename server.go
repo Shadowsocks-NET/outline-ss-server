@@ -173,7 +173,7 @@ func main() {
 		return
 	}
 
-	// go udpRemote(addr, ciph.PacketConn)
+	go udpRemote(flags.Server, flags.Ciphers)
 	go tcpRemote(flags.Server, flags.Ciphers)
 
 	sigCh := make(chan os.Signal, 1)
