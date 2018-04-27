@@ -25,6 +25,7 @@ var config struct {
 	UDPTimeout time.Duration
 }
 
+// TODO: Make it compatible with ReadFrom/WriteTo. Add unit test to verify that.
 func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowaead.Cipher, io.Reader, error) {
 	if len(cipherList) == 0 {
 		return nil, nil, errors.New("Empty cipher list")
@@ -58,14 +59,8 @@ func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowa
 
 // Listen on addr for incoming connections.
 func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
-	receivedData := 0
-	sentData := 0
-	incReceivedData := func(n int) {
-		receivedData += n
-	}
-	incSentData := func(n int) {
-		sentData += n
-	}
+	var receivedData int64
+	var sentData int64
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Printf("failed to listen on %s: %v", addr, err)
@@ -88,12 +83,12 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
 			defer log.Printf("Done")
 			defer clientConn.Close()
 			clientConn.SetKeepAlive(true)
-			cipher, shadowReader, err := findCipher(metrics.MeasureReader(clientConn, incReceivedData), cipherList)
+			cipher, shadowReader, err := findCipher(metrics.MeasureReader(clientConn, &receivedData), cipherList)
 			if err != nil {
 				log.Printf("Failed to find a valid cipher: %v", err)
 			}
 			shadowWriter := shadowaead.NewShadowsocksWriter(
-				metrics.MeasureWriter(clientConn, incSentData), cipher)
+				metrics.MeasureWriter(clientConn, &sentData), cipher)
 
 			tgt, err := socks.ReadAddr(shadowReader)
 			if err != nil {
@@ -109,8 +104,8 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
 			tgtConn := c.(*net.TCPConn)
 			defer tgtConn.Close()
 			tgtConn.SetKeepAlive(true)
-			tgtReader := metrics.MeasureReader(tgtConn, incReceivedData)
-			tgtWriter := metrics.MeasureWriter(tgtConn, incSentData)
+			tgtReader := metrics.MeasureReader(tgtConn, &receivedData)
+			tgtWriter := metrics.MeasureWriter(tgtConn, &sentData)
 
 			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
 			_, _, err = sio.Relay(
@@ -134,7 +129,7 @@ func main() {
 		Ciphers cipherList
 	}
 
-	flag.StringVar(&flags.Server, "s", "", "server listen address or url")
+	flag.StringVar(&flags.Server, "s", "", "server listen address")
 	flag.Var(&flags.Ciphers, "u", "available ciphers: "+strings.Join(core.ListCipher(), " "))
 	flag.DurationVar(&config.UDPTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
 	flag.Parse()
