@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,11 +27,11 @@ var config struct {
 }
 
 // TODO: Make it compatible with ReadFrom/WriteTo. Add unit test to verify that.
-func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowaead.Cipher, io.Reader, error) {
+func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowaead.Cipher, int, io.Reader, error) {
 	if len(cipherList) == 0 {
-		return nil, nil, errors.New("Empty cipher list")
+		return nil, -1, nil, errors.New("Empty cipher list")
 	} else if len(cipherList) == 1 {
-		return cipherList[0], shadowaead.NewShadowsocksReader(clientReader, cipherList[0]), nil
+		return cipherList[0], 0, shadowaead.NewShadowsocksReader(clientReader, cipherList[0]), nil
 	}
 	// buffer saves the bytes read from shadowConn, in order to allow for replays.
 	var buffer bytes.Buffer
@@ -52,15 +53,38 @@ func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowa
 		log.Printf("Selected cipher %v", i)
 		// We don't need to replay the bytes anymore, but we don't want to drop those
 		// read so far.
-		return cipher, shadowaead.NewShadowsocksReader(io.MultiReader(&buffer, clientReader), cipher), nil
+		return cipher, i, shadowaead.NewShadowsocksReader(io.MultiReader(&buffer, clientReader), cipher), nil
 	}
-	return nil, nil, fmt.Errorf("could not find valid cipher")
+	return nil, -1, nil, fmt.Errorf("could not find valid cipher")
+}
+
+func sprintMetrics(m metrics.ProxyMetrics) string {
+	return fmt.Sprintf("C->P: %v, P->T: %v, T->P: %v, P->C: %v",
+		m.ClientProxy, m.ProxyTarget, m.TargetProxy, m.ProxyClient)
+}
+
+func getNetKey(addr net.Addr) (string, error) {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "", err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", errors.New("Failed to parse ip")
+	}
+	ipNet := net.IPNet{IP: ip}
+	if ip.To4() != nil {
+		ipNet.Mask = net.CIDRMask(24, 32)
+	} else {
+		ipNet.Mask = net.CIDRMask(32, 128)
+	}
+	return ipNet.String(), nil
 }
 
 // Listen on addr for incoming connections.
 func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
-	var receivedData int64
-	var sentData int64
+	accessKeyMetrics := metrics.NewMetricsMap()
+	netMetrics := metrics.NewMetricsMap()
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Printf("failed to listen on %s: %v", addr, err)
@@ -76,19 +100,29 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
 		}
 
 		go func() {
+			accessKey := "INVALID"
+			netKey, err := getNetKey(clientConn.RemoteAddr())
+			if err != nil {
+				netKey = "INVALID"
+			}
+			var connMetrics metrics.ProxyMetrics
 			defer func() {
-				log.Printf("Total bytes received: %v\n", receivedData)
-				log.Printf("Total bytes send: %v\n", sentData)
+				log.Printf("Done")
+				accessKeyMetrics.Add(accessKey, connMetrics)
+				log.Printf("Key %v: %s", accessKey, sprintMetrics(accessKeyMetrics.Get(accessKey)))
+				netMetrics.Add(netKey, connMetrics)
+				log.Printf("Net %v: %s", netKey, sprintMetrics(netMetrics.Get(netKey)))
 			}()
-			defer log.Printf("Done")
 			defer clientConn.Close()
 			clientConn.SetKeepAlive(true)
-			cipher, shadowReader, err := findCipher(metrics.MeasureReader(clientConn, &receivedData), cipherList)
+			cipher, index, shadowReader, err := findCipher(metrics.MeasureReader(clientConn, &connMetrics.ClientProxy), cipherList)
 			if err != nil {
 				log.Printf("Failed to find a valid cipher: %v", err)
+				return
 			}
+			accessKey = strconv.Itoa(index)
 			shadowWriter := shadowaead.NewShadowsocksWriter(
-				metrics.MeasureWriter(clientConn, &sentData), cipher)
+				metrics.MeasureWriter(clientConn, &connMetrics.ProxyClient), cipher)
 
 			tgt, err := socks.ReadAddr(shadowReader)
 			if err != nil {
@@ -104,8 +138,8 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
 			tgtConn := c.(*net.TCPConn)
 			defer tgtConn.Close()
 			tgtConn.SetKeepAlive(true)
-			tgtReader := metrics.MeasureReader(tgtConn, &receivedData)
-			tgtWriter := metrics.MeasureWriter(tgtConn, &sentData)
+			tgtReader := metrics.MeasureReader(tgtConn, &connMetrics.TargetProxy)
+			tgtWriter := metrics.MeasureWriter(tgtConn, &connMetrics.ProxyTarget)
 
 			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
 			_, _, err = sio.Relay(
