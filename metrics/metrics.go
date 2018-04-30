@@ -1,8 +1,11 @@
 package metrics
 
 import (
+	"fmt"
 	"io"
 	"sync"
+
+	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 )
 
 type measuredReader struct {
@@ -90,4 +93,15 @@ func (this *MetricsMap) Get(key string) ProxyMetrics {
 
 func NewMetricsMap() *MetricsMap {
 	return &MetricsMap{m: make(map[string]*ProxyMetrics)}
+}
+
+func MeasureConn(conn ssnet.DuplexConn, bytesSent, bytesRceived *int64) ssnet.DuplexConn {
+	r := MeasureReader(conn, bytesRceived)
+	w := MeasureWriter(conn, bytesSent)
+	return ssnet.WrapDuplexConn(conn, r, w)
+}
+
+func SPrintMetrics(m ProxyMetrics) string {
+	return fmt.Sprintf("C->P: %v, P->T: %v, T->P: %v, P->C: %v",
+		m.ClientProxy, m.ProxyTarget, m.TargetProxy, m.ProxyClient)
 }
