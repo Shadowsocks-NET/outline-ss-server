@@ -55,7 +55,7 @@ func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowa
 		// Read should read just enough data to authenticate the payload size.
 		_, err := cipherReader.Read(make([]byte, 0))
 		if err != nil {
-			log.Printf("Failed cipher %v", i)
+			log.Printf("Failed cipher %v: %v", i, err)
 			continue
 		}
 		log.Printf("Selected cipher %v", i)
