@@ -49,14 +49,28 @@ go build github.com/fortuna/ss-example && \
 Start the SS tunnel to redirect port 20002 -> localhost:5201 via the proxy on 20001:
 ```
 go build github.com/shadowsocks/go-shadowsocks2 && \
-./go-shadowsocks2 -c ss://AEAD_CHACHA20_POLY1305:Secret1@:20001 --tcptun ":20002=localhost:5201" -verbose
+./go-shadowsocks2 -c ss://AEAD_CHACHA20_POLY1305:Secret1@:20001 -tcptun ":20002=localhost:5201" -udptun ":20002=localhost:5201" -verbose
 ```
 
-Run the iperf3 client:
+Test TCP upload (client -> server):
 ```
 iperf3 -c localhost -p 20002
 ```
 
+Test TCP download (server -> client):
+```
+iperf3 -c localhost -p 20002 --reverse
+```
+
+Test UDP upload:
+```
+iperf3 -c localhost -p 20002 --udp
+```
+
+Test UDP download:
+```
+iperf3 -c localhost -p 20002 --udp --reverse
+```
 
 ### Compare to go-shadowsocks2
 
