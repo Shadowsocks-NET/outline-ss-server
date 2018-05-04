@@ -64,12 +64,12 @@ iperf3 -c localhost -p 20002 --reverse
 
 Test UDP upload:
 ```
-iperf3 -c localhost -p 20002 --udp
+iperf3 -c localhost -p 20002 --udp -b 0
 ```
 
 Test UDP download:
 ```
-iperf3 -c localhost -p 20002 --udp --reverse
+iperf3 -c localhost -p 20002 --udp -b 0 --reverse
 ```
 
 ### Compare to go-shadowsocks2
@@ -93,9 +93,6 @@ Start the SS tunnel to redirect port 10002 -> localhost:5201 via the proxy on 10
 ss-tunnel -s localhost -p 10001 -m chacha20-ietf-poly1305 -k Secret1 -l 10002 -L localhost:5201 -u -v
 ```
 
-Run the iperf3 client:
-```
-iperf3 -c localhost -p 10002
-```
+Run the iperf3 client tests listed above on port 10002.
 
 You can mix and match the libev and go servers and clients.
