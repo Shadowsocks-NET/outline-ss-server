@@ -22,12 +22,17 @@ const (
 
 const udpBufSize = 64 * 1024
 
+// upack decripts src into dst. It tries each cipher until it finds one that authenticates
+// correctly. dst and src must not overlap.
 func unpack(dst, src []byte, ciphers []shadowaead.Cipher) ([]byte, shadowaead.Cipher, error) {
-	for _, cipher := range ciphers {
+	for i, cipher := range ciphers {
+		log.Printf("Trying cipher %v", i)
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {
+			log.Printf("Failed cipher %v: %v", i, err)
 			continue
 		}
+		log.Printf("Selected cipher %v", i)
 		return buf, cipher, nil
 	}
 	return nil, nil, errors.New("could not find valid cipher")
@@ -43,18 +48,20 @@ func udpRemote(addr string, ciphers []shadowaead.Cipher) {
 	defer c.Close()
 
 	nm := newNATmap(config.UDPTimeout)
+	cipherBuf := make([]byte, udpBufSize)
 	buf := make([]byte, udpBufSize)
 
 	log.Printf("listening UDP on %s", addr)
 	for {
 		func() {
-			n, raddr, err := c.ReadFrom(buf)
+			n, raddr, err := c.ReadFrom(cipherBuf)
 			defer log.Printf("Done with %v", raddr.String())
 			if err != nil {
 				log.Printf("UDP remote read error: %v", err)
 				return
 			}
-			buf, cipher, err := unpack(buf, buf[:n], ciphers)
+			log.Printf("Request from %v", raddr)
+			buf, cipher, err := unpack(buf, cipherBuf[:n], ciphers)
 			if err != nil {
 				log.Printf("UDP remote read error: %v", err)
 				return
