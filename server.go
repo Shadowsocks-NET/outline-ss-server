@@ -120,7 +120,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
 				log.Printf("Net %v: %s", netKey, metrics.SPrintMetrics(netMetrics.Get(netKey)))
 			}()
 
-			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ClientProxy, &proxyMetrics.ProxyClient)
+			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
 			clientConn, index, err := shadowConn(clientConn, cipherList)
 			if err != nil {
 				log.Printf("Failed to find a valid cipher: %v", err)
