@@ -17,12 +17,12 @@ go build github.com/shadowsocks/go-shadowsocks2
 
 Start the SS server:
 ```
-./ss-example -u "AEAD_CHACHA20_POLY1305:Secret1" -u "AEAD_CHACHA20_POLY1305:Secret2" -s localhost:9999
+./ss-example -u "chacha20-ietf-poly1305:Secret1" -u "chacha20-ietf-poly1305:Secret2" -s localhost:9999
 ```
 
 On Terminal 2, start the SS client:
 ```
-./go-shadowsocks2 -c ss://AEAD_CHACHA20_POLY1305:Secret1@:9999 -verbose  -socks :1080
+./go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret1@:9999 -verbose  -socks :1080
 ```
 
 On Terminal 3, fetch a page using the SS client:
@@ -43,13 +43,13 @@ iperf3 -s
 Start the SS server (listening on port 20001):
 ```
 go build github.com/fortuna/ss-example && \
-./ss-example -u "AEAD_CHACHA20_POLY1305:Secret1" -s :20001
+./ss-example -u "chacha20-ietf-poly1305:Secret1" -s :20001
 ```
 
 Start the SS tunnel to redirect port 20002 -> localhost:5201 via the proxy on 20001:
 ```
 go build github.com/shadowsocks/go-shadowsocks2 && \
-./go-shadowsocks2 -c ss://AEAD_CHACHA20_POLY1305:Secret1@:20001 -tcptun ":20002=localhost:5201" -udptun ":20002=localhost:5201" -verbose
+./go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret1@:20001 -tcptun ":20002=localhost:5201" -udptun ":20002=localhost:5201" -verbose
 ```
 
 Test TCP upload (client -> server):
@@ -77,7 +77,7 @@ iperf3 -c localhost -p 20002 --udp -b 0 --reverse
 Run the commands above, but start the SS server with
 ```
 go build github.com/shadowsocks/go-shadowsocks2 && \
-./go-shadowsocks2 -s ss://AEAD_CHACHA20_POLY1305:Secret1@:20001 -verbose
+./go-shadowsocks2 -s ss://chacha20-ietf-poly1305:Secret1@:20001 -verbose
 ```
 
 
