@@ -5,8 +5,46 @@ import (
 	"io"
 	"sync"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 )
+
+type TCPMetrics interface {
+	AddTCPConnection()
+	RemoveTCPConnection(accessKey string)
+}
+
+type prometheusTCPMetrics struct {
+	tcpOpenConnections   prometheus.Counter
+	tcpClosedConnections *prometheus.CounterVec
+}
+
+func (m *prometheusTCPMetrics) AddTCPConnection() {
+	m.tcpOpenConnections.Inc()
+}
+func (m *prometheusTCPMetrics) RemoveTCPConnection(accessKey string) {
+	m.tcpClosedConnections.WithLabelValues(accessKey).Inc()
+}
+
+func NewPrometheusTCPMetrics() TCPMetrics {
+	m := &prometheusTCPMetrics{
+		tcpOpenConnections: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "shadowsocks",
+			Subsystem: "tcp",
+			Name:      "open_connections",
+			Help:      "Count of open TCP connections",
+		}),
+		tcpClosedConnections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "shadowsocks",
+			Subsystem: "tcp",
+			Name:      "closed_connections",
+			Help:      "Count of closed TCP connections",
+		}, []string{"access_key"})}
+	// TODO: Is it possible to pass where to register the collectors?
+	prometheus.MustRegister(m.tcpOpenConnections, m.tcpClosedConnections)
+	return m
+}
 
 type measuredReader struct {
 	io.Reader

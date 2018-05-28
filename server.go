@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fortuna/ss-example/metrics"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
@@ -85,7 +87,7 @@ func getNetKey(addr net.Addr) (string, error) {
 }
 
 // Listen on addr for incoming connections.
-func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
+func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics) {
 	accessKeyMetrics := metrics.NewMetricsMap()
 	netMetrics := metrics.NewMetricsMap()
 	l, err := net.Listen("tcp", addr)
@@ -98,6 +100,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
 	for {
 		var clientConn ssnet.DuplexConn
 		clientConn, err := l.(*net.TCPListener).AcceptTCP()
+		m.AddTCPConnection()
 		if err != nil {
 			log.Printf("failed to accept: %v", err)
 			return
@@ -114,6 +117,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher) {
 			var proxyMetrics metrics.ProxyMetrics
 			defer func() {
 				log.Printf("Done")
+				defer m.RemoveTCPConnection(accessKey)
 				accessKeyMetrics.Add(accessKey, proxyMetrics)
 				log.Printf("Key %v: %s", accessKey, metrics.SPrintMetrics(accessKeyMetrics.Get(accessKey)))
 				netMetrics.Add(netKey, proxyMetrics)
@@ -158,13 +162,15 @@ type cipherList []shadowaead.Cipher
 func main() {
 
 	var flags struct {
-		Server  string
-		Ciphers cipherList
+		Server      string
+		Ciphers     cipherList
+		MetricsAddr string
 	}
 
 	flag.StringVar(&flags.Server, "s", "", "server listen address")
 	flag.Var(&flags.Ciphers, "u", "available ciphers: "+strings.Join(core.ListCipher(), " "))
 	flag.DurationVar(&config.UDPTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
+	flag.StringVar(&flags.MetricsAddr, "metrics", "", "address for the Prometheus metrics")
 	flag.Parse()
 
 	if flags.Server == "" || len(flags.Ciphers) == 0 {
@@ -172,8 +178,16 @@ func main() {
 		return
 	}
 
+	if flags.MetricsAddr != "" {
+		http.Handle("/metrics", promhttp.Handler())
+		go func() {
+			log.Fatal(http.ListenAndServe(flags.MetricsAddr, nil))
+		}()
+		log.Printf("Metrics on http://%v/metrics", flags.MetricsAddr)
+	}
+
 	go udpRemote(flags.Server, flags.Ciphers)
-	go tcpRemote(flags.Server, flags.Ciphers)
+	go tcpRemote(flags.Server, flags.Ciphers, metrics.NewPrometheusTCPMetrics())
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
