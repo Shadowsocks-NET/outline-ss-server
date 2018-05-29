@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -12,19 +13,21 @@ import (
 
 type TCPMetrics interface {
 	AddTCPConnection()
-	RemoveTCPConnection(accessKey, status string)
+	RemoveTCPConnection(accessKey, status string, duration time.Duration)
 }
 
 type prometheusTCPMetrics struct {
-	tcpOpenConnections   prometheus.Counter
-	tcpClosedConnections *prometheus.CounterVec
+	tcpOpenConnections      prometheus.Counter
+	tcpClosedConnections    *prometheus.CounterVec
+	tcpConnectionDurationMs *prometheus.SummaryVec
 }
 
 func (m *prometheusTCPMetrics) AddTCPConnection() {
 	m.tcpOpenConnections.Inc()
 }
-func (m *prometheusTCPMetrics) RemoveTCPConnection(accessKey, status string) {
+func (m *prometheusTCPMetrics) RemoveTCPConnection(accessKey, status string, duration time.Duration) {
 	m.tcpClosedConnections.WithLabelValues(accessKey, status).Inc()
+	m.tcpConnectionDurationMs.WithLabelValues(accessKey, status).Observe(duration.Seconds() * 1000)
 }
 
 func NewPrometheusTCPMetrics() TCPMetrics {
@@ -40,9 +43,18 @@ func NewPrometheusTCPMetrics() TCPMetrics {
 			Subsystem: "tcp",
 			Name:      "closed_connections",
 			Help:      "Count of closed TCP connections",
-		}, []string{"access_key", "status"})}
+		}, []string{"access_key", "status"}),
+		tcpConnectionDurationMs: prometheus.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace:  "shadowsocks",
+				Subsystem:  "tcp",
+				Name:       "connection_duration_ms",
+				Help:       "TCP connection duration distributions.",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
+			}, []string{"access_key", "status"}),
+	}
 	// TODO: Is it possible to pass where to register the collectors?
-	prometheus.MustRegister(m.tcpOpenConnections, m.tcpClosedConnections)
+	prometheus.MustRegister(m.tcpOpenConnections, m.tcpClosedConnections, m.tcpConnectionDurationMs)
 	return m
 }
 
