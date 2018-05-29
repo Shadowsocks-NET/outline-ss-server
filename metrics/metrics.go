@@ -12,7 +12,7 @@ import (
 
 type TCPMetrics interface {
 	AddTCPConnection()
-	RemoveTCPConnection(accessKey string)
+	RemoveTCPConnection(accessKey, status string)
 }
 
 type prometheusTCPMetrics struct {
@@ -23,8 +23,8 @@ type prometheusTCPMetrics struct {
 func (m *prometheusTCPMetrics) AddTCPConnection() {
 	m.tcpOpenConnections.Inc()
 }
-func (m *prometheusTCPMetrics) RemoveTCPConnection(accessKey string) {
-	m.tcpClosedConnections.WithLabelValues(accessKey).Inc()
+func (m *prometheusTCPMetrics) RemoveTCPConnection(accessKey, status string) {
+	m.tcpClosedConnections.WithLabelValues(accessKey, status).Inc()
 }
 
 func NewPrometheusTCPMetrics() TCPMetrics {
@@ -40,7 +40,7 @@ func NewPrometheusTCPMetrics() TCPMetrics {
 			Subsystem: "tcp",
 			Name:      "closed_connections",
 			Help:      "Count of closed TCP connections",
-		}, []string{"access_key"})}
+		}, []string{"access_key", "status"})}
 	// TODO: Is it possible to pass where to register the collectors?
 	prometheus.MustRegister(m.tcpOpenConnections, m.tcpClosedConnections)
 	return m

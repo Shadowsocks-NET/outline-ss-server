@@ -110,14 +110,16 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 			defer clientConn.Close()
 			clientConn.(*net.TCPConn).SetKeepAlive(true)
 			accessKey := "INVALID"
+			// TODO: create status enums and move to metrics.go
+			status := "OK"
 			netKey, err := getNetKey(clientConn.RemoteAddr())
 			if err != nil {
 				netKey = "INVALID"
 			}
 			var proxyMetrics metrics.ProxyMetrics
 			defer func() {
-				log.Printf("Done")
-				defer m.RemoveTCPConnection(accessKey)
+				log.Printf("Done with status: %v", status)
+				m.RemoveTCPConnection(accessKey, status)
 				accessKeyMetrics.Add(accessKey, proxyMetrics)
 				log.Printf("Key %v: %s", accessKey, metrics.SPrintMetrics(accessKeyMetrics.Get(accessKey)))
 				netMetrics.Add(netKey, proxyMetrics)
@@ -128,6 +130,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 			clientConn, index, err := shadowConn(clientConn, cipherList)
 			if err != nil {
 				log.Printf("Failed to find a valid cipher: %v", err)
+				status = "ERR_CIPHER"
 				return
 			}
 			accessKey = strconv.Itoa(index)
@@ -135,12 +138,14 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 			tgt, err := socks.ReadAddr(clientConn)
 			if err != nil {
 				log.Printf("failed to get target address: %v", err)
+				status = "ERR_READ_ADDRESS"
 				return
 			}
 
 			c, err := net.Dial("tcp", tgt.String())
 			if err != nil {
 				log.Printf("failed to connect to target: %v", err)
+				status = "ERR_CONNECT"
 				return
 			}
 			var tgtConn ssnet.DuplexConn = c.(*net.TCPConn)
@@ -152,6 +157,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 			_, _, err = ssnet.Relay(clientConn, tgtConn)
 			if err != nil {
 				log.Printf("relay error: %v", err)
+				status = "ERR_RELAY"
 			}
 		}()
 	}
