@@ -8,10 +8,10 @@ This custom server allows for measuring traffic, and supports multiple users on 
 
 On Terminal 1:
 ```
-git clone -b ss-lib git@github.com:fortuna/go-shadowsocks2.git $(go env GOPATH)/src/github.com/shadowsocks/go-shadowsocks2
-git clone git@github.com:fortuna/ss-example.git $(go env GOPATH)/src/github.com/fortuna/ss-example
-go get github.com/fortuna/ss-example
-go build github.com/fortuna/ss-example
+git clone -b ss-lib https://github.com/fortuna/go-shadowsocks2.git $(go env GOPATH)/src/github.com/shadowsocks/go-shadowsocks2 &&
+git clone https://github.com/fortuna/ss-example.git $(go env GOPATH)/src/github.com/fortuna/ss-example &&
+go get github.com/fortuna/ss-example &&
+go build github.com/fortuna/ss-example &&
 go build github.com/shadowsocks/go-shadowsocks2
 ```
 
