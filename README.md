@@ -6,36 +6,44 @@ This custom server allows for measuring traffic using [prometheus.io](https://pr
 
 ## Try it!
 
-On Terminal 1:
+Clone the repositories:
 ```
-git clone -b ss-lib git@github.com:fortuna/go-shadowsocks2.git $(go env GOPATH)/src/github.com/shadowsocks/go-shadowsocks2
-git clone git@github.com:fortuna/ss-example.git $(go env GOPATH)/src/github.com/fortuna/ss-example
-go get github.com/fortuna/ss-example
-go build github.com/shadowsocks/go-shadowsocks2
-go get github.com/prometheus/prometheus/cmd/...
+git clone -b ss-lib https://github.com/fortuna/go-shadowsocks2.git $(go env GOPATH)/src/github.com/shadowsocks/go-shadowsocks2 &&
+git clone https://github.com/fortuna/ss-example.git $(go env GOPATH)/src/github.com/fortuna/ss-example
 ```
 
-Start the SS server:
+For development, you may want to use SSH:
+```
+git clone -b ss-lib git@github.com:fortuna/go-shadowsocks2.git $(go env GOPATH)/src/github.com/shadowsocks/go-shadowsocks2 &&
+git clone git@github.com:fortuna/ss-example.git $(go env GOPATH)/src/github.com/fortuna/ss-example
+```
+
+Fetch dependencies and build:
+```
+go get github.com/fortuna/ss-example github.com/shadowsocks/go-shadowsocks2 github.com/prometheus/prometheus/cmd/...
+```
+
+On Terminal 1, start the SS server:
 ```
 ./ss-example -u "chacha20-ietf-poly1305:Secret1" -u "chacha20-ietf-poly1305:Secret2" -s localhost:9999 -metrics localhost:8080
 ```
 
-Start prometheus scraper for metrics collection:
+On Terminal 2, start prometheus scraper for metrics collection:
 ```
 $(go env GOPATH)/bin/prometheus --config.file=prometheus_example.yml
 ```
 
-On Terminal 2, start the SS client:
+On Terminal 3, start the SS client:
 ```
 ./go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret1@:9999 -verbose  -socks :1080
 ```
 
-On Terminal 3, fetch a page using the SS client:
+On Terminal 4, fetch a page using the SS client:
 ```
 curl --proxy socks5h://localhost:1080 example.com
 ```
 
-Stop and restart the client on Terminal 2 with "Secret2" as the password and try to fetch the page again on Terminal 3.
+Stop and restart the client on Terminal 3 with "Secret2" as the password and try to fetch the page again on Terminal 4.
 
 Open http://localhost:8080/metrics and see the exported Prometheus variables.
 
