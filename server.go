@@ -145,7 +145,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 				clientConn.Close()
 				status := "OK"
 				if connError != nil {
-					log.Printf("%v: %v", connError.message, connError.cause)
+					log.Printf("ERROR %v: %v", connError.message, connError.cause)
 					status = connError.status
 				}
 				log.Printf("Done with status %v, duration %v", status, connDuration)
@@ -176,6 +176,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 			tgtConn.(*net.TCPConn).SetKeepAlive(true)
 			tgtConn = metrics.MeasureConn(tgtConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy)
 
+			// TODO: Disable logging in production. This is sensitive.
 			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
 			_, _, err = ssnet.Relay(clientConn, tgtConn)
 			if err != nil {
