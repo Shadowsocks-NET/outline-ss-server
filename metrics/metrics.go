@@ -28,21 +28,19 @@ import (
 // TCPMetrics registers metrics for TCP connections.
 type TCPMetrics interface {
 	AddOpenTCPConnection()
-	AddClosedTCPConnection(accessKey, status string, duration time.Duration)
+	AddClosedTCPConnection(accessKey, status string, data ProxyMetrics, duration time.Duration)
 }
 
 type prometheusTCPMetrics struct {
-	tcpOpenConnections      prometheus.Counter
-	tcpClosedConnections    *prometheus.CounterVec
-	tcpConnectionDurationMs *prometheus.SummaryVec
-}
+	tcpOpenConnections   prometheus.Counter
+	tcpClosedConnections *prometheus.CounterVec
 
-func (m *prometheusTCPMetrics) AddOpenTCPConnection() {
-	m.tcpOpenConnections.Inc()
-}
-func (m *prometheusTCPMetrics) AddClosedTCPConnection(accessKey, status string, duration time.Duration) {
-	m.tcpClosedConnections.WithLabelValues(accessKey, status).Inc()
-	m.tcpConnectionDurationMs.WithLabelValues(accessKey, status).Observe(duration.Seconds() * 1000)
+	tcpDataClientProxyBytes *prometheus.CounterVec
+	tcpDataProxyTargetBytes *prometheus.CounterVec
+	tcpDataTargetProxyBytes *prometheus.CounterVec
+	tcpDataProxyClientBytes *prometheus.CounterVec
+
+	tcpConnectionDurationMs *prometheus.SummaryVec
 }
 
 func NewPrometheusTCPMetrics() TCPMetrics {
@@ -59,6 +57,34 @@ func NewPrometheusTCPMetrics() TCPMetrics {
 			Name:      "closed_connections",
 			Help:      "Count of closed TCP connections",
 		}, []string{"access_key", "status"}),
+		tcpDataClientProxyBytes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "tcp",
+				Name:      "data_client_proxy_bytes",
+				Help:      "Bytes tranferred from client to proxy.",
+			}, []string{"access_key", "status"}),
+		tcpDataProxyTargetBytes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "tcp",
+				Name:      "data_proxy_target_bytes",
+				Help:      "Bytes tranferred from proxy to target.",
+			}, []string{"access_key", "status"}),
+		tcpDataTargetProxyBytes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "tcp",
+				Name:      "data_target_proxy_bytes",
+				Help:      "Bytes tranferred from target to proxy.",
+			}, []string{"access_key", "status"}),
+		tcpDataProxyClientBytes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "tcp",
+				Name:      "data_proxy_client_bytes",
+				Help:      "Bytes tranferred from proxy to client.",
+			}, []string{"access_key", "status"}),
 		tcpConnectionDurationMs: prometheus.NewSummaryVec(
 			prometheus.SummaryOpts{
 				Namespace:  "shadowsocks",
@@ -69,8 +95,21 @@ func NewPrometheusTCPMetrics() TCPMetrics {
 			}, []string{"access_key", "status"}),
 	}
 	// TODO: Is it possible to pass where to register the collectors?
-	prometheus.MustRegister(m.tcpOpenConnections, m.tcpClosedConnections, m.tcpConnectionDurationMs)
+	prometheus.MustRegister(m.tcpOpenConnections, m.tcpClosedConnections, m.tcpDataClientProxyBytes,
+		m.tcpDataProxyTargetBytes, m.tcpDataTargetProxyBytes, m.tcpDataProxyClientBytes, m.tcpConnectionDurationMs)
 	return m
+}
+
+func (m *prometheusTCPMetrics) AddOpenTCPConnection() {
+	m.tcpOpenConnections.Inc()
+}
+func (m *prometheusTCPMetrics) AddClosedTCPConnection(accessKey, status string, data ProxyMetrics, duration time.Duration) {
+	m.tcpClosedConnections.WithLabelValues(accessKey, status).Inc()
+	m.tcpDataClientProxyBytes.WithLabelValues(accessKey, status).Add(float64(data.ClientProxy))
+	m.tcpDataProxyTargetBytes.WithLabelValues(accessKey, status).Add(float64(data.ProxyTarget))
+	m.tcpDataTargetProxyBytes.WithLabelValues(accessKey, status).Add(float64(data.TargetProxy))
+	m.tcpDataProxyClientBytes.WithLabelValues(accessKey, status).Add(float64(data.ProxyClient))
+	m.tcpConnectionDurationMs.WithLabelValues(accessKey, status).Observe(duration.Seconds() * 1000)
 }
 
 type measuredReader struct {

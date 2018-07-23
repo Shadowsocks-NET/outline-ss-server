@@ -111,6 +111,7 @@ type connectionError struct {
 
 // Listen on addr for incoming connections.
 func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics) {
+	// TODO: Delete these and get from the already collected Prometheus metrics instead.
 	accessKeyMetrics := metrics.NewMetricsMap()
 	netMetrics := metrics.NewMetricsMap()
 	l, err := net.Listen("tcp", addr)
@@ -149,7 +150,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 					status = connError.status
 				}
 				log.Printf("Done with status %v, duration %v", status, connDuration)
-				m.AddClosedTCPConnection(accessKey, status, connDuration)
+				m.AddClosedTCPConnection(accessKey, status, proxyMetrics, connDuration)
 				accessKeyMetrics.Add(accessKey, proxyMetrics)
 				log.Printf("Key %v: %s", accessKey, metrics.SPrintMetrics(accessKeyMetrics.Get(accessKey)))
 				netMetrics.Add(netKey, proxyMetrics)
