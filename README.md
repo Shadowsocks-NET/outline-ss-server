@@ -1,31 +1,36 @@
-# ss-example
+# Outline ss-server
 
 This repository shows how to implement a custom Shadowsocks server using a [modified version](https://github.com/fortuna/go-shadowsocks2/pull/1) of [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2).
 
-This custom server allows for measuring traffic using [prometheus.io](https://prometheus.io), and supports multiple users on the same port.
+This custom server allows for:
+- Multiple users on a single port.
+  - Does so by trying all the different credentials until one succeeds.
+- Whitebox monitoring of the service using [prometheus.io](https://prometheus.io)
+  - Includes traffic measurements.
+
 
 ## Try it!
 
 Clone the repositories:
 ```
 git clone -b ss-lib https://github.com/fortuna/go-shadowsocks2.git $(go env GOPATH)/src/github.com/shadowsocks/go-shadowsocks2 &&
-git clone https://github.com/fortuna/ss-example.git $(go env GOPATH)/src/github.com/fortuna/ss-example
+git clone https://github.com/Jigsaw-Code/outline-ss-server.git $(go env GOPATH)/src/github.com/Jigsaw-Code/outline-ss-server
 ```
 
 For development, you may want to use SSH:
 ```
 git clone -b ss-lib git@github.com:fortuna/go-shadowsocks2.git $(go env GOPATH)/src/github.com/shadowsocks/go-shadowsocks2 &&
-git clone git@github.com:fortuna/ss-example.git $(go env GOPATH)/src/github.com/fortuna/ss-example
+git clone git@github.com:Jigsaw-Code/outline-ss-server.git $(go env GOPATH)/src/github.com/Jigsaw-Code/outline-ss-server
 ```
 
 Fetch dependencies and build:
 ```
-go get github.com/fortuna/ss-example github.com/shadowsocks/go-shadowsocks2 github.com/prometheus/prometheus/cmd/...
+go get github.com/Jigsaw-Code/outline-ss-server github.com/shadowsocks/go-shadowsocks2 github.com/prometheus/prometheus/cmd/...
 ```
 
 On Terminal 1, start the SS server:
 ```
-./ss-example -u "chacha20-ietf-poly1305:Secret1" -u "chacha20-ietf-poly1305:Secret2" -s localhost:9999 -metrics localhost:8080
+$(go env GOPATH)/bin/outline-ss-server -u "chacha20-ietf-poly1305:Secret1" -u "chacha20-ietf-poly1305:Secret2" -s localhost:9999 -metrics localhost:8080
 ```
 
 On Terminal 2, start prometheus scraper for metrics collection:
@@ -35,7 +40,7 @@ $(go env GOPATH)/bin/prometheus --config.file=prometheus_example.yml
 
 On Terminal 3, start the SS client:
 ```
-./go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret1@:9999 -verbose  -socks :1080
+$(go env GOPATH)/bin/go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret1@:9999 -verbose  -socks :1080
 ```
 
 On Terminal 4, fetch a page using the SS client:
@@ -59,7 +64,7 @@ iperf3 -s
 
 Start the SS server (listening on port 20001):
 ```
-go build github.com/fortuna/ss-example && \
+go build github.com/Jigsaw-Code/outline-ss-server && \
 ./ss-example -u "chacha20-ietf-poly1305:Secret1" -s :20001
 ```
 
