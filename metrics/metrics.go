@@ -40,6 +40,7 @@ type prometheusTCPMetrics struct {
 	tcpDataTargetProxyBytes *prometheus.CounterVec
 	tcpDataProxyClientBytes *prometheus.CounterVec
 
+	// TODO: Define a time window for the duration summary (e.g. 1 hour)
 	tcpConnectionDurationMs *prometheus.SummaryVec
 }
 
