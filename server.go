@@ -30,7 +30,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fortuna/ss-example/metrics"
+	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
@@ -102,6 +102,13 @@ func getNetKey(addr net.Addr) (string, error) {
 	return ipNet.String(), nil
 }
 
+type connectionError struct {
+	// TODO: create status enums and move to metrics.go
+	status  string
+	message string
+	cause   error
+}
+
 // Listen on addr for incoming connections.
 func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics) {
 	accessKeyMetrics := metrics.NewMetricsMap()
@@ -116,56 +123,53 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 	for {
 		var clientConn ssnet.DuplexConn
 		clientConn, err := l.(*net.TCPListener).AcceptTCP()
-		m.AddTCPConnection()
+		m.AddOpenTCPConnection()
 		if err != nil {
 			log.Printf("failed to accept: %v", err)
 			return
 		}
 
-		go func() {
-			defer clientConn.Close()
+		go func() (connError *connectionError) {
 			connStart := time.Now()
 			clientConn.(*net.TCPConn).SetKeepAlive(true)
-			accessKey := "INVALID"
-			// TODO: create status enums and move to metrics.go
-			status := "OK"
 			netKey, err := getNetKey(clientConn.RemoteAddr())
 			if err != nil {
 				netKey = "INVALID"
 			}
+			accessKey := "INVALID"
 			var proxyMetrics metrics.ProxyMetrics
+			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
 			defer func() {
 				connEnd := time.Now()
 				connDuration := connEnd.Sub(connStart)
+				clientConn.Close()
+				status := "OK"
+				if connError != nil {
+					log.Printf("%v: %v", connError.message, connError.cause)
+					status = connError.status
+				}
 				log.Printf("Done with status %v, duration %v", status, connDuration)
-				m.RemoveTCPConnection(accessKey, status, connDuration)
+				m.AddClosedTCPConnection(accessKey, status, connDuration)
 				accessKeyMetrics.Add(accessKey, proxyMetrics)
 				log.Printf("Key %v: %s", accessKey, metrics.SPrintMetrics(accessKeyMetrics.Get(accessKey)))
 				netMetrics.Add(netKey, proxyMetrics)
 				log.Printf("Net %v: %s", netKey, metrics.SPrintMetrics(netMetrics.Get(netKey)))
 			}()
 
-			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
 			clientConn, index, err := shadowConn(clientConn, cipherList)
 			if err != nil {
-				log.Printf("Failed to find a valid cipher: %v", err)
-				status = "ERR_CIPHER"
-				return
+				return &connectionError{"ERR_CIPHER", "Failed to find a valid cipher", err}
 			}
 			accessKey = strconv.Itoa(index)
 
 			tgt, err := socks.ReadAddr(clientConn)
 			if err != nil {
-				log.Printf("failed to get target address: %v", err)
-				status = "ERR_READ_ADDRESS"
-				return
+				return &connectionError{"ERR_READ_ADDRESS", "Failed to get target address", err}
 			}
 
 			c, err := net.Dial("tcp", tgt.String())
 			if err != nil {
-				log.Printf("failed to connect to target: %v", err)
-				status = "ERR_CONNECT"
-				return
+				return &connectionError{"ERR_CONNECT", "Failed to connect to target", err}
 			}
 			var tgtConn ssnet.DuplexConn = c.(*net.TCPConn)
 			defer tgtConn.Close()
@@ -175,9 +179,9 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
 			_, _, err = ssnet.Relay(clientConn, tgtConn)
 			if err != nil {
-				log.Printf("relay error: %v", err)
-				status = "ERR_RELAY"
+				return &connectionError{"ERR_RELAY", "Failed to relay traffic", err}
 			}
+			return nil
 		}()
 	}
 }

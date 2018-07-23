@@ -25,9 +25,10 @@ import (
 	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 )
 
+// TCPMetrics registers metrics for TCP connections.
 type TCPMetrics interface {
-	AddTCPConnection()
-	RemoveTCPConnection(accessKey, status string, duration time.Duration)
+	AddOpenTCPConnection()
+	AddClosedTCPConnection(accessKey, status string, duration time.Duration)
 }
 
 type prometheusTCPMetrics struct {
@@ -36,10 +37,10 @@ type prometheusTCPMetrics struct {
 	tcpConnectionDurationMs *prometheus.SummaryVec
 }
 
-func (m *prometheusTCPMetrics) AddTCPConnection() {
+func (m *prometheusTCPMetrics) AddOpenTCPConnection() {
 	m.tcpOpenConnections.Inc()
 }
-func (m *prometheusTCPMetrics) RemoveTCPConnection(accessKey, status string, duration time.Duration) {
+func (m *prometheusTCPMetrics) AddClosedTCPConnection(accessKey, status string, duration time.Duration) {
 	m.tcpClosedConnections.WithLabelValues(accessKey, status).Inc()
 	m.tcpConnectionDurationMs.WithLabelValues(accessKey, status).Observe(duration.Seconds() * 1000)
 }
