@@ -61,6 +61,8 @@ func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowa
 	var buffer bytes.Buffer
 	// Try each cipher until we find one that authenticates successfully.
 	// This assumes that all ciphers are AEAD.
+	// TODO: Reorder list to try previously successful ciphers first for the client IP.
+	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
 	for i, cipher := range cipherList {
 		log.Printf("Trying cipher %v", i)
 		// tmpReader reuses the bytes read so far, falling back to shadowConn if it needs more
