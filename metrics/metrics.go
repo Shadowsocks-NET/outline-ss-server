@@ -35,6 +35,7 @@ type prometheusTCPMetrics struct {
 	tcpOpenConnections   prometheus.Counter
 	tcpClosedConnections *prometheus.CounterVec
 
+	// TODO: Add per network/location metrics.
 	tcpDataClientProxyBytes *prometheus.CounterVec
 	tcpDataProxyTargetBytes *prometheus.CounterVec
 	tcpDataTargetProxyBytes *prometheus.CounterVec
