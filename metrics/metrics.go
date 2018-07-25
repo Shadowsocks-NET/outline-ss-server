@@ -114,50 +114,6 @@ func (m *prometheusTCPMetrics) AddClosedTCPConnection(accessKey, status string, 
 	m.tcpConnectionDurationMs.WithLabelValues(accessKey, status).Observe(duration.Seconds() * 1000)
 }
 
-type measuredReader struct {
-	io.Reader
-	io.WriterTo
-	count *int64
-}
-
-func MeasureReader(reader io.Reader, count *int64) io.Reader {
-	return &measuredReader{Reader: reader, count: count}
-}
-
-func (r *measuredReader) Read(b []byte) (int, error) {
-	n, err := r.Reader.Read(b)
-	*r.count += int64(n)
-	return n, err
-}
-
-func (r *measuredReader) WriteTo(w io.Writer) (int64, error) {
-	n, err := io.Copy(w, r.Reader)
-	*r.count += n
-	return n, err
-}
-
-type measuredWriter struct {
-	io.Writer
-	io.ReaderFrom
-	count *int64
-}
-
-func MeasureWriter(writer io.Writer, count *int64) io.Writer {
-	return &measuredWriter{Writer: writer, count: count}
-}
-
-func (w *measuredWriter) Write(b []byte) (int, error) {
-	n, err := w.Writer.Write(b)
-	*w.count += int64(n)
-	return n, err
-}
-
-func (w *measuredWriter) ReadFrom(r io.Reader) (int64, error) {
-	n, err := io.Copy(w.Writer, r)
-	*w.count += n
-	return n, err
-}
-
 type ProxyMetrics struct {
 	ClientProxy int64
 	ProxyTarget int64
@@ -201,10 +157,40 @@ func NewMetricsMap() *MetricsMap {
 	return &MetricsMap{m: make(map[string]*ProxyMetrics)}
 }
 
+type measuredConn struct {
+	ssnet.DuplexConn
+	io.WriterTo
+	readCount *int64
+	io.ReaderFrom
+	writeCount *int64
+}
+
+func (c *measuredConn) Read(b []byte) (int, error) {
+	n, err := c.DuplexConn.Read(b)
+	*c.readCount += int64(n)
+	return n, err
+}
+
+func (c *measuredConn) WriteTo(w io.Writer) (int64, error) {
+	n, err := io.Copy(w, c.DuplexConn)
+	*c.readCount += n
+	return n, err
+}
+
+func (c *measuredConn) Write(b []byte) (int, error) {
+	n, err := c.DuplexConn.Write(b)
+	*c.writeCount += int64(n)
+	return n, err
+}
+
+func (c *measuredConn) ReadFrom(r io.Reader) (int64, error) {
+	n, err := io.Copy(c.DuplexConn, r)
+	*c.writeCount += n
+	return n, err
+}
+
 func MeasureConn(conn ssnet.DuplexConn, bytesSent, bytesRceived *int64) ssnet.DuplexConn {
-	r := MeasureReader(conn, bytesRceived)
-	w := MeasureWriter(conn, bytesSent)
-	return ssnet.WrapDuplexConn(conn, r, w)
+	return &measuredConn{DuplexConn: conn, writeCount: bytesSent, readCount: bytesRceived}
 }
 
 func SPrintMetrics(m ProxyMetrics) string {
