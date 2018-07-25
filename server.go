@@ -42,20 +42,11 @@ var config struct {
 	UDPTimeout time.Duration
 }
 
-func shadowConn(conn ssnet.DuplexConn, cipherList []shadowaead.Cipher) (ssnet.DuplexConn, int, error) {
-	cipher, index, shadowReader, err := findCipher(conn, cipherList)
-	if err != nil {
-		return nil, -1, err
-	}
-	shadowWriter := shadowaead.NewShadowsocksWriter(conn, cipher)
-	return ssnet.WrapDuplexConn(conn, shadowReader, shadowWriter), index, nil
-}
-
-func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowaead.Cipher, int, io.Reader, error) {
+func findCipher(clientConn ssnet.DuplexConn, cipherList []shadowaead.Cipher) (int, ssnet.DuplexConn, error) {
 	if len(cipherList) == 0 {
-		return nil, -1, nil, errors.New("Empty cipher list")
+		return -1, nil, errors.New("Empty cipher list")
 	} else if len(cipherList) == 1 {
-		return cipherList[0], 0, shadowaead.NewShadowsocksReader(clientReader, cipherList[0]), nil
+		return 0, shadowaead.NewConn(clientConn, cipherList[0]), nil
 	}
 	// buffer saves the bytes read from shadowConn, in order to allow for replays.
 	var buffer bytes.Buffer
@@ -67,7 +58,7 @@ func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowa
 		log.Printf("Trying cipher %v", i)
 		// tmpReader reuses the bytes read so far, falling back to shadowConn if it needs more
 		// bytes. All bytes read from shadowConn are saved in buffer.
-		tmpReader := io.MultiReader(bytes.NewReader(buffer.Bytes()), io.TeeReader(clientReader, &buffer))
+		tmpReader := io.MultiReader(bytes.NewReader(buffer.Bytes()), io.TeeReader(clientConn, &buffer))
 		// Override the Reader of shadowConn so we can reset it for each cipher test.
 		cipherReader := shadowaead.NewShadowsocksReader(tmpReader, cipher)
 		// Read should read just enough data to authenticate the payload size.
@@ -79,9 +70,11 @@ func findCipher(clientReader io.Reader, cipherList []shadowaead.Cipher) (shadowa
 		log.Printf("Selected cipher %v", i)
 		// We don't need to replay the bytes anymore, but we don't want to drop those
 		// read so far.
-		return cipher, i, shadowaead.NewShadowsocksReader(io.MultiReader(&buffer, clientReader), cipher), nil
+		ssr := shadowaead.NewShadowsocksReader(io.MultiReader(&buffer, clientConn), cipher)
+		ssw := shadowaead.NewShadowsocksWriter(clientConn, cipher)
+		return i, ssnet.WrapDuplexConn(clientConn, ssr, ssw), nil
 	}
-	return nil, -1, nil, fmt.Errorf("could not find valid cipher")
+	return -1, nil, fmt.Errorf("could not find valid cipher")
 }
 
 func getNetKey(addr net.Addr) (string, error) {
@@ -157,7 +150,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 				log.Printf("Net %v: %s", netKey, metrics.SPrintMetrics(netMetrics.Get(netKey)))
 			}()
 
-			clientConn, index, err := shadowConn(clientConn, cipherList)
+			index, clientConn, err := findCipher(clientConn, cipherList)
 			if err != nil {
 				return &connectionError{"ERR_CIPHER", "Failed to find a valid cipher", err}
 			}
