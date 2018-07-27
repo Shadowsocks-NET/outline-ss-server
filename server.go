@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
+	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
@@ -51,12 +53,12 @@ type SSPort struct {
 	keys             map[string]shadowaead.Cipher
 }
 
-func findAccessKey(clientConn ssnet.DuplexConn, cipherList map[string]shadowaead.Cipher) (string, ssnet.DuplexConn, error) {
+func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.Cipher) (string, onet.DuplexConn, error) {
 	if len(cipherList) == 0 {
 		return "", nil, errors.New("Empty cipher list")
 	} else if len(cipherList) == 1 {
 		for id, cipher := range cipherList {
-			return id, shadowaead.NewConn(clientConn, cipher), nil
+			return id, shadowaead.NewConn(clientConn, cipher).(onet.DuplexConn), nil
 		}
 	}
 	// buffer saves the bytes read from shadowConn, in order to allow for replays.
@@ -83,7 +85,7 @@ func findAccessKey(clientConn ssnet.DuplexConn, cipherList map[string]shadowaead
 		// read so far.
 		ssr := shadowaead.NewShadowsocksReader(io.MultiReader(&buffer, clientConn), cipher)
 		ssw := shadowaead.NewShadowsocksWriter(clientConn, cipher)
-		return id, ssnet.WrapDuplexConn(clientConn, ssr, ssw), nil
+		return id, ssnet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
 	}
 	return "", nil, fmt.Errorf("could not find valid key")
 }
@@ -116,7 +118,7 @@ type connectionError struct {
 // Listen on addr for incoming connections.
 func (port *SSPort) run() {
 	for {
-		var clientConn ssnet.DuplexConn
+		var clientConn onet.DuplexConn
 		clientConn, err := port.listener.AcceptTCP()
 		port.m.AddOpenTCPConnection()
 		if err != nil {
@@ -165,14 +167,14 @@ func (port *SSPort) run() {
 			if err != nil {
 				return &connectionError{"ERR_CONNECT", "Failed to connect to target", err}
 			}
-			var tgtConn ssnet.DuplexConn = c.(*net.TCPConn)
+			var tgtConn onet.DuplexConn = c.(*net.TCPConn)
 			defer tgtConn.Close()
 			tgtConn.(*net.TCPConn).SetKeepAlive(true)
 			tgtConn = metrics.MeasureConn(tgtConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy)
 
 			// TODO: Disable logging in production. This is sensitive.
 			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
-			_, _, err = ssnet.Relay(clientConn, tgtConn)
+			_, _, err = onet.Relay(clientConn, tgtConn)
 			if err != nil {
 				return &connectionError{"ERR_RELAY", "Failed to relay traffic", err}
 			}

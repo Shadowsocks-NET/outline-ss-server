@@ -20,9 +20,8 @@ import (
 	"sync"
 	"time"
 
+	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	"github.com/prometheus/client_golang/prometheus"
-
-	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 )
 
 // TCPMetrics registers metrics for TCP connections.
@@ -158,7 +157,7 @@ func NewMetricsMap() *MetricsMap {
 }
 
 type measuredConn struct {
-	ssnet.DuplexConn
+	onet.DuplexConn
 	io.WriterTo
 	readCount *int64
 	io.ReaderFrom
@@ -189,7 +188,7 @@ func (c *measuredConn) ReadFrom(r io.Reader) (int64, error) {
 	return n, err
 }
 
-func MeasureConn(conn ssnet.DuplexConn, bytesSent, bytesRceived *int64) ssnet.DuplexConn {
+func MeasureConn(conn onet.DuplexConn, bytesSent, bytesRceived *int64) onet.DuplexConn {
 	return &measuredConn{DuplexConn: conn, writeCount: bytesSent, readCount: bytesRceived}
 }
 
