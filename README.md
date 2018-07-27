@@ -5,8 +5,10 @@ This repository shows how to implement a custom Shadowsocks server using a [modi
 This custom server allows for:
 - Multiple users on a single port.
   - Does so by trying all the different credentials until one succeeds.
+- Multiple ports
 - Whitebox monitoring of the service using [prometheus.io](https://prometheus.io)
   - Includes traffic measurements.
+- Live updates via config change + SIGHUP
 
 
 ## Try it!
@@ -30,7 +32,7 @@ go get github.com/Jigsaw-Code/outline-ss-server github.com/shadowsocks/go-shadow
 
 On Terminal 1, start the SS server:
 ```
-$(go env GOPATH)/bin/outline-ss-server -u "chacha20-ietf-poly1305:Secret1" -u "chacha20-ietf-poly1305:Secret2" -s localhost:9999 -metrics localhost:8080
+$(go env GOPATH)/bin/outline-ss-server -config config_example.yml -metrics localhost:8080
 ```
 
 On Terminal 2, start prometheus scraper for metrics collection:
@@ -40,7 +42,7 @@ $(go env GOPATH)/bin/prometheus --config.file=prometheus_example.yml
 
 On Terminal 3, start the SS client:
 ```
-$(go env GOPATH)/bin/go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret1@:9999 -verbose  -socks :1080
+$(go env GOPATH)/bin/go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret0@:9000 -verbose  -socks :1080
 ```
 
 On Terminal 4, fetch a page using the SS client:
@@ -48,7 +50,7 @@ On Terminal 4, fetch a page using the SS client:
 curl --proxy socks5h://localhost:1080 example.com
 ```
 
-Stop and restart the client on Terminal 3 with "Secret2" as the password and try to fetch the page again on Terminal 4.
+Stop and restart the client on Terminal 3 with "Secret1" as the password and try to fetch the page again on Terminal 4.
 
 Open http://localhost:8080/metrics and see the exported Prometheus variables.
 
@@ -62,36 +64,36 @@ Start the iperf3 server (runs on port 5201 by default):
 iperf3 -s
 ```
 
-Start the SS server (listening on port 20001):
+Start the SS server (listening on port 9000):
 ```
 go build github.com/Jigsaw-Code/outline-ss-server && \
-./ss-example -u "chacha20-ietf-poly1305:Secret1" -s :20001
+./outline-ss-server -config config_example.yml
 ```
 
-Start the SS tunnel to redirect port 20002 -> localhost:5201 via the proxy on 20001:
+Start the SS tunnel to redirect port 8000 -> localhost:5201 via the proxy on 9000:
 ```
 go build github.com/shadowsocks/go-shadowsocks2 && \
-./go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret1@:20001 -tcptun ":20002=localhost:5201" -udptun ":20002=localhost:5201" -verbose
+./go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret0@:9000 -tcptun ":8000=localhost:5201" -udptun ":8000=localhost:5201" -verbose
 ```
 
 Test TCP upload (client -> server):
 ```
-iperf3 -c localhost -p 20002
+iperf3 -c localhost -p 8000
 ```
 
 Test TCP download (server -> client):
 ```
-iperf3 -c localhost -p 20002 --reverse
+iperf3 -c localhost -p 8000 --reverse
 ```
 
 Test UDP upload:
 ```
-iperf3 -c localhost -p 20002 --udp -b 0
+iperf3 -c localhost -p 8000 --udp -b 0
 ```
 
 Test UDP download:
 ```
-iperf3 -c localhost -p 20002 --udp -b 0 --reverse
+iperf3 -c localhost -p 8000 --udp -b 0 --reverse
 ```
 
 ### Compare to go-shadowsocks2
@@ -99,7 +101,7 @@ iperf3 -c localhost -p 20002 --udp -b 0 --reverse
 Run the commands above, but start the SS server with
 ```
 go build github.com/shadowsocks/go-shadowsocks2 && \
-./go-shadowsocks2 -s ss://chacha20-ietf-poly1305:Secret1@:20001 -verbose
+./go-shadowsocks2 -s ss://chacha20-ietf-poly1305:Secret0@:9000 -verbose
 ```
 
 

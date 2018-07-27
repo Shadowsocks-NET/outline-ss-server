@@ -20,13 +20,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -36,17 +35,29 @@ import (
 	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
+	"gopkg.in/yaml.v2"
 )
 
 var config struct {
 	UDPTimeout time.Duration
 }
 
-func findCipher(clientConn ssnet.DuplexConn, cipherList []shadowaead.Cipher) (int, ssnet.DuplexConn, error) {
+type SSPort struct {
+	m                metrics.TCPMetrics
+	accessKeyMetrics *metrics.MetricsMap
+	netMetrics       *metrics.MetricsMap
+	listener         *net.TCPListener
+	packetConn       net.PacketConn
+	keys             map[string]shadowaead.Cipher
+}
+
+func findAccessKey(clientConn ssnet.DuplexConn, cipherList map[string]shadowaead.Cipher) (string, ssnet.DuplexConn, error) {
 	if len(cipherList) == 0 {
-		return -1, nil, errors.New("Empty cipher list")
+		return "", nil, errors.New("Empty cipher list")
 	} else if len(cipherList) == 1 {
-		return 0, shadowaead.NewConn(clientConn, cipherList[0]), nil
+		for id, cipher := range cipherList {
+			return id, shadowaead.NewConn(clientConn, cipher), nil
+		}
 	}
 	// buffer saves the bytes read from shadowConn, in order to allow for replays.
 	var buffer bytes.Buffer
@@ -54,8 +65,8 @@ func findCipher(clientConn ssnet.DuplexConn, cipherList []shadowaead.Cipher) (in
 	// This assumes that all ciphers are AEAD.
 	// TODO: Reorder list to try previously successful ciphers first for the client IP.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-	for i, cipher := range cipherList {
-		log.Printf("Trying cipher %v", i)
+	for id, cipher := range cipherList {
+		log.Printf("Trying key %v", id)
 		// tmpReader reuses the bytes read so far, falling back to shadowConn if it needs more
 		// bytes. All bytes read from shadowConn are saved in buffer.
 		tmpReader := io.MultiReader(bytes.NewReader(buffer.Bytes()), io.TeeReader(clientConn, &buffer))
@@ -64,17 +75,17 @@ func findCipher(clientConn ssnet.DuplexConn, cipherList []shadowaead.Cipher) (in
 		// Read should read just enough data to authenticate the payload size.
 		_, err := cipherReader.Read(make([]byte, 0))
 		if err != nil {
-			log.Printf("Failed cipher %v: %v", i, err)
+			log.Printf("Failed key %v: %v", id, err)
 			continue
 		}
-		log.Printf("Selected cipher %v", i)
+		log.Printf("Selected key %v", id)
 		// We don't need to replay the bytes anymore, but we don't want to drop those
 		// read so far.
 		ssr := shadowaead.NewShadowsocksReader(io.MultiReader(&buffer, clientConn), cipher)
 		ssw := shadowaead.NewShadowsocksWriter(clientConn, cipher)
-		return i, ssnet.WrapDuplexConn(clientConn, ssr, ssw), nil
+		return id, ssnet.WrapDuplexConn(clientConn, ssr, ssw), nil
 	}
-	return -1, nil, fmt.Errorf("could not find valid cipher")
+	return "", nil, fmt.Errorf("could not find valid key")
 }
 
 func getNetKey(addr net.Addr) (string, error) {
@@ -103,21 +114,11 @@ type connectionError struct {
 }
 
 // Listen on addr for incoming connections.
-func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics) {
-	// TODO: Delete these and get from the already collected Prometheus metrics instead.
-	accessKeyMetrics := metrics.NewMetricsMap()
-	netMetrics := metrics.NewMetricsMap()
-	l, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Printf("failed to listen on %s: %v", addr, err)
-		return
-	}
-
-	log.Printf("listening TCP on %s", addr)
+func (port *SSPort) run() {
 	for {
 		var clientConn ssnet.DuplexConn
-		clientConn, err := l.(*net.TCPListener).AcceptTCP()
-		m.AddOpenTCPConnection()
+		clientConn, err := port.listener.AcceptTCP()
+		port.m.AddOpenTCPConnection()
 		if err != nil {
 			log.Printf("failed to accept: %v", err)
 			return
@@ -130,7 +131,7 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 			if err != nil {
 				netKey = "INVALID"
 			}
-			accessKey := "INVALID"
+			keyID := ""
 			var proxyMetrics metrics.ProxyMetrics
 			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
 			defer func() {
@@ -143,18 +144,17 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 					status = connError.status
 				}
 				log.Printf("Done with status %v, duration %v", status, connDuration)
-				m.AddClosedTCPConnection(accessKey, status, proxyMetrics, connDuration)
-				accessKeyMetrics.Add(accessKey, proxyMetrics)
-				log.Printf("Key %v: %s", accessKey, metrics.SPrintMetrics(accessKeyMetrics.Get(accessKey)))
-				netMetrics.Add(netKey, proxyMetrics)
-				log.Printf("Net %v: %s", netKey, metrics.SPrintMetrics(netMetrics.Get(netKey)))
+				port.m.AddClosedTCPConnection(keyID, status, proxyMetrics, connDuration)
+				port.accessKeyMetrics.Add(keyID, proxyMetrics)
+				log.Printf("Key %v: %s", keyID, metrics.SPrintMetrics(port.accessKeyMetrics.Get(keyID)))
+				port.netMetrics.Add(netKey, proxyMetrics)
+				log.Printf("Net %v: %s", netKey, metrics.SPrintMetrics(port.netMetrics.Get(netKey)))
 			}()
 
-			index, clientConn, err := findCipher(clientConn, cipherList)
+			keyID, clientConn, err := findAccessKey(clientConn, port.keys)
 			if err != nil {
 				return &connectionError{"ERR_CIPHER", "Failed to find a valid cipher", err}
 			}
-			accessKey = strconv.Itoa(index)
 
 			tgt, err := socks.ReadAddr(clientConn)
 			if err != nil {
@@ -181,23 +181,144 @@ func tcpRemote(addr string, cipherList []shadowaead.Cipher, m metrics.TCPMetrics
 	}
 }
 
-type cipherList []shadowaead.Cipher
+type SSServer struct {
+	m                metrics.TCPMetrics
+	accessKeyMetrics *metrics.MetricsMap
+	netMetrics       *metrics.MetricsMap
+	ports            map[int]*SSPort
+}
 
-func main() {
+func (s *SSServer) startPort(portNum int) error {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: portNum})
+	if err != nil {
+		return fmt.Errorf("Failed to start TCP on port %v: %v", portNum, err)
+	}
+	packetConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: portNum})
+	if err != nil {
+		return fmt.Errorf("ERROR Failed to start UDP on port %v: %v", portNum, err)
+	}
+	log.Printf("INFO Listening TCP and UDP on port %v", portNum)
+	port := &SSPort{m: s.m, accessKeyMetrics: s.accessKeyMetrics, netMetrics: s.netMetrics,
+		listener: listener, packetConn: packetConn, keys: make(map[string]shadowaead.Cipher)}
+	s.ports[portNum] = port
+	go port.run()
+	return nil
+}
 
-	var flags struct {
-		Server      string
-		Ciphers     cipherList
-		MetricsAddr string
+func (s *SSServer) removePort(portNum int) error {
+	port, ok := s.ports[portNum]
+	if !ok {
+		return fmt.Errorf("Port %v doesn't exist", portNum)
+	}
+	tcpErr := port.listener.Close()
+	udpErr := port.packetConn.Close()
+	delete(s.ports, portNum)
+	if tcpErr != nil {
+		return fmt.Errorf("Failed to close listener on %v: %v", portNum, tcpErr)
+	}
+	if udpErr != nil {
+		return fmt.Errorf("Failed to close packetConn on %v: %v", portNum, udpErr)
+	}
+	log.Printf("INFO Stopped TCP and UDP on port %v", portNum)
+	return nil
+}
+
+func (s *SSServer) loadConfig(filename string) error {
+	config, err := readConfig(filename)
+	if err != nil {
+		return fmt.Errorf("Failed to read config file %v: %v", filename, err)
 	}
 
-	flag.StringVar(&flags.Server, "s", "", "server listen address")
-	flag.Var(&flags.Ciphers, "u", "available ciphers: "+strings.Join(core.ListCipher(), " "))
-	flag.DurationVar(&config.UDPTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
+	portChanges := make(map[int]int)
+	portKeys := make(map[int]map[string]shadowaead.Cipher)
+	for _, keyConfig := range config.Keys {
+		portChanges[keyConfig.Port] = 1
+		keys, ok := portKeys[keyConfig.Port]
+		if !ok {
+			keys = make(map[string]shadowaead.Cipher)
+			portKeys[keyConfig.Port] = keys
+		}
+		cipher, err := core.PickCipher(keyConfig.Cipher, nil, keyConfig.Secret)
+		if err != nil {
+			return fmt.Errorf("Failed to create cipher for key %v: %v", keyConfig.ID, err)
+		}
+		aead, ok := cipher.(shadowaead.Cipher)
+		if !ok {
+			return fmt.Errorf("Only AEAD ciphers are supported. Found %v", keyConfig.Cipher)
+		}
+		keys[keyConfig.ID] = aead
+	}
+	for port := range s.ports {
+		portChanges[port] = portChanges[port] - 1
+	}
+	for portNum, count := range portChanges {
+		if count == -1 {
+			if err := s.removePort(portNum); err != nil {
+				return fmt.Errorf("Failed to remove port %v: %v", portNum, err)
+			}
+		} else if count == +1 {
+			if err := s.startPort(portNum); err != nil {
+				return fmt.Errorf("Failed to start port %v: %v", portNum, err)
+			}
+		}
+	}
+	for portNum, keys := range portKeys {
+		s.ports[portNum].keys = keys
+	}
+	return nil
+}
+
+func runSSServer(filename string) error {
+	server := &SSServer{m: metrics.NewPrometheusTCPMetrics(), accessKeyMetrics: metrics.NewMetricsMap(),
+		netMetrics: metrics.NewMetricsMap(), ports: make(map[int]*SSPort)}
+	err := server.loadConfig(filename)
+	if err != nil {
+		return fmt.Errorf("Failed to load config file %v: %v", filename, err)
+	}
+	sigHup := make(chan os.Signal, 1)
+	signal.Notify(sigHup, syscall.SIGHUP)
+	go func() {
+		for range sigHup {
+			log.Printf("Updating config")
+			if err := server.loadConfig(filename); err != nil {
+				log.Printf("ERROR Could not reload config: %v", err)
+			}
+		}
+	}()
+	return nil
+}
+
+type cipherList []shadowaead.Cipher
+
+type Config struct {
+	Keys []struct {
+		ID     string
+		Port   int
+		Cipher string
+		Secret string
+	}
+}
+
+func readConfig(filename string) (*Config, error) {
+	config := Config{}
+	configData, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	err = yaml.Unmarshal(configData, &config)
+	return &config, err
+}
+
+func main() {
+	var flags struct {
+		ConfigFile  string
+		MetricsAddr string
+	}
+	flag.StringVar(&flags.ConfigFile, "config", "", "config filename")
 	flag.StringVar(&flags.MetricsAddr, "metrics", "", "address for the Prometheus metrics")
 	flag.Parse()
 
-	if flags.Server == "" || len(flags.Ciphers) == 0 {
+	if flags.ConfigFile == "" {
 		flag.Usage()
 		return
 	}
@@ -210,31 +331,12 @@ func main() {
 		log.Printf("Metrics on http://%v/metrics", flags.MetricsAddr)
 	}
 
-	go udpRemote(flags.Server, flags.Ciphers)
-	go tcpRemote(flags.Server, flags.Ciphers, metrics.NewPrometheusTCPMetrics())
+	err := runSSServer(flags.ConfigFile)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
-}
-
-func (sl *cipherList) Set(flagValue string) error {
-	e := strings.SplitN(flagValue, ":", 2)
-	if len(e) != 2 {
-		return fmt.Errorf("Missing colon")
-	}
-	cipher, err := core.PickCipher(e[0], nil, e[1])
-	if err != nil {
-		return err
-	}
-	aead, ok := cipher.(shadowaead.Cipher)
-	if !ok {
-		log.Fatal("Only AEAD ciphers are supported")
-	}
-	*sl = append(*sl, aead)
-	return nil
-}
-
-func (sl *cipherList) String() string {
-	return fmt.Sprint(*sl)
 }
