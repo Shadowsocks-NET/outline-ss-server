@@ -117,6 +117,7 @@ type connectionError struct {
 
 // Listen on addr for incoming connections.
 func (port *SSPort) run() {
+	go udpRemote(port.packetConn, port.keys)
 	for {
 		var clientConn onet.DuplexConn
 		clientConn, err := port.listener.AcceptTCP()
@@ -289,8 +290,6 @@ func runSSServer(filename string) error {
 	}()
 	return nil
 }
-
-type cipherList []shadowaead.Cipher
 
 type Config struct {
 	Keys []struct {

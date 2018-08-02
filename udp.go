@@ -38,34 +38,28 @@ const udpBufSize = 64 * 1024
 
 // upack decripts src into dst. It tries each cipher until it finds one that authenticates
 // correctly. dst and src must not overlap.
-func unpack(dst, src []byte, ciphers []shadowaead.Cipher) ([]byte, shadowaead.Cipher, error) {
-	for i, cipher := range ciphers {
-		log.Printf("Trying cipher %v", i)
+func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, shadowaead.Cipher, error) {
+	for id, cipher := range ciphers {
+		log.Printf("Trying UDP cipher %v", id)
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {
-			log.Printf("Failed cipher %v: %v", i, err)
+			log.Printf("Failed UDP cipher %v: %v", id, err)
 			continue
 		}
-		log.Printf("Selected cipher %v", i)
+		log.Printf("Selected UDP cipher %v", id)
 		return buf, cipher, nil
 	}
 	return nil, nil, errors.New("could not find valid cipher")
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
-func udpRemote(addr string, ciphers []shadowaead.Cipher) {
-	c, err := net.ListenPacket("udp", addr)
-	if err != nil {
-		log.Printf("UDP remote listen error: %v", err)
-		return
-	}
+func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
 	defer c.Close()
 
 	nm := newNATmap(config.UDPTimeout)
 	cipherBuf := make([]byte, udpBufSize)
 	buf := make([]byte, udpBufSize)
 
-	log.Printf("listening UDP on %s", addr)
 	for {
 		func() {
 			n, raddr, err := c.ReadFrom(cipherBuf)
