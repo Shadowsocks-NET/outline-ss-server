@@ -15,9 +15,7 @@
 package metrics
 
 import (
-	"fmt"
 	"io"
-	"sync"
 	"time"
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
@@ -146,35 +144,6 @@ func (m *ProxyMetrics) add(other ProxyMetrics) {
 	m.ProxyClient += other.ProxyClient
 }
 
-type MetricsMap struct {
-	mutex sync.RWMutex
-	m     map[string]*ProxyMetrics
-}
-
-func (this *MetricsMap) Add(key string, toAdd ProxyMetrics) {
-	this.mutex.Lock()
-	defer this.mutex.Unlock()
-	p, ok := this.m[key]
-	if !ok {
-		p = &ProxyMetrics{}
-		this.m[key] = p
-	}
-	p.add(toAdd)
-}
-
-func (this *MetricsMap) Get(key string) ProxyMetrics {
-	this.mutex.RLock()
-	defer this.mutex.RUnlock()
-	if p, ok := this.m[key]; ok {
-		return *p
-	}
-	return ProxyMetrics{}
-}
-
-func NewMetricsMap() *MetricsMap {
-	return &MetricsMap{m: make(map[string]*ProxyMetrics)}
-}
-
 type measuredConn struct {
 	onet.DuplexConn
 	io.WriterTo
@@ -209,9 +178,4 @@ func (c *measuredConn) ReadFrom(r io.Reader) (int64, error) {
 
 func MeasureConn(conn onet.DuplexConn, bytesSent, bytesRceived *int64) onet.DuplexConn {
 	return &measuredConn{DuplexConn: conn, writeCount: bytesSent, readCount: bytesRceived}
-}
-
-func SPrintMetrics(m ProxyMetrics) string {
-	return fmt.Sprintf("C->P: %v, P->T: %v, T->P: %v, P->C: %v",
-		m.ClientProxy, m.ProxyTarget, m.TargetProxy, m.ProxyClient)
 }

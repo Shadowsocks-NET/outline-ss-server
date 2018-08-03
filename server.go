@@ -45,12 +45,9 @@ var config struct {
 }
 
 type SSPort struct {
-	m                metrics.ShadowsocksMetrics
-	accessKeyMetrics *metrics.MetricsMap
-	netMetrics       *metrics.MetricsMap
-	listener         *net.TCPListener
-	packetConn       net.PacketConn
-	keys             map[string]shadowaead.Cipher
+	listener   *net.TCPListener
+	packetConn net.PacketConn
+	keys       map[string]shadowaead.Cipher
 }
 
 func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.Cipher) (string, onet.DuplexConn, error) {
@@ -90,24 +87,6 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 	return "", nil, fmt.Errorf("could not find valid key")
 }
 
-func getNetKey(addr net.Addr) (string, error) {
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return "", err
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return "", errors.New("Failed to parse ip")
-	}
-	ipNet := net.IPNet{IP: ip}
-	if ip.To4() != nil {
-		ipNet.Mask = net.CIDRMask(24, 32)
-	} else {
-		ipNet.Mask = net.CIDRMask(32, 128)
-	}
-	return ipNet.String(), nil
-}
-
 type connectionError struct {
 	// TODO: create status enums and move to metrics.go
 	status  string
@@ -116,7 +95,7 @@ type connectionError struct {
 }
 
 // Listen on addr for incoming connections.
-func (port *SSPort) run() {
+func (port *SSPort) run(m metrics.ShadowsocksMetrics) {
 	go udpRemote(port.packetConn, port.keys)
 	for {
 		var clientConn onet.DuplexConn
@@ -125,7 +104,7 @@ func (port *SSPort) run() {
 			log.Printf("failed to accept: %v", err)
 			continue
 		}
-		port.m.AddOpenTCPConnection()
+		m.AddOpenTCPConnection()
 
 		go func() (connError *connectionError) {
 			defer func() {
@@ -135,10 +114,6 @@ func (port *SSPort) run() {
 			}()
 			connStart := time.Now()
 			clientConn.(*net.TCPConn).SetKeepAlive(true)
-			netKey, err := getNetKey(clientConn.RemoteAddr())
-			if err != nil {
-				netKey = "INVALID"
-			}
 			keyID := ""
 			var proxyMetrics metrics.ProxyMetrics
 			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
@@ -152,11 +127,7 @@ func (port *SSPort) run() {
 					status = connError.status
 				}
 				log.Printf("Done with status %v, duration %v", status, connDuration)
-				port.m.AddClosedTCPConnection(keyID, status, proxyMetrics, connDuration)
-				port.accessKeyMetrics.Add(keyID, proxyMetrics)
-				log.Printf("Key %v: %s", keyID, metrics.SPrintMetrics(port.accessKeyMetrics.Get(keyID)))
-				port.netMetrics.Add(netKey, proxyMetrics)
-				log.Printf("Net %v: %s", netKey, metrics.SPrintMetrics(port.netMetrics.Get(netKey)))
+				m.AddClosedTCPConnection(keyID, status, proxyMetrics, connDuration)
 			}()
 
 			keyID, clientConn, err := findAccessKey(clientConn, port.keys)
@@ -190,10 +161,8 @@ func (port *SSPort) run() {
 }
 
 type SSServer struct {
-	m                metrics.ShadowsocksMetrics
-	accessKeyMetrics *metrics.MetricsMap
-	netMetrics       *metrics.MetricsMap
-	ports            map[int]*SSPort
+	m     metrics.ShadowsocksMetrics
+	ports map[int]*SSPort
 }
 
 func (s *SSServer) startPort(portNum int) error {
@@ -206,10 +175,9 @@ func (s *SSServer) startPort(portNum int) error {
 		return fmt.Errorf("ERROR Failed to start UDP on port %v: %v", portNum, err)
 	}
 	log.Printf("INFO Listening TCP and UDP on port %v", portNum)
-	port := &SSPort{m: s.m, accessKeyMetrics: s.accessKeyMetrics, netMetrics: s.netMetrics,
-		listener: listener, packetConn: packetConn, keys: make(map[string]shadowaead.Cipher)}
+	port := &SSPort{listener: listener, packetConn: packetConn, keys: make(map[string]shadowaead.Cipher)}
 	s.ports[portNum] = port
-	go port.run()
+	go port.run(s.m)
 	return nil
 }
 
@@ -279,8 +247,7 @@ func (s *SSServer) loadConfig(filename string) error {
 }
 
 func runSSServer(filename string) error {
-	server := &SSServer{m: metrics.NewShadowsocksMetrics(), accessKeyMetrics: metrics.NewMetricsMap(),
-		netMetrics: metrics.NewMetricsMap(), ports: make(map[int]*SSPort)}
+	server := &SSServer{m: metrics.NewShadowsocksMetrics(), ports: make(map[int]*SSPort)}
 	err := server.loadConfig(filename)
 	if err != nil {
 		return fmt.Errorf("Failed to load config file %v: %v", filename, err)
