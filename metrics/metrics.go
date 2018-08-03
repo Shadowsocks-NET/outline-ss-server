@@ -173,7 +173,7 @@ func (m *shadowsocksMetrics) AddClientUDPPacket(accessKey, status string, client
 
 func (m *shadowsocksMetrics) AddTargetUDPPacket(accessKey, status string, targetProxyBytes, proxyClientBytes int) {
 	m.udpDataTargetProxyBytes.WithLabelValues(accessKey, status).Add(float64(targetProxyBytes))
-	m.udpDataClientProxyBytes.WithLabelValues(accessKey, status).Add(float64(proxyClientBytes))
+	m.udpDataProxyClientBytes.WithLabelValues(accessKey, status).Add(float64(proxyClientBytes))
 }
 
 type ProxyMetrics struct {
