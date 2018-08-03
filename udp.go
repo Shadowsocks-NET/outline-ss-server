@@ -62,12 +62,17 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
 
 	for {
 		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("ERROR Panic in UDP loop: %v", r)
+				}
+			}()
 			n, raddr, err := c.ReadFrom(cipherBuf)
-			defer log.Printf("Done with %v", raddr.String())
 			if err != nil {
 				log.Printf("UDP remote read error: %v", err)
 				return
 			}
+			defer log.Printf("UDP done with %v", raddr.String())
 			log.Printf("Request from %v with %v bytes", raddr, n)
 			buf, cipher, err := unpack(textBuf, cipherBuf[:n], ciphers)
 			if err != nil {

@@ -121,13 +121,18 @@ func (port *SSPort) run() {
 	for {
 		var clientConn onet.DuplexConn
 		clientConn, err := port.listener.AcceptTCP()
-		port.m.AddOpenTCPConnection()
 		if err != nil {
 			log.Printf("failed to accept: %v", err)
-			return
+			continue
 		}
+		port.m.AddOpenTCPConnection()
 
 		go func() (connError *connectionError) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("ERROR Panic in TCP handler: %v", r)
+				}
+			}()
 			connStart := time.Now()
 			clientConn.(*net.TCPConn).SetKeepAlive(true)
 			netKey, err := getNetKey(clientConn.RemoteAddr())
