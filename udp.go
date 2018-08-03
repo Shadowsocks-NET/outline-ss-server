@@ -58,7 +58,7 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
 
 	nm := newNATmap(config.UDPTimeout)
 	cipherBuf := make([]byte, udpBufSize)
-	buf := make([]byte, udpBufSize)
+	textBuf := make([]byte, udpBufSize)
 
 	for {
 		func() {
@@ -68,14 +68,14 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
 				log.Printf("UDP remote read error: %v", err)
 				return
 			}
-			log.Printf("Request from %v", raddr)
-			buf, cipher, err := unpack(buf, cipherBuf[:n], ciphers)
+			log.Printf("Request from %v with %v bytes", raddr, n)
+			buf, cipher, err := unpack(textBuf, cipherBuf[:n], ciphers)
 			if err != nil {
 				log.Printf("UDP remote read error: %v", err)
 				return
 			}
 
-			tgtAddr := socks.SplitAddr(buf[:n])
+			tgtAddr := socks.SplitAddr(buf)
 			if tgtAddr == nil {
 				log.Printf("failed to split target address from packet: %q", buf[:n])
 				return
