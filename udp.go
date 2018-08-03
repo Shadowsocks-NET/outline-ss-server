@@ -71,13 +71,13 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
 			log.Printf("Request from %v with %v bytes", raddr, n)
 			buf, cipher, err := unpack(textBuf, cipherBuf[:n], ciphers)
 			if err != nil {
-				log.Printf("UDP remote read error: %v", err)
+				log.Printf("UDP remote unpack error: %v", err)
 				return
 			}
 
 			tgtAddr := socks.SplitAddr(buf)
 			if tgtAddr == nil {
-				log.Printf("failed to split target address from packet: %q", buf[:n])
+				log.Printf("Failed to split target address from packet: %q", buf)
 				return
 			}
 
@@ -87,7 +87,7 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
 				return
 			}
 
-			payload := buf[len(tgtAddr):n]
+			payload := buf[len(tgtAddr):]
 
 			pc := nm.Get(raddr.String())
 			if pc == nil {
@@ -99,6 +99,7 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
 
 				nm.Add(raddr, shadowaead.NewPacketConn(c, cipher), pc, remoteServer)
 			}
+			log.Printf("DEBUG UDP Nat: client %v <-> proxy exit %v", raddr, pc.LocalAddr())
 
 			_, err = pc.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
@@ -173,6 +174,7 @@ func timedCopy(dst net.PacketConn, target net.Addr, src net.PacketConn, timeout 
 		switch role {
 		case remoteServer: // server -> client: add original packet source
 			srcAddr := socks.ParseAddr(raddr.String())
+			log.Printf("DEBUG UDP response from %v to %v", srcAddr, target)
 			copy(buf[len(srcAddr):], buf[:n])
 			copy(buf, srcAddr)
 			_, err = dst.WriteTo(buf[:len(srcAddr)+n], target)
