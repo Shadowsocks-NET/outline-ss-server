@@ -144,7 +144,7 @@ func NewShadowsocksMetrics() ShadowsocksMetrics {
 	// TODO: Is it possible to pass where to register the collectors?
 	prometheus.MustRegister(m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpClosedConnections, m.tcpDataClientProxyBytes,
 		m.tcpDataProxyTargetBytes, m.tcpDataTargetProxyBytes, m.tcpDataProxyClientBytes, m.tcpConnectionDurationMs,
-		m.udpDataProxyTargetBytes, m.udpDataTargetProxyBytes, m.udpDataProxyClientBytes)
+		m.udpDataClientProxyBytes, m.udpDataProxyTargetBytes, m.udpDataTargetProxyBytes, m.udpDataProxyClientBytes)
 	return m
 }
 
