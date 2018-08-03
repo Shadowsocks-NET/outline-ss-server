@@ -25,6 +25,8 @@ import (
 // ShadowsocksMetrics registers metrics for the Shadowsocks service.
 type ShadowsocksMetrics interface {
 	SetNumAccessKeys(numKeys int, numPorts int)
+	AddClientUDPPacket(accessKey, status string, clientProxyBytes, proxyTargetBytes int)
+	AddTargetUDPPacket(accessKey, status string, targetProxyBytes, proxyClientBytes int)
 	AddOpenTCPConnection()
 	AddClosedTCPConnection(accessKey, status string, data ProxyMetrics, duration time.Duration)
 }
@@ -36,13 +38,18 @@ type shadowsocksMetrics struct {
 	tcpClosedConnections *prometheus.CounterVec
 
 	// TODO: Add per network/location metrics.
+	// TODO: Add time to first byte.
 	tcpDataClientProxyBytes *prometheus.CounterVec
 	tcpDataProxyTargetBytes *prometheus.CounterVec
 	tcpDataTargetProxyBytes *prometheus.CounterVec
 	tcpDataProxyClientBytes *prometheus.CounterVec
-
 	// TODO: Define a time window for the duration summary (e.g. 1 hour)
 	tcpConnectionDurationMs *prometheus.SummaryVec
+
+	udpDataClientProxyBytes *prometheus.CounterVec
+	udpDataProxyTargetBytes *prometheus.CounterVec
+	udpDataTargetProxyBytes *prometheus.CounterVec
+	udpDataProxyClientBytes *prometheus.CounterVec
 }
 
 func NewShadowsocksMetrics() ShadowsocksMetrics {
@@ -105,10 +112,39 @@ func NewShadowsocksMetrics() ShadowsocksMetrics {
 				Help:       "TCP connection duration distributions.",
 				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 			}, []string{"access_key", "status"}),
+		udpDataClientProxyBytes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "udp",
+				Name:      "data_client_proxy_bytes",
+				Help:      "Bytes tranferred from client to proxy.",
+			}, []string{"access_key", "status"}),
+		udpDataProxyTargetBytes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "udp",
+				Name:      "data_proxy_target_bytes",
+				Help:      "Bytes tranferred from proxy to target.",
+			}, []string{"access_key", "status"}),
+		udpDataTargetProxyBytes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "udp",
+				Name:      "data_target_proxy_bytes",
+				Help:      "Bytes tranferred from target to proxy.",
+			}, []string{"access_key", "status"}),
+		udpDataProxyClientBytes: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "udp",
+				Name:      "data_proxy_client_bytes",
+				Help:      "Bytes tranferred from proxy to client.",
+			}, []string{"access_key", "status"}),
 	}
 	// TODO: Is it possible to pass where to register the collectors?
 	prometheus.MustRegister(m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpClosedConnections, m.tcpDataClientProxyBytes,
-		m.tcpDataProxyTargetBytes, m.tcpDataTargetProxyBytes, m.tcpDataProxyClientBytes, m.tcpConnectionDurationMs)
+		m.tcpDataProxyTargetBytes, m.tcpDataTargetProxyBytes, m.tcpDataProxyClientBytes, m.tcpConnectionDurationMs,
+		m.udpDataProxyTargetBytes, m.udpDataTargetProxyBytes, m.udpDataProxyClientBytes)
 	return m
 }
 
@@ -128,6 +164,16 @@ func (m *shadowsocksMetrics) AddClosedTCPConnection(accessKey, status string, da
 	m.tcpDataTargetProxyBytes.WithLabelValues(accessKey, status).Add(float64(data.TargetProxy))
 	m.tcpDataProxyClientBytes.WithLabelValues(accessKey, status).Add(float64(data.ProxyClient))
 	m.tcpConnectionDurationMs.WithLabelValues(accessKey, status).Observe(duration.Seconds() * 1000)
+}
+
+func (m *shadowsocksMetrics) AddClientUDPPacket(accessKey, status string, clientProxyBytes, proxyTargetBytes int) {
+	m.udpDataClientProxyBytes.WithLabelValues(accessKey, status).Add(float64(clientProxyBytes))
+	m.udpDataProxyTargetBytes.WithLabelValues(accessKey, status).Add(float64(proxyTargetBytes))
+}
+
+func (m *shadowsocksMetrics) AddTargetUDPPacket(accessKey, status string, targetProxyBytes, proxyClientBytes int) {
+	m.udpDataTargetProxyBytes.WithLabelValues(accessKey, status).Add(float64(targetProxyBytes))
+	m.udpDataClientProxyBytes.WithLabelValues(accessKey, status).Add(float64(proxyClientBytes))
 }
 
 type ProxyMetrics struct {

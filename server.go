@@ -96,7 +96,7 @@ type connectionError struct {
 
 // Listen on addr for incoming connections.
 func (port *SSPort) run(m metrics.ShadowsocksMetrics) {
-	go udpRemote(port.packetConn, port.keys)
+	go udpRemote(port.packetConn, port.keys, m)
 	for {
 		var clientConn onet.DuplexConn
 		clientConn, err := port.listener.AcceptTCP()
@@ -123,7 +123,7 @@ func (port *SSPort) run(m metrics.ShadowsocksMetrics) {
 				clientConn.Close()
 				status := "OK"
 				if connError != nil {
-					log.Printf("ERROR %v: %v", connError.message, connError.cause)
+					log.Printf("ERROR [TCP] %v: %v", connError.message, connError.cause)
 					status = connError.status
 				}
 				log.Printf("Done with status %v, duration %v", status, connDuration)

@@ -16,9 +16,12 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"time"
+
+	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 
 	"sync"
 
@@ -38,7 +41,7 @@ const udpBufSize = 64 * 1024
 
 // upack decripts src into dst. It tries each cipher until it finds one that authenticates
 // correctly. dst and src must not overlap.
-func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, shadowaead.Cipher, error) {
+func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, string, shadowaead.Cipher, error) {
 	for id, cipher := range ciphers {
 		log.Printf("Trying UDP cipher %v", id)
 		buf, err := shadowaead.Unpack(dst, src, cipher)
@@ -47,13 +50,13 @@ func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, shad
 			continue
 		}
 		log.Printf("Selected UDP cipher %v", id)
-		return buf, cipher, nil
+		return buf, "", cipher, nil
 	}
-	return nil, nil, errors.New("could not find valid cipher")
+	return nil, "", nil, errors.New("could not find valid cipher")
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
-func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
+func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
 	defer c.Close()
 
 	nm := newNATmap(config.UDPTimeout)
@@ -61,35 +64,41 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
 	textBuf := make([]byte, udpBufSize)
 
 	for {
-		func() {
+		func() (connError *connectionError) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("ERROR Panic in UDP loop: %v", r)
 				}
 			}()
-			n, raddr, err := c.ReadFrom(cipherBuf)
+			keyID := ""
+			var clientProxyBytes, proxyTargetBytes int
+			defer func() {
+				status := "OK"
+				if connError != nil {
+					log.Printf("ERROR [UDP]: %v: %v", connError.message, connError.cause)
+					status = connError.status
+				}
+				m.AddClientUDPPacket(keyID, status, clientProxyBytes, proxyTargetBytes)
+			}()
+			clientProxyBytes, raddr, err := c.ReadFrom(cipherBuf)
 			if err != nil {
-				log.Printf("UDP remote read error: %v", err)
-				return
+				return &connectionError{"ERR_READ", "Failed to read incoming packet", err}
 			}
 			defer log.Printf("UDP done with %v", raddr.String())
-			log.Printf("Request from %v with %v bytes", raddr, n)
-			buf, cipher, err := unpack(textBuf, cipherBuf[:n], ciphers)
+			log.Printf("Request from %v with %v bytes", raddr, clientProxyBytes)
+			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], ciphers)
 			if err != nil {
-				log.Printf("UDP remote unpack error: %v", err)
-				return
+				return &connectionError{"ERR_CIPHER", "Failed to upack", err}
 			}
 
 			tgtAddr := socks.SplitAddr(buf)
 			if tgtAddr == nil {
-				log.Printf("Failed to split target address from packet: %q", buf)
-				return
+				return &connectionError{"ERR_READ_ADDRESS", "Failed to get target address", nil}
 			}
 
 			tgtUDPAddr, err := net.ResolveUDPAddr("udp", tgtAddr.String())
 			if err != nil {
-				log.Printf("failed to resolve target UDP address: %v", err)
-				return
+				return &connectionError{"ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err}
 			}
 
 			payload := buf[len(tgtAddr):]
@@ -98,19 +107,18 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher) {
 			if pc == nil {
 				pc, err = net.ListenPacket("udp", "")
 				if err != nil {
-					log.Printf("UDP remote listen error: %v", err)
-					return
+					return &connectionError{"ERR_CREATE_SOCKET", "Failed to create UDP socket", err}
 				}
-
+				// TODO: Add metrics for UDP traffic from target
 				nm.Add(raddr, shadowaead.NewPacketConn(c, cipher), pc, remoteServer)
 			}
 			log.Printf("DEBUG UDP Nat: client %v <-> proxy exit %v", raddr, pc.LocalAddr())
 
-			_, err = pc.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
+			proxyTargetBytes, err = pc.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
-				log.Printf("UDP remote write error: %v", err)
-				return
+				return &connectionError{"ERR_WRITE", "Failed to write to target", err}
 			}
+			return nil
 		}()
 	}
 }
