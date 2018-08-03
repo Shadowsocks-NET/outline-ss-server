@@ -268,6 +268,7 @@ func (s *SSServer) loadConfig(filename string) error {
 	for portNum, keys := range portKeys {
 		s.ports[portNum].keys = keys
 	}
+	log.Printf("INFO Loaded %v access keys", len(config.Keys))
 	return nil
 }
 
@@ -317,6 +318,8 @@ func main() {
 	}
 	flag.StringVar(&flags.ConfigFile, "config", "", "config filename")
 	flag.StringVar(&flags.MetricsAddr, "metrics", "", "address for the Prometheus metrics")
+	flag.DurationVar(&config.UDPTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
+
 	flag.Parse()
 
 	if flags.ConfigFile == "" {
