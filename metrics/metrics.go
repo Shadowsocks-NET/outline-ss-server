@@ -24,13 +24,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// TCPMetrics registers metrics for TCP connections.
-type TCPMetrics interface {
+// ShadowsocksMetrics registers metrics for the Shadowsocks service.
+type ShadowsocksMetrics interface {
+	SetNumAccessKeys(numKeys int, numPorts int)
 	AddOpenTCPConnection()
 	AddClosedTCPConnection(accessKey, status string, data ProxyMetrics, duration time.Duration)
 }
 
-type prometheusTCPMetrics struct {
+type shadowsocksMetrics struct {
+	accessKeys           prometheus.Gauge
+	ports                prometheus.Gauge
 	tcpOpenConnections   prometheus.Counter
 	tcpClosedConnections *prometheus.CounterVec
 
@@ -44,8 +47,18 @@ type prometheusTCPMetrics struct {
 	tcpConnectionDurationMs *prometheus.SummaryVec
 }
 
-func NewPrometheusTCPMetrics() TCPMetrics {
-	m := &prometheusTCPMetrics{
+func NewShadowsocksMetrics() ShadowsocksMetrics {
+	m := &shadowsocksMetrics{
+		accessKeys: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "shadowsocks",
+			Name:      "keys",
+			Help:      "Count of access keys",
+		}),
+		ports: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "shadowsocks",
+			Name:      "ports",
+			Help:      "Count of open Shadowsocks ports",
+		}),
 		tcpOpenConnections: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "shadowsocks",
 			Subsystem: "tcp",
@@ -96,15 +109,21 @@ func NewPrometheusTCPMetrics() TCPMetrics {
 			}, []string{"access_key", "status"}),
 	}
 	// TODO: Is it possible to pass where to register the collectors?
-	prometheus.MustRegister(m.tcpOpenConnections, m.tcpClosedConnections, m.tcpDataClientProxyBytes,
+	prometheus.MustRegister(m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpClosedConnections, m.tcpDataClientProxyBytes,
 		m.tcpDataProxyTargetBytes, m.tcpDataTargetProxyBytes, m.tcpDataProxyClientBytes, m.tcpConnectionDurationMs)
 	return m
 }
 
-func (m *prometheusTCPMetrics) AddOpenTCPConnection() {
+func (m *shadowsocksMetrics) SetNumAccessKeys(numKeys int, ports int) {
+	m.accessKeys.Set(float64(numKeys))
+	m.ports.Set(float64(ports))
+}
+
+func (m *shadowsocksMetrics) AddOpenTCPConnection() {
 	m.tcpOpenConnections.Inc()
 }
-func (m *prometheusTCPMetrics) AddClosedTCPConnection(accessKey, status string, data ProxyMetrics, duration time.Duration) {
+
+func (m *shadowsocksMetrics) AddClosedTCPConnection(accessKey, status string, data ProxyMetrics, duration time.Duration) {
 	m.tcpClosedConnections.WithLabelValues(accessKey, status).Inc()
 	m.tcpDataClientProxyBytes.WithLabelValues(accessKey, status).Add(float64(data.ClientProxy))
 	m.tcpDataProxyTargetBytes.WithLabelValues(accessKey, status).Add(float64(data.ProxyTarget))

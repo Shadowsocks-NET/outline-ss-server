@@ -45,7 +45,7 @@ var config struct {
 }
 
 type SSPort struct {
-	m                metrics.TCPMetrics
+	m                metrics.ShadowsocksMetrics
 	accessKeyMetrics *metrics.MetricsMap
 	netMetrics       *metrics.MetricsMap
 	listener         *net.TCPListener
@@ -190,7 +190,7 @@ func (port *SSPort) run() {
 }
 
 type SSServer struct {
-	m                metrics.TCPMetrics
+	m                metrics.ShadowsocksMetrics
 	accessKeyMetrics *metrics.MetricsMap
 	netMetrics       *metrics.MetricsMap
 	ports            map[int]*SSPort
@@ -274,11 +274,12 @@ func (s *SSServer) loadConfig(filename string) error {
 		s.ports[portNum].keys = keys
 	}
 	log.Printf("INFO Loaded %v access keys", len(config.Keys))
+	s.m.SetNumAccessKeys(len(config.Keys), len(portKeys))
 	return nil
 }
 
 func runSSServer(filename string) error {
-	server := &SSServer{m: metrics.NewPrometheusTCPMetrics(), accessKeyMetrics: metrics.NewMetricsMap(),
+	server := &SSServer{m: metrics.NewShadowsocksMetrics(), accessKeyMetrics: metrics.NewMetricsMap(),
 		netMetrics: metrics.NewMetricsMap(), ports: make(map[int]*SSPort)}
 	err := server.loadConfig(filename)
 	if err != nil {
