@@ -44,7 +44,7 @@ func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, stri
 			continue
 		}
 		log.Printf("Selected UDP cipher %v", id)
-		return buf, "", cipher, nil
+		return buf, id, cipher, nil
 	}
 	return nil, "", nil, errors.New("could not find valid cipher")
 }
