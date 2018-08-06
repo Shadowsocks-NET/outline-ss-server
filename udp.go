@@ -31,12 +31,6 @@ import (
 
 type mode int
 
-const (
-	remoteServer mode = iota
-	relayClient
-	socksClient
-)
-
 const udpBufSize = 64 * 1024
 
 // upack decripts src into dst. It tries each cipher until it finds one that authenticates
@@ -56,8 +50,8 @@ func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, stri
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
-func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
-	defer c.Close()
+func udpRemote(clientConn net.PacketConn, ciphers map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
+	defer clientConn.Close()
 
 	nm := newNATmap(config.UDPTimeout)
 	cipherBuf := make([]byte, udpBufSize)
@@ -80,15 +74,15 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher, m metrics
 				}
 				m.AddClientUDPPacket(keyID, status, clientProxyBytes, proxyTargetBytes)
 			}()
-			clientProxyBytes, raddr, err := c.ReadFrom(cipherBuf)
+			clientProxyBytes, clientAddr, err := clientConn.ReadFrom(cipherBuf)
 			if err != nil {
-				return &connectionError{"ERR_READ", "Failed to read incoming packet", err}
+				return &connectionError{"ERR_READ", "Failed to read from client", err}
 			}
-			defer log.Printf("UDP done with %v", raddr.String())
-			log.Printf("Request from %v with %v bytes", raddr, clientProxyBytes)
+			defer log.Printf("UDP done with %v", clientAddr.String())
+			log.Printf("Request from %v with %v bytes", clientAddr, clientProxyBytes)
 			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], ciphers)
 			if err != nil {
-				return &connectionError{"ERR_CIPHER", "Failed to upack", err}
+				return &connectionError{"ERR_CIPHER", "Failed to upack data from client", err}
 			}
 
 			tgtAddr := socks.SplitAddr(buf)
@@ -103,18 +97,18 @@ func udpRemote(c net.PacketConn, ciphers map[string]shadowaead.Cipher, m metrics
 
 			payload := buf[len(tgtAddr):]
 
-			pc := nm.Get(raddr.String())
-			if pc == nil {
-				pc, err = net.ListenPacket("udp", "")
+			targetConn := nm.Get(clientAddr.String())
+			if targetConn == nil {
+				targetConn, err = net.ListenPacket("udp", "")
 				if err != nil {
 					return &connectionError{"ERR_CREATE_SOCKET", "Failed to create UDP socket", err}
 				}
 				// TODO: Add metrics for UDP traffic from target
-				nm.Add(raddr, shadowaead.NewPacketConn(c, cipher), pc, remoteServer)
+				nm.Add(clientAddr, clientConn, cipher, targetConn, keyID, m)
 			}
-			log.Printf("DEBUG UDP Nat: client %v <-> proxy exit %v", raddr, pc.LocalAddr())
+			log.Printf("DEBUG UDP Nat: client %v <-> proxy exit %v", clientAddr, targetConn.LocalAddr())
 
-			proxyTargetBytes, err = pc.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
+			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
 				return &connectionError{"ERR_WRITE", "Failed to write to target", err}
 			}
@@ -162,44 +156,60 @@ func (m *natmap) Del(key string) net.PacketConn {
 	return nil
 }
 
-func (m *natmap) Add(peer net.Addr, dst, src net.PacketConn, role mode) {
-	m.Set(peer.String(), src)
+func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, keyID string, sm metrics.ShadowsocksMetrics) {
+	m.Set(clientAddr.String(), targetConn)
 
 	go func() {
-		timedCopy(dst, peer, src, m.timeout, role)
-		if pc := m.Del(peer.String()); pc != nil {
+		timedCopy(clientAddr, clientConn, cipher, targetConn, m.timeout, keyID, sm)
+		if pc := m.Del(clientAddr.String()); pc != nil {
 			pc.Close()
 		}
 	}()
 }
 
 // copy from src to dst at target with read timeout
-func timedCopy(dst net.PacketConn, target net.Addr, src net.PacketConn, timeout time.Duration, role mode) error {
-	buf := make([]byte, udpBufSize)
+func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn,
+	timeout time.Duration, keyID string, m metrics.ShadowsocksMetrics) error {
+	textBuf := make([]byte, udpBufSize)
+	cipherBuf := make([]byte, udpBufSize)
 
 	for {
-		src.SetReadDeadline(time.Now().Add(timeout))
-		n, raddr, err := src.ReadFrom(buf)
-		if err != nil {
-			return err
-		}
+		func() (connError *connectionError) {
+			var targetProxyBytes, proxyClientBytes int
+			defer func() {
+				status := "OK"
+				if connError != nil {
+					log.Printf("ERROR [UDP]: %v: %v", connError.message, connError.cause)
+					status = connError.status
+				}
+				m.AddTargetUDPPacket(keyID, status, targetProxyBytes, proxyClientBytes)
+			}()
+			targetConn.SetReadDeadline(time.Now().Add(timeout))
+			targetProxyBytes, raddr, err := targetConn.ReadFrom(textBuf)
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok {
+					if netErr.Timeout() {
+						return nil
+					}
+				}
+				return &connectionError{"ERR_READ", "Failed to read from target", err}
+			}
 
-		switch role {
-		case remoteServer: // server -> client: add original packet source
 			srcAddr := socks.ParseAddr(raddr.String())
-			log.Printf("DEBUG UDP response from %v to %v", srcAddr, target)
-			copy(buf[len(srcAddr):], buf[:n])
-			copy(buf, srcAddr)
-			_, err = dst.WriteTo(buf[:len(srcAddr)+n], target)
-		case relayClient: // client -> user: strip original packet source
-			srcAddr := socks.SplitAddr(buf[:n])
-			_, err = dst.WriteTo(buf[len(srcAddr):n], target)
-		case socksClient: // client -> socks5 program: just set RSV and FRAG = 0
-			_, err = dst.WriteTo(append([]byte{0, 0, 0}, buf[:n]...), target)
-		}
+			log.Printf("DEBUG UDP response from %v to %v", srcAddr, clientAddr)
+			// Shift data buffer to prepend with srcAddr.
+			copy(textBuf[len(srcAddr):], textBuf[:targetProxyBytes])
+			copy(textBuf, srcAddr)
 
-		if err != nil {
-			return err
-		}
+			buf, err := shadowaead.Pack(cipherBuf, textBuf[:len(srcAddr)+targetProxyBytes], cipher)
+			if err != nil {
+				return &connectionError{"ERR_PACK", "Failed to pack data to client", err}
+			}
+			proxyClientBytes, err = clientConn.WriteTo(buf, clientAddr)
+			if err != nil {
+				return &connectionError{"ERR_WRITE", "Failed to write to client", err}
+			}
+			return nil
+		}()
 	}
 }
