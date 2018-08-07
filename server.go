@@ -34,7 +34,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shadowsocks/go-shadowsocks2/core"
-	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 	"gopkg.in/yaml.v2"
@@ -82,7 +81,7 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 		// read so far.
 		ssr := shadowaead.NewShadowsocksReader(io.MultiReader(&buffer, clientConn), cipher)
 		ssw := shadowaead.NewShadowsocksWriter(clientConn, cipher)
-		return id, ssnet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
+		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
 	}
 	return "", nil, fmt.Errorf("could not find valid key")
 }
