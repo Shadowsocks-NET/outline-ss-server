@@ -215,6 +215,9 @@ func (s *SSServer) loadConfig(filename string) error {
 		}
 		cipher, err := core.PickCipher(keyConfig.Cipher, nil, keyConfig.Secret)
 		if err != nil {
+			if err == core.ErrCipherNotSupported {
+				return fmt.Errorf("Cipher %v for key %v is not supported", keyConfig.Cipher, keyConfig.ID)
+			}
 			return fmt.Errorf("Failed to create cipher for key %v: %v", keyConfig.ID, err)
 		}
 		aead, ok := cipher.(shadowaead.Cipher)
