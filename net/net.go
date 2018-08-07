@@ -44,13 +44,13 @@ func (dc *duplexConnAdaptor) CloseWrite() error {
 
 // WrapDuplexConn wraps an existing DuplexConn with new Reader and Writer, but
 // preseving the original CloseRead() and CloseWrite().
-func WrapConn(c net.Conn, r io.Reader, w io.Writer) net.Conn {
+func WrapConn(c DuplexConn, r io.Reader, w io.Writer) DuplexConn {
 	conn := c
 	// We special-case duplexConnAdaptor to avoid multiple levels of nesting.
 	if a, ok := c.(*duplexConnAdaptor); ok {
 		conn = a.DuplexConn
 	}
-	return &duplexConnAdaptor{DuplexConn: conn.(DuplexConn), r: r, w: w}
+	return &duplexConnAdaptor{DuplexConn: conn, r: r, w: w}
 }
 
 func copyOneWay(leftConn, rightConn DuplexConn) (int64, error) {

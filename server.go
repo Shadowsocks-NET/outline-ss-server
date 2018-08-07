@@ -54,7 +54,9 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 		return "", nil, errors.New("Empty cipher list")
 	} else if len(cipherList) == 1 {
 		for id, cipher := range cipherList {
-			return id, shadowaead.NewConn(clientConn, cipher).(onet.DuplexConn), nil
+			reader := shadowaead.NewShadowsocksReader(clientConn, cipher)
+			writer := shadowaead.NewShadowsocksWriter(clientConn, cipher)
+			return id, onet.WrapConn(clientConn, reader, writer), nil
 		}
 	}
 	// buffer saves the bytes read from shadowConn, in order to allow for replays.
