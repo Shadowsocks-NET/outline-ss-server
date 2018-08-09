@@ -138,14 +138,14 @@ func (m *natmap) Get(key string) net.PacketConn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) Set(key string, pc net.PacketConn) {
+func (m *natmap) set(key string, pc net.PacketConn) {
 	m.Lock()
 	defer m.Unlock()
 
 	m.keyConn[key] = pc
 }
 
-func (m *natmap) Del(key string) net.PacketConn {
+func (m *natmap) del(key string) net.PacketConn {
 	m.Lock()
 	defer m.Unlock()
 
@@ -158,13 +158,13 @@ func (m *natmap) Del(key string) net.PacketConn {
 }
 
 func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, keyID string) {
-	m.Set(clientAddr.String(), targetConn)
+	m.set(clientAddr.String(), targetConn)
 
 	m.metrics.AddUdpNatEntry()
 	go func() {
 		timedCopy(clientAddr, clientConn, cipher, targetConn, m.timeout, keyID, m.metrics)
 		m.metrics.RemoveUdpNatEntry()
-		if pc := m.Del(clientAddr.String()); pc != nil {
+		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
 		}
 	}()
