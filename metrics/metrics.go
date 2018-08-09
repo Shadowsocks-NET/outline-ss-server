@@ -29,6 +29,9 @@ type ShadowsocksMetrics interface {
 	AddTargetUDPPacket(accessKey, status string, targetProxyBytes, proxyClientBytes int)
 	AddOpenTCPConnection()
 	AddClosedTCPConnection(accessKey, status string, data ProxyMetrics, duration time.Duration)
+
+	AddUdpNatEntry()
+	RemoveUdpNatEntry()
 }
 
 type shadowsocksMetrics struct {
@@ -42,6 +45,9 @@ type shadowsocksMetrics struct {
 	// TODO: Add per network/location metrics.
 	// TODO: Add time to first byte.
 	dataBytes *prometheus.CounterVec
+
+	udpAddedNatEntries   prometheus.Counter
+	udpRemovedNatEntries prometheus.Counter
 }
 
 func NewShadowsocksMetrics() ShadowsocksMetrics {
@@ -59,13 +65,13 @@ func NewShadowsocksMetrics() ShadowsocksMetrics {
 		tcpOpenConnections: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "shadowsocks",
 			Subsystem: "tcp",
-			Name:      "open_connections",
+			Name:      "connections_opened",
 			Help:      "Count of open TCP connections",
 		}),
 		tcpClosedConnections: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "shadowsocks",
 			Subsystem: "tcp",
-			Name:      "closed_connections",
+			Name:      "connections_closed",
 			Help:      "Count of closed TCP connections",
 		}, []string{"status", "access_key"}),
 		tcpConnectionDurationMs: prometheus.NewSummaryVec(
@@ -80,12 +86,26 @@ func NewShadowsocksMetrics() ShadowsocksMetrics {
 			prometheus.CounterOpts{
 				Namespace: "shadowsocks",
 				Name:      "data_bytes",
-				Help:      "Bytes tranferred from client to proxy.",
+				Help:      "Bytes tranferred by the proxy",
 			}, []string{"dir", "proto", "status", "access_key"}),
+		udpAddedNatEntries: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "udp",
+				Name:      "nat_entries_added",
+				Help:      "Entries added to the UDP NAT table",
+			}),
+		udpRemovedNatEntries: prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: "shadowsocks",
+				Subsystem: "udp",
+				Name:      "nat_entries_removed",
+				Help:      "Entries removed from the UDP NAT table",
+			}),
 	}
 	// TODO: Is it possible to pass where to register the collectors?
 	prometheus.MustRegister(m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpClosedConnections, m.tcpConnectionDurationMs,
-		m.dataBytes)
+		m.dataBytes, m.udpAddedNatEntries, m.udpRemovedNatEntries)
 	return m
 }
 
@@ -115,6 +135,14 @@ func (m *shadowsocksMetrics) AddClientUDPPacket(accessKey, status string, client
 func (m *shadowsocksMetrics) AddTargetUDPPacket(accessKey, status string, targetProxyBytes, proxyClientBytes int) {
 	m.dataBytes.WithLabelValues("p<t", "udp", status, accessKey).Add(float64(targetProxyBytes))
 	m.dataBytes.WithLabelValues("c<p", "udp", status, accessKey).Add(float64(proxyClientBytes))
+}
+
+func (m *shadowsocksMetrics) AddUdpNatEntry() {
+	m.udpAddedNatEntries.Inc()
+}
+
+func (m *shadowsocksMetrics) RemoveUdpNatEntry() {
+	m.udpRemovedNatEntries.Inc()
 }
 
 type ProxyMetrics struct {

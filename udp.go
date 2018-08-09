@@ -53,7 +53,7 @@ func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, stri
 func udpRemote(clientConn net.PacketConn, ciphers map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
 	defer clientConn.Close()
 
-	nm := newNATmap(config.UDPTimeout)
+	nm := newNATmap(config.UDPTimeout, m)
 	cipherBuf := make([]byte, udpBufSize)
 	textBuf := make([]byte, udpBufSize)
 
@@ -104,7 +104,7 @@ func udpRemote(clientConn net.PacketConn, ciphers map[string]shadowaead.Cipher, 
 					return &connectionError{"ERR_CREATE_SOCKET", "Failed to create UDP socket", err}
 				}
 				// TODO: Add metrics for UDP traffic from target
-				nm.Add(clientAddr, clientConn, cipher, targetConn, keyID, m)
+				nm.Add(clientAddr, clientConn, cipher, targetConn, keyID)
 			}
 			log.Printf("DEBUG UDP Nat: client %v <-> proxy exit %v", clientAddr, targetConn.LocalAddr())
 
@@ -120,13 +120,14 @@ func udpRemote(clientConn net.PacketConn, ciphers map[string]shadowaead.Cipher, 
 // Packet NAT table
 type natmap struct {
 	sync.RWMutex
-	m       map[string]net.PacketConn
+	keyConn map[string]net.PacketConn
 	timeout time.Duration
+	metrics metrics.ShadowsocksMetrics
 }
 
-func newNATmap(timeout time.Duration) *natmap {
-	m := &natmap{}
-	m.m = make(map[string]net.PacketConn)
+func newNATmap(timeout time.Duration, sm metrics.ShadowsocksMetrics) *natmap {
+	m := &natmap{metrics: sm}
+	m.keyConn = make(map[string]net.PacketConn)
 	m.timeout = timeout
 	return m
 }
@@ -134,33 +135,35 @@ func newNATmap(timeout time.Duration) *natmap {
 func (m *natmap) Get(key string) net.PacketConn {
 	m.RLock()
 	defer m.RUnlock()
-	return m.m[key]
+	return m.keyConn[key]
 }
 
 func (m *natmap) Set(key string, pc net.PacketConn) {
 	m.Lock()
 	defer m.Unlock()
 
-	m.m[key] = pc
+	m.keyConn[key] = pc
 }
 
 func (m *natmap) Del(key string) net.PacketConn {
 	m.Lock()
 	defer m.Unlock()
 
-	pc, ok := m.m[key]
+	pc, ok := m.keyConn[key]
 	if ok {
-		delete(m.m, key)
+		delete(m.keyConn, key)
 		return pc
 	}
 	return nil
 }
 
-func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, keyID string, sm metrics.ShadowsocksMetrics) {
+func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, keyID string) {
 	m.Set(clientAddr.String(), targetConn)
 
+	m.metrics.AddUdpNatEntry()
 	go func() {
-		timedCopy(clientAddr, clientConn, cipher, targetConn, m.timeout, keyID, sm)
+		timedCopy(clientAddr, clientConn, cipher, targetConn, m.timeout, keyID, m.metrics)
+		m.metrics.RemoveUdpNatEntry()
 		if pc := m.Del(clientAddr.String()); pc != nil {
 			pc.Close()
 		}
@@ -169,12 +172,12 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 
 // copy from src to dst at target with read timeout
 func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn,
-	timeout time.Duration, keyID string, m metrics.ShadowsocksMetrics) error {
+	timeout time.Duration, keyID string, sm metrics.ShadowsocksMetrics) {
 	textBuf := make([]byte, udpBufSize)
 	cipherBuf := make([]byte, udpBufSize)
 
 	for {
-		func() (connError *connectionError) {
+		err := func() (connError *connectionError) {
 			var targetProxyBytes, proxyClientBytes int
 			defer func() {
 				status := "OK"
@@ -182,7 +185,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 					log.Printf("ERROR [UDP]: %v: %v", connError.message, connError.cause)
 					status = connError.status
 				}
-				m.AddTargetUDPPacket(keyID, status, targetProxyBytes, proxyClientBytes)
+				sm.AddTargetUDPPacket(keyID, status, targetProxyBytes, proxyClientBytes)
 			}()
 			targetConn.SetReadDeadline(time.Now().Add(timeout))
 			targetProxyBytes, raddr, err := targetConn.ReadFrom(textBuf)
@@ -211,5 +214,8 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			}
 			return nil
 		}()
+		if err == nil {
+			break
+		}
 	}
 }
