@@ -50,7 +50,8 @@ func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, stri
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
-func udpRemote(clientConn net.PacketConn, ciphers map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
+// We take the ciphers as a pointer because it gets replaced on config updates.
+func udpRemote(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
 	defer clientConn.Close()
 
 	nm := newNATmap(config.UDPTimeout, m)
@@ -78,9 +79,9 @@ func udpRemote(clientConn net.PacketConn, ciphers map[string]shadowaead.Cipher, 
 			if err != nil {
 				return &connectionError{"ERR_READ", "Failed to read from client", err}
 			}
-			defer log.Printf("UDP done with %v", clientAddr.String())
-			log.Printf("Request from %v with %v bytes", clientAddr, clientProxyBytes)
-			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], ciphers)
+			defer log.Printf("DEBUG UDP done with %v", clientAddr.String())
+			log.Printf("DEBUG UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
+			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], *ciphers)
 			if err != nil {
 				return &connectionError{"ERR_CIPHER", "Failed to upack data from client", err}
 			}
