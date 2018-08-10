@@ -176,22 +176,16 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 	textBuf := make([]byte, udpBufSize)
 	cipherBuf := make([]byte, udpBufSize)
 
-	for {
-		err := func() (connError *connectionError) {
-			var targetProxyBytes, proxyClientBytes int
-			defer func() {
-				status := "OK"
-				if connError != nil {
-					log.Printf("ERROR [UDP]: %v: %v", connError.message, connError.cause)
-					status = connError.status
-				}
-				sm.AddTargetUDPPacket(keyID, status, targetProxyBytes, proxyClientBytes)
-			}()
+	expired := false
+	for !expired {
+		var targetProxyBytes, proxyClientBytes int
+		connError := func() (connError *connectionError) {
 			targetConn.SetReadDeadline(time.Now().Add(timeout))
 			targetProxyBytes, raddr, err := targetConn.ReadFrom(textBuf)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok {
 					if netErr.Timeout() {
+						expired = true
 						return nil
 					}
 				}
@@ -214,8 +208,11 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			}
 			return nil
 		}()
-		if err == nil {
-			break
+		status := "OK"
+		if connError != nil {
+			log.Printf("ERROR [UDP]: %v: %v", connError.message, connError.cause)
+			status = connError.status
 		}
+		sm.AddTargetUDPPacket(keyID, status, targetProxyBytes, proxyClientBytes)
 	}
 }
