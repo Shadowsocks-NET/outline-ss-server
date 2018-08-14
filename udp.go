@@ -51,7 +51,7 @@ func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, stri
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
 // We take the ciphers as a pointer because it gets replaced on config updates.
-func udpRemote(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
+func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
 	defer clientConn.Close()
 
 	nm := newNATmap(config.UDPTimeout, m)
