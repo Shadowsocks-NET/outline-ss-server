@@ -73,7 +73,7 @@ func udpRemote(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cipher,
 					log.Printf("ERROR [UDP]: %v: %v", connError.message, connError.cause)
 					status = connError.status
 				}
-				m.AddClientUDPPacket(keyID, status, clientProxyBytes, proxyTargetBytes)
+				m.AddUDPPacketFromClient(keyID, status, clientProxyBytes, proxyTargetBytes)
 			}()
 			clientProxyBytes, clientAddr, err := clientConn.ReadFrom(cipherBuf)
 			if err != nil {
@@ -214,6 +214,6 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			log.Printf("ERROR [UDP]: %v: %v", connError.message, connError.cause)
 			status = connError.status
 		}
-		sm.AddTargetUDPPacket(keyID, status, targetProxyBytes, proxyClientBytes)
+		sm.AddUDPPacketFromTarget(keyID, status, targetProxyBytes, proxyClientBytes)
 	}
 }

@@ -31,7 +31,7 @@ import (
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-
+	"github.com/oschwald/geoip2-golang"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
@@ -251,8 +251,8 @@ func (s *SSServer) loadConfig(filename string) error {
 	return nil
 }
 
-func runSSServer(filename string) error {
-	server := &SSServer{m: metrics.NewShadowsocksMetrics(), ports: make(map[int]*SSPort)}
+func runSSServer(filename string, sm metrics.ShadowsocksMetrics) error {
+	server := &SSServer{m: sm, ports: make(map[int]*SSPort)}
 	err := server.loadConfig(filename)
 	if err != nil {
 		return fmt.Errorf("Failed to load config file %v: %v", filename, err)
@@ -293,9 +293,11 @@ func main() {
 	var flags struct {
 		ConfigFile  string
 		MetricsAddr string
+		GeoIPPath   string
 	}
 	flag.StringVar(&flags.ConfigFile, "config", "", "config filename")
 	flag.StringVar(&flags.MetricsAddr, "metrics", "", "address for the Prometheus metrics")
+	flag.StringVar(&flags.GeoIPPath, "geoip", "", "Path to the GeoLite2-Country.mmdb file")
 	flag.DurationVar(&config.UDPTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
 
 	flag.Parse()
@@ -313,7 +315,15 @@ func main() {
 		log.Printf("Metrics on http://%v/metrics", flags.MetricsAddr)
 	}
 
-	err := runSSServer(flags.ConfigFile)
+	var geodb *geoip2.Reader
+	if flags.GeoIPPath != "" {
+		geodb, err := geoip2.Open(flags.GeoIPPath)
+		if err != nil {
+			log.Fatalf("Could not open geoip database at %v: %v", flags.GeoIPPath, err)
+		}
+		defer geodb.Close()
+	}
+	err := runSSServer(flags.ConfigFile, metrics.NewShadowsocksMetrics(geodb))
 	if err != nil {
 		log.Fatal(err)
 	}
