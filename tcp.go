@@ -108,22 +108,28 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 				return &connectionError{"ERR_CIPHER", "Failed to find a valid cipher", err}
 			}
 
-			tgt, err := socks.ReadAddr(clientConn)
+			tgtAddr, err := socks.ReadAddr(clientConn)
 			if err != nil {
 				return &connectionError{"ERR_READ_ADDRESS", "Failed to get target address", err}
 			}
+			tgtTCPAddr, err := net.ResolveTCPAddr("tcp", tgtAddr.String())
+			if err != nil {
+				return &connectionError{"ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err}
+			}
+			if !tgtTCPAddr.IP.IsGlobalUnicast() {
+				return &connectionError{"ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err}
+			}
 
-			c, err := net.Dial("tcp", tgt.String())
+			tgtTCPConn, err := net.DialTCP("tcp", nil, tgtTCPAddr)
 			if err != nil {
 				return &connectionError{"ERR_CONNECT", "Failed to connect to target", err}
 			}
-			var tgtConn onet.DuplexConn = c.(*net.TCPConn)
-			defer tgtConn.Close()
-			tgtConn.(*net.TCPConn).SetKeepAlive(true)
-			tgtConn = metrics.MeasureConn(tgtConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy)
+			defer tgtTCPConn.Close()
+			tgtTCPConn.SetKeepAlive(true)
+			tgtConn := metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy)
 
 			// TODO: Disable logging in production. This is sensitive.
-			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
+			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgtConn)
 			_, _, err = onet.Relay(clientConn, tgtConn)
 			if err != nil {
 				return &connectionError{"ERR_RELAY", "Failed to relay traffic", err}

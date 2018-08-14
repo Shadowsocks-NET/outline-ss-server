@@ -95,6 +95,9 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 			if err != nil {
 				return &connectionError{"ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err}
 			}
+			if !tgtUDPAddr.IP.IsGlobalUnicast() {
+				return &connectionError{"ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err}
+			}
 
 			payload := buf[len(tgtAddr):]
 
