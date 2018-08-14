@@ -129,7 +129,7 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 			tgtConn := metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy)
 
 			// TODO: Disable logging in production. This is sensitive.
-			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgtConn)
+			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr().String(), tgtConn)
 			_, _, err = onet.Relay(clientConn, tgtConn)
 			if err != nil {
 				return &connectionError{"ERR_RELAY", "Failed to relay traffic", err}
