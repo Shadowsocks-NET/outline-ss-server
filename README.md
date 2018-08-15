@@ -1,15 +1,16 @@
 # Outline ss-server
 
-This repository shows how to implement a custom Shadowsocks server using a [modified version](https://github.com/fortuna/go-shadowsocks2/pull/1) of [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2).
+This repository has the Shadowsocks service soon to be used by Outline servers. It's based on a [modified version](https://github.com/shadowsocks/go-shadowsocks2/pull/100) of [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2), with a number of improvements to meet the needs of the Outline users.
 
-This custom server allows for:
+The Outline version of the go-shaowsocks2 service allows for:
 - Multiple users on a single port.
   - Does so by trying all the different credentials until one succeeds.
 - Multiple ports
 - Whitebox monitoring of the service using [prometheus.io](https://prometheus.io)
-  - Includes traffic measurements.
+  - Includes traffic measurements and other health indicators.
 - Live updates via config change + SIGHUP
 
+![Graphana Dashboard](https://user-images.githubusercontent.com/113565/44177062-419d7700-a0ba-11e8-9621-db519692ff6c.png "Graphana Dashboard")
 
 ## Try it!
 
