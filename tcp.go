@@ -40,18 +40,17 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 			return id, onet.WrapConn(clientConn, reader, writer), nil
 		}
 	}
-	// buffer saves the bytes read from shadowConn, in order to allow for replays.
-	var buffer bytes.Buffer
+	// replayBuffer saves the bytes read from shadowConn, in order to allow for replays.
+	var replayBuffer bytes.Buffer
 	// Try each cipher until we find one that authenticates successfully.
 	// This assumes that all ciphers are AEAD.
 	// TODO: Reorder list to try previously successful ciphers first for the client IP.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
 	for id, cipher := range cipherList {
 		log.Printf("Trying key %v", id)
-		// tmpReader reuses the bytes read so far, falling back to shadowConn if it needs more
-		// bytes. All bytes read from shadowConn are saved in buffer.
-		tmpReader := io.MultiReader(bytes.NewReader(buffer.Bytes()), io.TeeReader(clientConn, &buffer))
-		// Override the Reader of shadowConn so we can reset it for each cipher test.
+		// tmpReader reads first from the replayBuffer and then from clientConn if it needs more
+		// bytes. All bytes read from clientConn are saved in replayBuffer for future replays.
+		tmpReader := io.MultiReader(bytes.NewReader(replayBuffer.Bytes()), io.TeeReader(clientConn, &replayBuffer))
 		cipherReader := shadowaead.NewShadowsocksReader(tmpReader, cipher)
 		// Read should read just enough data to authenticate the payload size.
 		_, err := cipherReader.Read(make([]byte, 0))
@@ -60,9 +59,9 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 			continue
 		}
 		log.Printf("Selected key %v", id)
-		// We don't need to replay the bytes anymore, but we don't want to drop those
-		// read so far.
-		ssr := shadowaead.NewShadowsocksReader(io.MultiReader(&buffer, clientConn), cipher)
+		// We don't need to keep storing and replaying the bytes anymore, but we don't want to drop
+		// those already read into the replayBuffer.
+		ssr := shadowaead.NewShadowsocksReader(io.MultiReader(&replayBuffer, clientConn), cipher)
 		ssw := shadowaead.NewShadowsocksWriter(clientConn, cipher)
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
 	}
