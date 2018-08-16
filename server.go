@@ -18,7 +18,6 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -27,12 +26,20 @@ import (
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
-
+	"github.com/op/go-logging"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"gopkg.in/yaml.v2"
 )
+
+var logger *logging.Logger
+
+func init() {
+	logging.SetFormatter(logging.MustStringFormatter("%{color}%{level:.1s}%{time:0102 15:04:05.999999} %{pid} %{shortfile}]%{color:reset} %{message}"))
+	logging.SetBackend(logging.NewLogBackend(os.Stderr, "", 0))
+	logger = logging.MustGetLogger("")
+}
 
 var config struct {
 	UDPTimeout time.Duration
@@ -72,7 +79,7 @@ func (s *SSServer) startPort(portNum int) error {
 	if err != nil {
 		return fmt.Errorf("ERROR Failed to start UDP on port %v: %v", portNum, err)
 	}
-	log.Printf("INFO Listening TCP and UDP on port %v", portNum)
+	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &SSPort{listener: listener, packetConn: packetConn, keys: make(map[string]shadowaead.Cipher)}
 	s.ports[portNum] = port
 	go port.run(s.m)
@@ -93,7 +100,7 @@ func (s *SSServer) removePort(portNum int) error {
 	if udpErr != nil {
 		return fmt.Errorf("Failed to close packetConn on %v: %v", portNum, udpErr)
 	}
-	log.Printf("INFO Stopped TCP and UDP on port %v", portNum)
+	logger.Infof("Stopped TCP and UDP on port %v", portNum)
 	return nil
 }
 
@@ -142,7 +149,7 @@ func (s *SSServer) loadConfig(filename string) error {
 	for portNum, keys := range portKeys {
 		s.ports[portNum].keys = keys
 	}
-	log.Printf("INFO Loaded %v access keys", len(config.Keys))
+	logger.Infof("Loaded %v access keys", len(config.Keys))
 	s.m.SetNumAccessKeys(len(config.Keys), len(portKeys))
 	return nil
 }
@@ -157,9 +164,9 @@ func runSSServer(filename string) error {
 	signal.Notify(sigHup, syscall.SIGHUP)
 	go func() {
 		for range sigHup {
-			log.Printf("Updating config")
+			logger.Info("Updating config")
 			if err := server.loadConfig(filename); err != nil {
-				log.Printf("ERROR Could not reload config: %v", err)
+				logger.Errorf("Could not reload config: %v", err)
 			}
 		}
 	}()
@@ -189,12 +196,20 @@ func main() {
 	var flags struct {
 		ConfigFile  string
 		MetricsAddr string
+		Verbose     bool
 	}
-	flag.StringVar(&flags.ConfigFile, "config", "", "config filename")
-	flag.StringVar(&flags.MetricsAddr, "metrics", "", "address for the Prometheus metrics")
+	flag.StringVar(&flags.ConfigFile, "config", "", "Configuration filename")
+	flag.StringVar(&flags.MetricsAddr, "metrics", "", "Address for the Prometheus metrics")
 	flag.DurationVar(&config.UDPTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
+	flag.BoolVar(&flags.Verbose, "verbose", false, "Enables verbose logging output")
 
 	flag.Parse()
+
+	if flags.Verbose {
+		logging.SetLevel(logging.DEBUG, "")
+	} else {
+		logging.SetLevel(logging.INFO, "")
+	}
 
 	if flags.ConfigFile == "" {
 		flag.Usage()
@@ -204,14 +219,14 @@ func main() {
 	if flags.MetricsAddr != "" {
 		http.Handle("/metrics", promhttp.Handler())
 		go func() {
-			log.Fatal(http.ListenAndServe(flags.MetricsAddr, nil))
+			logger.Fatal(http.ListenAndServe(flags.MetricsAddr, nil))
 		}()
-		log.Printf("Metrics on http://%v/metrics", flags.MetricsAddr)
+		logger.Infof("Metrics on http://%v/metrics", flags.MetricsAddr)
 	}
 
 	err := runSSServer(flags.ConfigFile)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal(err)
 	}
 
 	sigCh := make(chan os.Signal, 1)
