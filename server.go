@@ -77,7 +77,7 @@ func (s *SSServer) startPort(portNum int) error {
 	}
 	packetConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: portNum})
 	if err != nil {
-		return fmt.Errorf("ERROR Failed to start UDP on port %v: %v", portNum, err)
+		return fmt.Errorf("Failed to start UDP on port %v: %v", portNum, err)
 	}
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &SSPort{listener: listener, packetConn: packetConn, keys: make(map[string]shadowaead.Cipher)}
