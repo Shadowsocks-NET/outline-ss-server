@@ -94,7 +94,7 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 				clientConn.Close()
 				status := "OK"
 				if connError != nil {
-					logger.Errorf("TCP Error: %v: %v", connError.message, connError.cause)
+					logger.Debugf("TCP Error: %v: %v", connError.message, connError.cause)
 					status = connError.status
 				}
 				logger.Debugf("Done with status %v, duration %v", status, connDuration)
