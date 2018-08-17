@@ -36,7 +36,7 @@ import (
 var logger *logging.Logger
 
 func init() {
-	logging.SetFormatter(logging.MustStringFormatter("%{color}%{level:.1s}%{time:0102 15:04:05.999999} %{pid} %{shortfile}]%{color:reset} %{message}"))
+	logging.SetFormatter(logging.MustStringFormatter("%{color}%{level:.1s}%{time:2006-01-02T15:04:05.000Z07:00} %{pid} %{shortfile}]%{color:reset} %{message}"))
 	logging.SetBackend(logging.NewLogBackend(os.Stderr, "", 0))
 	logger = logging.MustGetLogger("")
 }
