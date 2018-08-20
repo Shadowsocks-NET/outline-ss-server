@@ -15,7 +15,9 @@
 package metrics
 
 import (
+	"errors"
 	"io"
+	"net"
 	"time"
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
@@ -25,6 +27,8 @@ import (
 
 // ShadowsocksMetrics registers metrics for the Shadowsocks service.
 type ShadowsocksMetrics interface {
+	GetLocation(net.Addr) (string, error)
+
 	SetNumAccessKeys(numKeys int, numPorts int)
 	AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int)
 	AddUDPPacketFromTarget(clientLocation, accessKey, status string, targetProxyBytes, proxyClientBytes int)
@@ -36,7 +40,7 @@ type ShadowsocksMetrics interface {
 }
 
 type shadowsocksMetrics struct {
-	geodb *geoip2.Reader
+	ipCountryDB *geoip2.Reader
 
 	accessKeys prometheus.Gauge
 	ports      prometheus.Gauge
@@ -52,9 +56,9 @@ type shadowsocksMetrics struct {
 	udpRemovedNatEntries prometheus.Counter
 }
 
-func NewShadowsocksMetrics(geodb *geoip2.Reader) ShadowsocksMetrics {
+func NewShadowsocksMetrics(ipCountryDB *geoip2.Reader) ShadowsocksMetrics {
 	m := &shadowsocksMetrics{
-		geodb: geodb,
+		ipCountryDB: ipCountryDB,
 		accessKeys: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "shadowsocks",
 			Name:      "keys",
@@ -110,6 +114,21 @@ func NewShadowsocksMetrics(geodb *geoip2.Reader) ShadowsocksMetrics {
 	prometheus.MustRegister(m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpClosedConnections, m.tcpConnectionDurationMs,
 		m.dataBytes, m.udpAddedNatEntries, m.udpRemovedNatEntries)
 	return m
+}
+
+func (m *shadowsocksMetrics) GetLocation(addr net.Addr) (string, error) {
+	if m.ipCountryDB == nil {
+		return "", nil
+	}
+	ip := net.ParseIP(addr.String())
+	if ip == nil {
+		return "", errors.New("Failed to parse address as IP")
+	}
+	record, err := m.ipCountryDB.Country(ip)
+	if err != nil {
+		return "", errors.New("Did not find country for IP")
+	}
+	return record.Country.IsoCode, nil
 }
 
 func (m *shadowsocksMetrics) SetNumAccessKeys(numKeys int, ports int) {

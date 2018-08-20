@@ -77,7 +77,11 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 		}
 
 		go func() (connError *connectionError) {
-			clientLocation, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
+			clientLocation, err := m.GetLocation(clientConn.RemoteAddr())
+			if err != nil {
+				logger.Errorf("Failed location lookup: %v", err)
+				clientLocation = "ZZ"
+			}
 			m.AddOpenTCPConnection(clientLocation)
 			defer func() {
 				if r := recover(); r != nil {

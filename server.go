@@ -198,12 +198,12 @@ func main() {
 	var flags struct {
 		ConfigFile  string
 		MetricsAddr string
-		GeoIPPath   string
+		IPCountryDB string
 		Verbose     bool
 	}
 	flag.StringVar(&flags.ConfigFile, "config", "", "Configuration filename")
 	flag.StringVar(&flags.MetricsAddr, "metrics", "", "Address for the Prometheus metrics")
-	flag.StringVar(&flags.GeoIPPath, "geoip", "", "Path to the GeoLite2-Country.mmdb file")
+	flag.StringVar(&flags.IPCountryDB, "ip_country_db", "", "Path to the GeoLite2-Country.mmdb file")
 	flag.DurationVar(&config.UDPTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
 	flag.BoolVar(&flags.Verbose, "verbose", false, "Enables verbose logging output")
 
@@ -228,15 +228,15 @@ func main() {
 		logger.Infof("Metrics on http://%v/metrics", flags.MetricsAddr)
 	}
 
-	var geodb *geoip2.Reader
-	if flags.GeoIPPath != "" {
-		geodb, err := geoip2.Open(flags.GeoIPPath)
+	var ipCountryDB *geoip2.Reader
+	if flags.IPCountryDB != "" {
+		ipCountryDB, err := geoip2.Open(flags.IPCountryDB)
 		if err != nil {
-			log.Fatalf("Could not open geoip database at %v: %v", flags.GeoIPPath, err)
+			log.Fatalf("Could not open geoip database at %v: %v", flags.IPCountryDB, err)
 		}
-		defer geodb.Close()
+		defer ipCountryDB.Close()
 	}
-	err := runSSServer(flags.ConfigFile, metrics.NewShadowsocksMetrics(geodb))
+	err := runSSServer(flags.ConfigFile, metrics.NewShadowsocksMetrics(ipCountryDB))
 	if err != nil {
 		logger.Fatal(err)
 	}
