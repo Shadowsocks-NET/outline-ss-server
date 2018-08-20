@@ -132,6 +132,9 @@ func (m *shadowsocksMetrics) GetLocation(addr net.Addr) (string, error) {
 	if err != nil {
 		return "", errors.New("Did not find country for IP")
 	}
+	if record.Country.IsoCode == "" {
+		return "", errors.New("No ISO code")
+	}
 	return record.Country.IsoCode, nil
 }
 
