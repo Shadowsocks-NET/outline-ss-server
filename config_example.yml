@@ -1,6 +1,3 @@
-metrics:
-  address: localhost:8080
-
 keys:
   - id: user-0
     port: 9000
