@@ -15,11 +15,8 @@
 package main
 
 import (
-	"bytes"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -30,14 +27,21 @@ import (
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
-	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+	"github.com/op/go-logging"
 	"github.com/oschwald/geoip2-golang"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
 	"gopkg.in/yaml.v2"
 )
+
+var logger *logging.Logger
+
+func init() {
+	logging.SetFormatter(logging.MustStringFormatter("%{color}%{level:.1s}%{time:2006-01-02T15:04:05.000Z07:00} %{pid} %{shortfile}]%{color:reset} %{message}"))
+	logging.SetBackend(logging.NewLogBackend(os.Stderr, "", 0))
+	logger = logging.MustGetLogger("")
+}
 
 var config struct {
 	UDPTimeout time.Duration
@@ -47,45 +51,6 @@ type SSPort struct {
 	listener   *net.TCPListener
 	packetConn net.PacketConn
 	keys       map[string]shadowaead.Cipher
-}
-
-func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.Cipher) (string, onet.DuplexConn, error) {
-	if len(cipherList) == 0 {
-		return "", nil, errors.New("Empty cipher list")
-	} else if len(cipherList) == 1 {
-		for id, cipher := range cipherList {
-			reader := shadowaead.NewShadowsocksReader(clientConn, cipher)
-			writer := shadowaead.NewShadowsocksWriter(clientConn, cipher)
-			return id, onet.WrapConn(clientConn, reader, writer), nil
-		}
-	}
-	// buffer saves the bytes read from shadowConn, in order to allow for replays.
-	var buffer bytes.Buffer
-	// Try each cipher until we find one that authenticates successfully.
-	// This assumes that all ciphers are AEAD.
-	// TODO: Reorder list to try previously successful ciphers first for the client IP.
-	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-	for id, cipher := range cipherList {
-		log.Printf("Trying key %v", id)
-		// tmpReader reuses the bytes read so far, falling back to shadowConn if it needs more
-		// bytes. All bytes read from shadowConn are saved in buffer.
-		tmpReader := io.MultiReader(bytes.NewReader(buffer.Bytes()), io.TeeReader(clientConn, &buffer))
-		// Override the Reader of shadowConn so we can reset it for each cipher test.
-		cipherReader := shadowaead.NewShadowsocksReader(tmpReader, cipher)
-		// Read should read just enough data to authenticate the payload size.
-		_, err := cipherReader.Read(make([]byte, 0))
-		if err != nil {
-			log.Printf("Failed key %v: %v", id, err)
-			continue
-		}
-		log.Printf("Selected key %v", id)
-		// We don't need to replay the bytes anymore, but we don't want to drop those
-		// read so far.
-		ssr := shadowaead.NewShadowsocksReader(io.MultiReader(&buffer, clientConn), cipher)
-		ssw := shadowaead.NewShadowsocksWriter(clientConn, cipher)
-		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
-	}
-	return "", nil, fmt.Errorf("could not find valid key")
 }
 
 type connectionError struct {
@@ -98,68 +63,8 @@ type connectionError struct {
 // Listen on addr for incoming connections.
 func (port *SSPort) run(m metrics.ShadowsocksMetrics) {
 	// TODO: Register initial data metrics at zero.
-	go udpRemote(port.packetConn, &port.keys, m)
-	for {
-		var clientConn onet.DuplexConn
-		clientConn, err := port.listener.AcceptTCP()
-		if err != nil {
-			log.Printf("failed to accept: %v", err)
-			continue
-		}
-		m.AddOpenTCPConnection()
-
-		go func() (connError *connectionError) {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("ERROR Panic in TCP handler: %v", r)
-				}
-			}()
-			connStart := time.Now()
-			clientConn.(*net.TCPConn).SetKeepAlive(true)
-			keyID := ""
-			var proxyMetrics metrics.ProxyMetrics
-			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
-			defer func() {
-				connEnd := time.Now()
-				connDuration := connEnd.Sub(connStart)
-				clientConn.Close()
-				status := "OK"
-				if connError != nil {
-					log.Printf("ERROR [TCP] %v: %v", connError.message, connError.cause)
-					status = connError.status
-				}
-				log.Printf("Done with status %v, duration %v", status, connDuration)
-				m.AddClosedTCPConnection(keyID, status, proxyMetrics, connDuration)
-			}()
-
-			keyID, clientConn, err := findAccessKey(clientConn, port.keys)
-			if err != nil {
-				return &connectionError{"ERR_CIPHER", "Failed to find a valid cipher", err}
-			}
-
-			tgt, err := socks.ReadAddr(clientConn)
-			if err != nil {
-				return &connectionError{"ERR_READ_ADDRESS", "Failed to get target address", err}
-			}
-
-			c, err := net.Dial("tcp", tgt.String())
-			if err != nil {
-				return &connectionError{"ERR_CONNECT", "Failed to connect to target", err}
-			}
-			var tgtConn onet.DuplexConn = c.(*net.TCPConn)
-			defer tgtConn.Close()
-			tgtConn.(*net.TCPConn).SetKeepAlive(true)
-			tgtConn = metrics.MeasureConn(tgtConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy)
-
-			// TODO: Disable logging in production. This is sensitive.
-			log.Printf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
-			_, _, err = onet.Relay(clientConn, tgtConn)
-			if err != nil {
-				return &connectionError{"ERR_RELAY", "Failed to relay traffic", err}
-			}
-			return nil
-		}()
-	}
+	go runUDPService(port.packetConn, &port.keys, m)
+	runTCPService(port.listener, &port.keys, m)
 }
 
 type SSServer struct {
@@ -174,9 +79,9 @@ func (s *SSServer) startPort(portNum int) error {
 	}
 	packetConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: portNum})
 	if err != nil {
-		return fmt.Errorf("ERROR Failed to start UDP on port %v: %v", portNum, err)
+		return fmt.Errorf("Failed to start UDP on port %v: %v", portNum, err)
 	}
-	log.Printf("INFO Listening TCP and UDP on port %v", portNum)
+	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &SSPort{listener: listener, packetConn: packetConn, keys: make(map[string]shadowaead.Cipher)}
 	s.ports[portNum] = port
 	go port.run(s.m)
@@ -197,7 +102,7 @@ func (s *SSServer) removePort(portNum int) error {
 	if udpErr != nil {
 		return fmt.Errorf("Failed to close packetConn on %v: %v", portNum, udpErr)
 	}
-	log.Printf("INFO Stopped TCP and UDP on port %v", portNum)
+	logger.Infof("Stopped TCP and UDP on port %v", portNum)
 	return nil
 }
 
@@ -246,7 +151,7 @@ func (s *SSServer) loadConfig(filename string) error {
 	for portNum, keys := range portKeys {
 		s.ports[portNum].keys = keys
 	}
-	log.Printf("INFO Loaded %v access keys", len(config.Keys))
+	logger.Infof("Loaded %v access keys", len(config.Keys))
 	s.m.SetNumAccessKeys(len(config.Keys), len(portKeys))
 	return nil
 }
@@ -261,9 +166,9 @@ func runSSServer(filename string, sm metrics.ShadowsocksMetrics) error {
 	signal.Notify(sigHup, syscall.SIGHUP)
 	go func() {
 		for range sigHup {
-			log.Printf("Updating config")
+			logger.Info("Updating config")
 			if err := server.loadConfig(filename); err != nil {
-				log.Printf("ERROR Could not reload config: %v", err)
+				logger.Errorf("Could not reload config: %v", err)
 			}
 		}
 	}()
@@ -294,13 +199,21 @@ func main() {
 		ConfigFile  string
 		MetricsAddr string
 		GeoIPPath   string
+		Verbose     bool
 	}
-	flag.StringVar(&flags.ConfigFile, "config", "", "config filename")
-	flag.StringVar(&flags.MetricsAddr, "metrics", "", "address for the Prometheus metrics")
+	flag.StringVar(&flags.ConfigFile, "config", "", "Configuration filename")
+	flag.StringVar(&flags.MetricsAddr, "metrics", "", "Address for the Prometheus metrics")
 	flag.StringVar(&flags.GeoIPPath, "geoip", "", "Path to the GeoLite2-Country.mmdb file")
 	flag.DurationVar(&config.UDPTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
+	flag.BoolVar(&flags.Verbose, "verbose", false, "Enables verbose logging output")
 
 	flag.Parse()
+
+	if flags.Verbose {
+		logging.SetLevel(logging.DEBUG, "")
+	} else {
+		logging.SetLevel(logging.INFO, "")
+	}
 
 	if flags.ConfigFile == "" {
 		flag.Usage()
@@ -310,9 +223,9 @@ func main() {
 	if flags.MetricsAddr != "" {
 		http.Handle("/metrics", promhttp.Handler())
 		go func() {
-			log.Fatal(http.ListenAndServe(flags.MetricsAddr, nil))
+			logger.Fatal(http.ListenAndServe(flags.MetricsAddr, nil))
 		}()
-		log.Printf("Metrics on http://%v/metrics", flags.MetricsAddr)
+		logger.Infof("Metrics on http://%v/metrics", flags.MetricsAddr)
 	}
 
 	var geodb *geoip2.Reader
@@ -325,7 +238,7 @@ func main() {
 	}
 	err := runSSServer(flags.ConfigFile, metrics.NewShadowsocksMetrics(geodb))
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal(err)
 	}
 
 	sigCh := make(chan os.Signal, 1)
