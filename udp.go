@@ -81,6 +81,7 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 				logger.Errorf("Failed location lookup: %v", locErr)
 				clientLocation = "ZZ"
 			}
+			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
 			if err != nil {
 				return &connectionError{"ERR_READ", "Failed to read from client", err}
 			}

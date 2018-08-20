@@ -82,6 +82,7 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 				logger.Errorf("Failed location lookup: %v", err)
 				clientLocation = "ZZ"
 			}
+			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientConn.RemoteAddr().String())
 			m.AddOpenTCPConnection(clientLocation)
 			defer func() {
 				if r := recover(); r != nil {

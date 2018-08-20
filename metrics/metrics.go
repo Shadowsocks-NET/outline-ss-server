@@ -120,7 +120,11 @@ func (m *shadowsocksMetrics) GetLocation(addr net.Addr) (string, error) {
 	if m.ipCountryDB == nil {
 		return "", nil
 	}
-	ip := net.ParseIP(addr.String())
+	hostname, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return "", errors.New("Failed to split hostname and port")
+	}
+	ip := net.ParseIP(hostname)
 	if ip == nil {
 		return "", errors.New("Failed to parse address as IP")
 	}

@@ -229,15 +229,16 @@ func main() {
 	}
 
 	var ipCountryDB *geoip2.Reader
+	var err error
 	if flags.IPCountryDB != "" {
 		logger.Infof("Using IP-Country database at %v", flags.IPCountryDB)
-		ipCountryDB, err := geoip2.Open(flags.IPCountryDB)
+		ipCountryDB, err = geoip2.Open(flags.IPCountryDB)
 		if err != nil {
 			log.Fatalf("Could not open geoip database at %v: %v", flags.IPCountryDB, err)
 		}
 		defer ipCountryDB.Close()
 	}
-	err := runSSServer(flags.ConfigFile, metrics.NewShadowsocksMetrics(ipCountryDB))
+	err = runSSServer(flags.ConfigFile, metrics.NewShadowsocksMetrics(ipCountryDB))
 	if err != nil {
 		logger.Fatal(err)
 	}
