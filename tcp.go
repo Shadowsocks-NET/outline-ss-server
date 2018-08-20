@@ -75,9 +75,10 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 			logger.Debugf("failed to accept: %v", err)
 			continue
 		}
-		m.AddOpenTCPConnection()
 
 		go func() (connError *connectionError) {
+			clientLocation, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
+			m.AddOpenTCPConnection(clientLocation)
 			defer func() {
 				if r := recover(); r != nil {
 					logger.Errorf("Panic in TCP handler: %v", r)
@@ -98,7 +99,7 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 					status = connError.status
 				}
 				logger.Debugf("Done with status %v, duration %v", status, connDuration)
-				m.AddClosedTCPConnection(keyID, status, proxyMetrics, connDuration)
+				m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, connDuration)
 			}()
 
 			keyID, clientConn, err := findAccessKey(clientConn, *ciphers)

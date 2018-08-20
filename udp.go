@@ -64,6 +64,7 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 					logger.Errorf("Panic in UDP loop: %v", r)
 				}
 			}()
+			clientLocation := ""
 			keyID := ""
 			var clientProxyBytes, proxyTargetBytes int
 			defer func() {
@@ -72,9 +73,10 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 					logger.Debugf("UDP Error: %v: %v", connError.message, connError.cause)
 					status = connError.status
 				}
-				m.AddUDPPacketFromClient(keyID, status, clientProxyBytes, proxyTargetBytes)
+				m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes)
 			}()
 			clientProxyBytes, clientAddr, err := clientConn.ReadFrom(cipherBuf)
+			clientLocation, _, _ = net.SplitHostPort(clientAddr.String())
 			if err != nil {
 				return &connectionError{"ERR_READ", "Failed to read from client", err}
 			}
@@ -106,7 +108,7 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 				if err != nil {
 					return &connectionError{"ERR_CREATE_SOCKET", "Failed to create UDP socket", err}
 				}
-				nm.Add(clientAddr, clientConn, cipher, targetConn, keyID)
+				nm.Add(clientAddr, clientConn, cipher, targetConn, clientLocation, keyID)
 			}
 			logger.Debugf("UDP Nat: client %v <-> proxy exit %v", clientAddr, targetConn.LocalAddr())
 
@@ -159,12 +161,12 @@ func (m *natmap) del(key string) net.PacketConn {
 	return nil
 }
 
-func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, keyID string) {
+func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) {
 	m.set(clientAddr.String(), targetConn)
 
 	m.metrics.AddUdpNatEntry()
 	go func() {
-		timedCopy(clientAddr, clientConn, cipher, targetConn, m.timeout, keyID, m.metrics)
+		timedCopy(clientAddr, clientConn, cipher, targetConn, m.timeout, clientLocation, keyID, m.metrics)
 		m.metrics.RemoveUdpNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
@@ -174,7 +176,7 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 
 // copy from src to dst at target with read timeout
 func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn,
-	timeout time.Duration, keyID string, sm metrics.ShadowsocksMetrics) {
+	timeout time.Duration, clientLocation, keyID string, sm metrics.ShadowsocksMetrics) {
 	textBuf := make([]byte, udpBufSize)
 	cipherBuf := make([]byte, udpBufSize)
 
@@ -215,6 +217,6 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			logger.Debugf("UDP Error: %v: %v", connError.message, connError.cause)
 			status = connError.status
 		}
-		sm.AddUDPPacketFromTarget(keyID, status, targetProxyBytes, proxyClientBytes)
+		sm.AddUDPPacketFromTarget(clientLocation, keyID, status, targetProxyBytes, proxyClientBytes)
 	}
 }
