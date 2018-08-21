@@ -79,7 +79,6 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 			clientLocation, locErr := m.GetLocation(clientAddr)
 			if locErr != nil {
 				logger.Errorf("Failed location lookup: %v", locErr)
-				clientLocation = "ZZ"
 			}
 			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
 			if err != nil {

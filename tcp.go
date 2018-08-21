@@ -72,7 +72,7 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 		var clientConn onet.DuplexConn
 		clientConn, err := listener.AcceptTCP()
 		if err != nil {
-			logger.Debugf("failed to accept: %v", err)
+			logger.Debugf("Failed to accept: %v", err)
 			continue
 		}
 
@@ -80,7 +80,6 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 			clientLocation, err := m.GetLocation(clientConn.RemoteAddr())
 			if err != nil {
 				logger.Errorf("Failed location lookup: %v", err)
-				clientLocation = "ZZ"
 			}
 			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientConn.RemoteAddr().String())
 			m.AddOpenTCPConnection(clientLocation)

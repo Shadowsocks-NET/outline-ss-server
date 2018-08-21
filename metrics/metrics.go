@@ -116,33 +116,40 @@ func NewShadowsocksMetrics(ipCountryDB *geoip2.Reader) ShadowsocksMetrics {
 	return m
 }
 
+const (
+	errParseAddr     = "XA"
+	errDbLookupError = "XD"
+	localLocation    = "XL"
+	unknownLocation  = "ZZ"
+)
+
 func (m *shadowsocksMetrics) GetLocation(addr net.Addr) (string, error) {
 	if m.ipCountryDB == nil {
 		return "", nil
 	}
 	hostname, _, err := net.SplitHostPort(addr.String())
 	if err != nil {
-		return "", errors.New("Failed to split hostname and port")
+		return errParseAddr, errors.New("Failed to split hostname and port")
 	}
 	ip := net.ParseIP(hostname)
 	if ip == nil {
-		return "", errors.New("Failed to parse address as IP")
+		return errParseAddr, errors.New("Failed to parse address as IP")
 	}
 	if ip.IsLoopback() {
-		return "", errors.New("IP is localhost")
+		return localLocation, nil
 	}
 	if !ip.IsGlobalUnicast() {
-		return "", errors.New("IP is not global unicast")
+		return localLocation, nil
 	}
 	record, err := m.ipCountryDB.Country(ip)
 	if err != nil {
-		return "", errors.New("IP lookup failed")
+		return errDbLookupError, errors.New("IP lookup failed")
 	}
 	if record == nil {
-		return "", errors.New("IP lookup returned nil")
+		return unknownLocation, errors.New("IP lookup returned nil")
 	}
 	if record.Country.IsoCode == "" {
-		return "", errors.New("Ip Lookup has empty ISO code")
+		return unknownLocation, errors.New("IP Lookup has empty ISO code")
 	}
 	return record.Country.IsoCode, nil
 }
