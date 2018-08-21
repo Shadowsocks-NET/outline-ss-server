@@ -128,6 +128,12 @@ func (m *shadowsocksMetrics) GetLocation(addr net.Addr) (string, error) {
 	if ip == nil {
 		return "", errors.New("Failed to parse address as IP")
 	}
+	if ip.IsLoopback() {
+		return "", errors.New("IP is localhost")
+	}
+	if !ip.IsGlobalUnicast() {
+		return "", errors.New("IP is not global unicast")
+	}
 	record, err := m.ipCountryDB.Country(ip)
 	if err != nil {
 		return "", errors.New("IP lookup failed")
