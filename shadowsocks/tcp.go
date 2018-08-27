@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package shadowsocks
 
 import (
 	"bytes"
@@ -32,12 +32,6 @@ import (
 func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.Cipher) (string, onet.DuplexConn, error) {
 	if len(cipherList) == 0 {
 		return "", nil, errors.New("Empty cipher list")
-	} else if len(cipherList) == 1 {
-		for id, cipher := range cipherList {
-			reader := shadowaead.NewShadowsocksReader(clientConn, cipher)
-			writer := shadowaead.NewShadowsocksWriter(clientConn, cipher)
-			return id, onet.WrapConn(clientConn, reader, writer), nil
-		}
 	}
 	// replayBuffer saves the bytes read from shadowConn, in order to allow for replays.
 	var replayBuffer bytes.Buffer
@@ -50,7 +44,7 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 		// tmpReader reads first from the replayBuffer and then from clientConn if it needs more
 		// bytes. All bytes read from clientConn are saved in replayBuffer for future replays.
 		tmpReader := io.MultiReader(bytes.NewReader(replayBuffer.Bytes()), io.TeeReader(clientConn, &replayBuffer))
-		cipherReader := shadowaead.NewShadowsocksReader(tmpReader, cipher)
+		cipherReader := NewShadowsocksReader(tmpReader, cipher)
 		// Read should read just enough data to authenticate the payload size.
 		_, err := cipherReader.Read(make([]byte, 0))
 		if err != nil {
@@ -60,14 +54,14 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 		logger.Debugf("Selected key %v", id)
 		// We don't need to keep storing and replaying the bytes anymore, but we don't want to drop
 		// those already read into the replayBuffer.
-		ssr := shadowaead.NewShadowsocksReader(io.MultiReader(&replayBuffer, clientConn), cipher)
-		ssw := shadowaead.NewShadowsocksWriter(clientConn, cipher)
+		ssr := NewShadowsocksReader(io.MultiReader(&replayBuffer, clientConn), cipher)
+		ssw := NewShadowsocksWriter(clientConn, cipher)
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
 	}
 	return "", nil, fmt.Errorf("could not find valid key")
 }
 
-func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
+func RunTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
 	for {
 		var clientConn onet.DuplexConn
 		clientConn, err := listener.AcceptTCP()
@@ -76,7 +70,7 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 			continue
 		}
 
-		go func() (connError *connectionError) {
+		go func() (connError *onet.ConnectionError) {
 			clientLocation, err := m.GetLocation(clientConn.RemoteAddr())
 			if err != nil {
 				logger.Errorf("Failed location lookup: %v", err)
@@ -99,8 +93,8 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 				clientConn.Close()
 				status := "OK"
 				if connError != nil {
-					logger.Debugf("TCP Error: %v: %v", connError.message, connError.cause)
-					status = connError.status
+					logger.Debugf("TCP Error: %v: %v", connError.Message, connError.Cause)
+					status = connError.Status
 				}
 				logger.Debugf("Done with status %v, duration %v", status, connDuration)
 				m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, connDuration)
@@ -108,24 +102,24 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 
 			keyID, clientConn, err := findAccessKey(clientConn, *ciphers)
 			if err != nil {
-				return &connectionError{"ERR_CIPHER", "Failed to find a valid cipher", err}
+				return &onet.ConnectionError{"ERR_CIPHER", "Failed to find a valid cipher", err}
 			}
 
 			tgtAddr, err := socks.ReadAddr(clientConn)
 			if err != nil {
-				return &connectionError{"ERR_READ_ADDRESS", "Failed to get target address", err}
+				return &onet.ConnectionError{"ERR_READ_ADDRESS", "Failed to get target address", err}
 			}
 			tgtTCPAddr, err := net.ResolveTCPAddr("tcp", tgtAddr.String())
 			if err != nil {
-				return &connectionError{"ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err}
+				return &onet.ConnectionError{"ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err}
 			}
 			if !tgtTCPAddr.IP.IsGlobalUnicast() {
-				return &connectionError{"ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err}
+				return &onet.ConnectionError{"ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err}
 			}
 
 			tgtTCPConn, err := net.DialTCP("tcp", nil, tgtTCPAddr)
 			if err != nil {
-				return &connectionError{"ERR_CONNECT", "Failed to connect to target", err}
+				return &onet.ConnectionError{"ERR_CONNECT", "Failed to connect to target", err}
 			}
 			defer tgtTCPConn.Close()
 			tgtTCPConn.SetKeepAlive(true)
@@ -135,7 +129,7 @@ func runTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 			logger.Debugf("proxy %s <-> %s", clientConn.RemoteAddr().String(), tgtConn.RemoteAddr().String())
 			_, _, err = onet.Relay(clientConn, tgtConn)
 			if err != nil {
-				return &connectionError{"ERR_RELAY", "Failed to relay traffic", err}
+				return &onet.ConnectionError{"ERR_RELAY", "Failed to relay traffic", err}
 			}
 			return nil
 		}()

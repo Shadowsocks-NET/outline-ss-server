@@ -86,3 +86,10 @@ func Relay(leftConn, rightConn DuplexConn) (int64, int64, error) {
 	}
 	return n, rs.N, err
 }
+
+type ConnectionError struct {
+	// TODO: create status enums and move to metrics.go
+	Status  string
+	Message string
+	Cause   error
+}

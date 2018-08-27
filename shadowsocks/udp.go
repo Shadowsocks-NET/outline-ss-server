@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package shadowsocks
 
 import (
 	"errors"
@@ -21,14 +21,13 @@ import (
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
+	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 
 	"sync"
 
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
-
-type mode int
 
 const udpBufSize = 64 * 1024
 
@@ -50,15 +49,15 @@ func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, stri
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
 // We take the ciphers as a pointer because it gets replaced on config updates.
-func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
+func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
 	defer clientConn.Close()
 
-	nm := newNATmap(config.UDPTimeout, m)
+	nm := newNATmap(natTimeout, m)
 	cipherBuf := make([]byte, udpBufSize)
 	textBuf := make([]byte, udpBufSize)
 
 	for {
-		func() (connError *connectionError) {
+		func() (connError *onet.ConnectionError) {
 			defer func() {
 				if r := recover(); r != nil {
 					logger.Errorf("Panic in UDP loop: %v", r)
@@ -70,8 +69,8 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 			defer func() {
 				status := "OK"
 				if connError != nil {
-					logger.Debugf("UDP Error: %v: %v", connError.message, connError.cause)
-					status = connError.status
+					logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
+					status = connError.Status
 				}
 				m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes)
 			}()
@@ -82,26 +81,26 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 			}
 			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
 			if err != nil {
-				return &connectionError{"ERR_READ", "Failed to read from client", err}
+				return &onet.ConnectionError{"ERR_READ", "Failed to read from client", err}
 			}
 			defer logger.Debugf("UDP done with %v", clientAddr.String())
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
 			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], *ciphers)
 			if err != nil {
-				return &connectionError{"ERR_CIPHER", "Failed to upack data from client", err}
+				return &onet.ConnectionError{"ERR_CIPHER", "Failed to upack data from client", err}
 			}
 
 			tgtAddr := socks.SplitAddr(buf)
 			if tgtAddr == nil {
-				return &connectionError{"ERR_READ_ADDRESS", "Failed to get target address", nil}
+				return &onet.ConnectionError{"ERR_READ_ADDRESS", "Failed to get target address", nil}
 			}
 
 			tgtUDPAddr, err := net.ResolveUDPAddr("udp", tgtAddr.String())
 			if err != nil {
-				return &connectionError{"ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err}
+				return &onet.ConnectionError{"ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err}
 			}
 			if !tgtUDPAddr.IP.IsGlobalUnicast() {
-				return &connectionError{"ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err}
+				return &onet.ConnectionError{"ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err}
 			}
 
 			payload := buf[len(tgtAddr):]
@@ -110,7 +109,7 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 			if targetConn == nil {
 				targetConn, err = net.ListenPacket("udp", "")
 				if err != nil {
-					return &connectionError{"ERR_CREATE_SOCKET", "Failed to create UDP socket", err}
+					return &onet.ConnectionError{"ERR_CREATE_SOCKET", "Failed to create UDP socket", err}
 				}
 				nm.Add(clientAddr, clientConn, cipher, targetConn, clientLocation, keyID)
 			}
@@ -118,7 +117,7 @@ func runUDPService(clientConn net.PacketConn, ciphers *map[string]shadowaead.Cip
 
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
-				return &connectionError{"ERR_WRITE", "Failed to write to target", err}
+				return &onet.ConnectionError{"ERR_WRITE", "Failed to write to target", err}
 			}
 			return nil
 		}()
@@ -187,7 +186,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 	expired := false
 	for !expired {
 		var targetProxyBytes, proxyClientBytes int
-		connError := func() (connError *connectionError) {
+		connError := func() (connError *onet.ConnectionError) {
 			targetConn.SetReadDeadline(time.Now().Add(timeout))
 			targetProxyBytes, raddr, err := targetConn.ReadFrom(textBuf)
 			if err != nil {
@@ -197,7 +196,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 						return nil
 					}
 				}
-				return &connectionError{"ERR_READ", "Failed to read from target", err}
+				return &onet.ConnectionError{"ERR_READ", "Failed to read from target", err}
 			}
 
 			srcAddr := socks.ParseAddr(raddr.String())
@@ -208,18 +207,18 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 
 			buf, err := shadowaead.Pack(cipherBuf, textBuf[:len(srcAddr)+targetProxyBytes], cipher)
 			if err != nil {
-				return &connectionError{"ERR_PACK", "Failed to pack data to client", err}
+				return &onet.ConnectionError{"ERR_PACK", "Failed to pack data to client", err}
 			}
 			proxyClientBytes, err = clientConn.WriteTo(buf, clientAddr)
 			if err != nil {
-				return &connectionError{"ERR_WRITE", "Failed to write to client", err}
+				return &onet.ConnectionError{"ERR_WRITE", "Failed to write to client", err}
 			}
 			return nil
 		}()
 		status := "OK"
 		if connError != nil {
-			logger.Debugf("UDP Error: %v: %v", connError.message, connError.cause)
-			status = connError.status
+			logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
+			status = connError.Status
 		}
 		sm.AddUDPPacketFromTarget(clientLocation, keyID, status, targetProxyBytes, proxyClientBytes)
 	}

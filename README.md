@@ -1,8 +1,8 @@
 # Outline ss-server
 
-This repository has the Shadowsocks service soon to be used by Outline servers. It's based on a [modified version](https://github.com/shadowsocks/go-shadowsocks2/pull/100) of [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2), with a number of improvements to meet the needs of the Outline users.
+This repository has the Shadowsocks service soon to be used by Outline servers. It uses components from [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2), and adds a number of improvements to meet the needs of the Outline users.
 
-The Outline version of the go-shaowsocks2 service allows for:
+The Outline Shadowsocks service allows for:
 - Multiple users on a single port.
   - Does so by trying all the different credentials until one succeeds.
 - Multiple ports
@@ -13,18 +13,6 @@ The Outline version of the go-shaowsocks2 service allows for:
 ![Graphana Dashboard](https://user-images.githubusercontent.com/113565/44177062-419d7700-a0ba-11e8-9621-db519692ff6c.png "Graphana Dashboard")
 
 ## Try it!
-
-Clone the repositories:
-```
-git clone -b ss-lib https://github.com/fortuna/go-shadowsocks2.git $(go env GOPATH)/src/github.com/shadowsocks/go-shadowsocks2 &&
-git clone https://github.com/Jigsaw-Code/outline-ss-server.git $(go env GOPATH)/src/github.com/Jigsaw-Code/outline-ss-server
-```
-
-For development, you may want to use SSH:
-```
-git clone -b ss-lib git@github.com:fortuna/go-shadowsocks2.git $(go env GOPATH)/src/github.com/shadowsocks/go-shadowsocks2 &&
-git clone git@github.com:Jigsaw-Code/outline-ss-server.git $(go env GOPATH)/src/github.com/Jigsaw-Code/outline-ss-server
-```
 
 Fetch dependencies and build:
 ```
@@ -73,8 +61,7 @@ go build github.com/Jigsaw-Code/outline-ss-server && \
 
 Start the SS tunnel to redirect port 8000 -> localhost:5201 via the proxy on 9000:
 ```
-go build github.com/shadowsocks/go-shadowsocks2 && \
-./go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret0@:9000 -tcptun ":8000=localhost:5201" -udptun ":8000=localhost:5201" -verbose
+$(go env GOPATH)/bin/go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret0@:9000 -tcptun ":8000=localhost:5201" -udptun ":8000=localhost:5201" -verbose
 ```
 
 Test TCP upload (client -> server):
@@ -101,8 +88,7 @@ iperf3 -c localhost -p 8000 --udp -b 0 --reverse
 
 Run the commands above, but start the SS server with
 ```
-go build github.com/shadowsocks/go-shadowsocks2 && \
-./go-shadowsocks2 -s ss://chacha20-ietf-poly1305:Secret0@:9000 -verbose
+$(go env GOPATH)/bin/go-shadowsocks2 -s ss://chacha20-ietf-poly1305:Secret0@:9000 -verbose
 ```
 
 
@@ -121,3 +107,12 @@ ss-tunnel -s localhost -p 10001 -m chacha20-ietf-poly1305 -k Secret1 -l 10002 -L
 Run the iperf3 client tests listed above on port 10002.
 
 You can mix and match the libev and go servers and clients.
+
+
+## Development
+
+For development you may want to use `git clone` over SSH instead of `go get`:
+
+```
+git clone git@github.com:Jigsaw-Code/outline-ss-server.git $(go env GOPATH)/src/github.com/Jigsaw-Code/outline-ss-server
+```
