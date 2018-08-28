@@ -187,8 +187,12 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 	for !expired {
 		var targetProxyBytes, proxyClientBytes int
 		connError := func() (connError *onet.ConnectionError) {
+			var (
+				raddr net.Addr
+				err   error
+			)
 			targetConn.SetReadDeadline(time.Now().Add(timeout))
-			targetProxyBytes, raddr, err := targetConn.ReadFrom(textBuf)
+			targetProxyBytes, raddr, err = targetConn.ReadFrom(textBuf)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok {
 					if netErr.Timeout() {
