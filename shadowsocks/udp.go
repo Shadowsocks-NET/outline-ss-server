@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime/debug"
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
@@ -61,6 +62,7 @@ func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers 
 			defer func() {
 				if r := recover(); r != nil {
 					logger.Errorf("Panic in UDP loop: %v", r)
+					debug.PrintStack()
 				}
 			}()
 			clientLocation := ""
@@ -75,32 +77,32 @@ func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers 
 				m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes)
 			}()
 			clientProxyBytes, clientAddr, err := clientConn.ReadFrom(cipherBuf)
+			if err != nil {
+				return onet.NewConnectionError("ERR_READ", "Failed to read from client", err)
+			}
 			clientLocation, locErr := m.GetLocation(clientAddr)
 			if locErr != nil {
-				logger.Errorf("Failed location lookup: %v", locErr)
+				logger.Warning("Failed location lookup: %v", locErr)
 			}
 			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
-			if err != nil {
-				return &onet.ConnectionError{"ERR_READ", "Failed to read from client", err}
-			}
 			defer logger.Debugf("UDP done with %v", clientAddr.String())
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
 			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], *ciphers)
 			if err != nil {
-				return &onet.ConnectionError{"ERR_CIPHER", "Failed to upack data from client", err}
+				return onet.NewConnectionError("ERR_CIPHER", "Failed to upack data from client", err)
 			}
 
 			tgtAddr := socks.SplitAddr(buf)
 			if tgtAddr == nil {
-				return &onet.ConnectionError{"ERR_READ_ADDRESS", "Failed to get target address", nil}
+				return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", nil)
 			}
 
 			tgtUDPAddr, err := net.ResolveUDPAddr("udp", tgtAddr.String())
 			if err != nil {
-				return &onet.ConnectionError{"ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err}
+				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 			}
 			if !tgtUDPAddr.IP.IsGlobalUnicast() {
-				return &onet.ConnectionError{"ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err}
+				return onet.NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err)
 			}
 
 			payload := buf[len(tgtAddr):]
@@ -109,7 +111,7 @@ func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers 
 			if targetConn == nil {
 				targetConn, err = net.ListenPacket("udp", "")
 				if err != nil {
-					return &onet.ConnectionError{"ERR_CREATE_SOCKET", "Failed to create UDP socket", err}
+					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
 				nm.Add(clientAddr, clientConn, cipher, targetConn, clientLocation, keyID)
 			}
@@ -117,7 +119,7 @@ func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers 
 
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
-				return &onet.ConnectionError{"ERR_WRITE", "Failed to write to target", err}
+				return onet.NewConnectionError("ERR_WRITE", "Failed to write to target", err)
 			}
 			return nil
 		}()
@@ -200,7 +202,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 						return nil
 					}
 				}
-				return &onet.ConnectionError{"ERR_READ", "Failed to read from target", err}
+				return onet.NewConnectionError("ERR_READ", "Failed to read from target", err)
 			}
 
 			srcAddr := socks.ParseAddr(raddr.String())
@@ -211,11 +213,11 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 
 			buf, err := shadowaead.Pack(cipherBuf, textBuf[:len(srcAddr)+targetProxyBytes], cipher)
 			if err != nil {
-				return &onet.ConnectionError{"ERR_PACK", "Failed to pack data to client", err}
+				return onet.NewConnectionError("ERR_PACK", "Failed to pack data to client", err)
 			}
 			proxyClientBytes, err = clientConn.WriteTo(buf, clientAddr)
 			if err != nil {
-				return &onet.ConnectionError{"ERR_WRITE", "Failed to write to client", err}
+				return onet.NewConnectionError("ERR_WRITE", "Failed to write to client", err)
 			}
 			return nil
 		}()

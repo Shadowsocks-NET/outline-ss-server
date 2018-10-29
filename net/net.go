@@ -93,3 +93,7 @@ type ConnectionError struct {
 	Message string
 	Cause   error
 }
+
+func NewConnectionError(status, message string, cause error) *ConnectionError {
+	return &ConnectionError{Status: status, Message: message, Cause: cause}
+}
