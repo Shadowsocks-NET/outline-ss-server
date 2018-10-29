@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,13 +34,19 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
+	"golang.org/x/crypto/ssh/terminal"
 	"gopkg.in/yaml.v2"
 )
 
 var logger *logging.Logger
 
 func init() {
-	logging.SetFormatter(logging.MustStringFormatter("%{color}%{level:.1s}%{time:2006-01-02T15:04:05.000Z07:00} %{pid} %{shortfile}]%{color:reset} %{message}"))
+	var prefix = "%{level:.1s}%{time:2006-01-02T15:04:05.000Z07:00} %{pid} %{shortfile}]"
+	if terminal.IsTerminal(int(os.Stderr.Fd())) {
+		// Add color only if the output is the terminal
+		prefix = strings.Join([]string{"%{color}", prefix, "%{color:reset}"}, "")
+	}
+	logging.SetFormatter(logging.MustStringFormatter(strings.Join([]string{prefix, " %{message}"}, "")))
 	logging.SetBackend(logging.NewLogBackend(os.Stderr, "", 0))
 	logger = logging.MustGetLogger("")
 }
