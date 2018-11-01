@@ -82,7 +82,7 @@ func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers 
 			}
 			clientLocation, locErr := m.GetLocation(clientAddr)
 			if locErr != nil {
-				logger.Warning("Failed location lookup: %v", locErr)
+				logger.Warningf("Failed location lookup: %v", locErr)
 			}
 			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
 			defer logger.Debugf("UDP done with %v", clientAddr.String())
