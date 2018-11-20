@@ -52,7 +52,7 @@ func init() {
 }
 
 type SSPort struct {
-	listener   *net.TCPListener
+	tcpService shadowsocks.TCPService
 	packetConn net.PacketConn
 	keys       map[string]shadowaead.Cipher
 }
@@ -61,7 +61,7 @@ type SSPort struct {
 func (port *SSPort) run(natTimeout time.Duration, m metrics.ShadowsocksMetrics) {
 	// TODO: Register initial data metrics at zero.
 	go shadowsocks.RunUDPService(natTimeout, port.packetConn, &port.keys, m)
-	shadowsocks.RunTCPService(port.listener, &port.keys, m)
+	port.tcpService.Start()
 }
 
 type SSServer struct {
@@ -80,7 +80,8 @@ func (s *SSServer) startPort(portNum int) error {
 		return fmt.Errorf("Failed to start UDP on port %v: %v", portNum, err)
 	}
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
-	port := &SSPort{listener: listener, packetConn: packetConn, keys: make(map[string]shadowaead.Cipher)}
+	port := &SSPort{packetConn: packetConn, keys: make(map[string]shadowaead.Cipher)}
+	port.tcpService = shadowsocks.NewTCPService(listener, &port.keys, s.m)
 	s.ports[portNum] = port
 	go port.run(s.natTimeout, s.m)
 	return nil
@@ -91,7 +92,7 @@ func (s *SSServer) removePort(portNum int) error {
 	if !ok {
 		return fmt.Errorf("Port %v doesn't exist", portNum)
 	}
-	tcpErr := port.listener.Close()
+	tcpErr := port.tcpService.Stop()
 	udpErr := port.packetConn.Close()
 	delete(s.ports, portNum)
 	if tcpErr != nil {
