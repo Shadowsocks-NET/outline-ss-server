@@ -61,22 +61,41 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 	return "", nil, fmt.Errorf("could not find valid key")
 }
 
-func RunTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
-	for {
+type tcpService struct {
+	listener  *net.TCPListener
+	ciphers   *map[string]shadowaead.Cipher
+	m         metrics.ShadowsocksMetrics
+	isRunning bool
+}
+
+func NewTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) TCPService {
+	return &tcpService{listener: listener, ciphers: ciphers, m: m}
+}
+
+type TCPService interface {
+	Start()
+	Stop() error
+}
+
+func (s *tcpService) Start() {
+	s.isRunning = true
+	for s.isRunning {
 		var clientConn onet.DuplexConn
-		clientConn, err := listener.AcceptTCP()
+		clientConn, err := s.listener.AcceptTCP()
 		if err != nil {
-			logger.Debugf("Failed to accept: %v", err)
-			continue
+			if !s.isRunning {
+				return
+			}
+			logger.Errorf("Failed to accept: %v", err)
 		}
 
 		go func() (connError *onet.ConnectionError) {
-			clientLocation, err := m.GetLocation(clientConn.RemoteAddr())
+			clientLocation, err := s.m.GetLocation(clientConn.RemoteAddr())
 			if err != nil {
 				logger.Warningf("Failed location lookup: %v", err)
 			}
 			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientConn.RemoteAddr().String())
-			m.AddOpenTCPConnection(clientLocation)
+			s.m.AddOpenTCPConnection(clientLocation)
 			defer func() {
 				if r := recover(); r != nil {
 					logger.Errorf("Panic in TCP handler: %v", r)
@@ -97,10 +116,10 @@ func RunTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 					status = connError.Status
 				}
 				logger.Debugf("Done with status %v, duration %v", status, connDuration)
-				m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, connDuration)
+				s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, connDuration)
 			}()
 
-			keyID, clientConn, err := findAccessKey(clientConn, *ciphers)
+			keyID, clientConn, err := findAccessKey(clientConn, *s.ciphers)
 			if err != nil {
 				return &onet.ConnectionError{"ERR_CIPHER", "Failed to find a valid cipher", err}
 			}
@@ -134,4 +153,9 @@ func RunTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 			return nil
 		}()
 	}
+}
+
+func (s *tcpService) Stop() error {
+	s.isRunning = false
+	return s.listener.Close()
 }

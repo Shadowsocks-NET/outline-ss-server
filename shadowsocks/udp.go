@@ -48,16 +48,34 @@ func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, stri
 	return nil, "", nil, errors.New("could not find valid cipher")
 }
 
+type udpService struct {
+	clientConn net.PacketConn
+	natTimeout time.Duration
+	ciphers    *map[string]shadowaead.Cipher
+	m          metrics.ShadowsocksMetrics
+	isRunning  bool
+}
+
+func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) UDPService {
+	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: ciphers, m: m}
+}
+
+type UDPService interface {
+	Start()
+	Stop() error
+}
+
 // Listen on addr for encrypted packets and basically do UDP NAT.
 // We take the ciphers as a pointer because it gets replaced on config updates.
-func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) {
-	defer clientConn.Close()
+func (s *udpService) Start() {
+	defer s.clientConn.Close()
 
-	nm := newNATmap(natTimeout, m)
+	nm := newNATmap(s.natTimeout, s.m)
 	cipherBuf := make([]byte, udpBufSize)
 	textBuf := make([]byte, udpBufSize)
 
-	for {
+	s.isRunning = true
+	for s.isRunning {
 		func() (connError *onet.ConnectionError) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -74,20 +92,23 @@ func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers 
 					logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 					status = connError.Status
 				}
-				m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes)
+				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes)
 			}()
-			clientProxyBytes, clientAddr, err := clientConn.ReadFrom(cipherBuf)
+			clientProxyBytes, clientAddr, err := s.clientConn.ReadFrom(cipherBuf)
 			if err != nil {
+				if !s.isRunning {
+					return nil
+				}
 				return onet.NewConnectionError("ERR_READ", "Failed to read from client", err)
 			}
-			clientLocation, locErr := m.GetLocation(clientAddr)
+			clientLocation, locErr := s.m.GetLocation(clientAddr)
 			if locErr != nil {
 				logger.Warningf("Failed location lookup: %v", locErr)
 			}
 			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
 			defer logger.Debugf("UDP done with %v", clientAddr.String())
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
-			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], *ciphers)
+			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], *s.ciphers)
 			if err != nil {
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to upack data from client", err)
 			}
@@ -113,7 +134,7 @@ func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers 
 				if err != nil {
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
-				nm.Add(clientAddr, clientConn, cipher, targetConn, clientLocation, keyID)
+				nm.Add(clientAddr, s.clientConn, cipher, targetConn, clientLocation, keyID)
 			}
 			logger.Debugf("UDP Nat: client %v <-> proxy exit %v", clientAddr, targetConn.LocalAddr())
 
@@ -124,6 +145,11 @@ func RunUDPService(natTimeout time.Duration, clientConn net.PacketConn, ciphers 
 			return nil
 		}()
 	}
+}
+
+func (s *udpService) Stop() error {
+	s.isRunning = false
+	return s.clientConn.Close()
 }
 
 // Packet NAT table
