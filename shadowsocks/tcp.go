@@ -73,21 +73,20 @@ func NewTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cip
 }
 
 type TCPService interface {
-	Start() error
+	Start()
 	Stop() error
 }
 
-func (s *tcpService) Start() error {
+func (s *tcpService) Start() {
 	s.isRunning = true
 	for s.isRunning {
 		var clientConn onet.DuplexConn
 		clientConn, err := s.listener.AcceptTCP()
 		if err != nil {
 			if !s.isRunning {
-				return nil
+				return
 			}
 			logger.Errorf("Failed to accept: %v", err)
-			return err
 		}
 
 		go func() (connError *onet.ConnectionError) {
@@ -154,7 +153,6 @@ func (s *tcpService) Start() error {
 			return nil
 		}()
 	}
-	return nil
 }
 
 func (s *tcpService) Stop() error {
