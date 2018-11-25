@@ -32,7 +32,7 @@ import (
 
 const udpBufSize = 64 * 1024
 
-// upack decripts src into dst. It tries each cipher until it finds one that authenticates
+// upack decrypts src into dst. It tries each cipher until it finds one that authenticates
 // correctly. dst and src must not overlap.
 func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, string, shadowaead.Cipher, error) {
 	for id, cipher := range ciphers {
