@@ -236,6 +236,6 @@ func (c *measuredConn) ReadFrom(r io.Reader) (int64, error) {
 	return n, err
 }
 
-func MeasureConn(conn onet.DuplexConn, bytesSent, bytesRceived *int64) onet.DuplexConn {
-	return &measuredConn{DuplexConn: conn, writeCount: bytesSent, readCount: bytesRceived}
+func MeasureConn(conn onet.DuplexConn, bytesSent, bytesReceived *int64) onet.DuplexConn {
+	return &measuredConn{DuplexConn: conn, writeCount: bytesSent, readCount: bytesReceived}
 }
