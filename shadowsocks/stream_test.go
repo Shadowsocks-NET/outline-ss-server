@@ -23,7 +23,7 @@ func newTestCipher(t *testing.T) shadowaead.Cipher {
 // Overhead for cipher chacha20poly1305
 const testCipherOverhead = 16
 
-func TestCipherReaderAuthentiationFailure(t *testing.T) {
+func TestCipherReaderAuthenticationFailure(t *testing.T) {
 	cipher := newTestCipher(t)
 
 	clientReader := strings.NewReader("Fails Authentication")
