@@ -43,7 +43,7 @@ func (dc *duplexConnAdaptor) CloseWrite() error {
 }
 
 // WrapDuplexConn wraps an existing DuplexConn with new Reader and Writer, but
-// preseving the original CloseRead() and CloseWrite().
+// preserving the original CloseRead() and CloseWrite().
 func WrapConn(c DuplexConn, r io.Reader, w io.Writer) DuplexConn {
 	conn := c
 	// We special-case duplexConnAdaptor to avoid multiple levels of nesting.
@@ -65,7 +65,7 @@ func copyOneWay(leftConn, rightConn DuplexConn) (int64, error) {
 // Relay copies between left and right bidirectionally. Returns number of
 // bytes copied from right to left, from left to right, and any error occurred.
 // Relay allows for half-closed connections: if one side is done writing, it can
-// still read all remaning data from its peer.
+// still read all remaining data from its peer.
 func Relay(leftConn, rightConn DuplexConn) (int64, int64, error) {
 	type res struct {
 		N   int64

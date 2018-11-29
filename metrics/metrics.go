@@ -93,7 +93,7 @@ func NewShadowsocksMetrics(ipCountryDB *geoip2.Reader) ShadowsocksMetrics {
 			prometheus.CounterOpts{
 				Namespace: "shadowsocks",
 				Name:      "data_bytes",
-				Help:      "Bytes tranferred by the proxy",
+				Help:      "Bytes transferred by the proxy",
 			}, []string{"dir", "proto", "location", "status", "access_key"}),
 		udpAddedNatEntries: prometheus.NewCounter(
 			prometheus.CounterOpts{
@@ -236,6 +236,6 @@ func (c *measuredConn) ReadFrom(r io.Reader) (int64, error) {
 	return n, err
 }
 
-func MeasureConn(conn onet.DuplexConn, bytesSent, bytesRceived *int64) onet.DuplexConn {
-	return &measuredConn{DuplexConn: conn, writeCount: bytesSent, readCount: bytesRceived}
+func MeasureConn(conn onet.DuplexConn, bytesSent, bytesReceived *int64) onet.DuplexConn {
+	return &measuredConn{DuplexConn: conn, writeCount: bytesSent, readCount: bytesReceived}
 }
