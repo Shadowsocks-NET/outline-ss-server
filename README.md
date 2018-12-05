@@ -116,3 +116,34 @@ For development you may want to use `git clone` over SSH instead of `go get`:
 ```
 git clone git@github.com:Jigsaw-Code/outline-ss-server.git $(go env GOPATH)/src/github.com/Jigsaw-Code/outline-ss-server
 ```
+
+## Release
+
+We use [GoReleaser](https://goreleaser.com/) to build and upload binaries to our [GitHub releases](https://github.com/Jigsaw-Code/outline-ss-server/releases).
+
+Summary:
+- [Install GoReleaser](https://goreleaser.com/install/).
+- Export an environment variable named `GITHUB_TOKEN` with a repo-scoped GitHub token ([create one here](https://github.com/settings/tokens/new)):
+  ```bash
+  export GITHUB_TOKEN=yournewtoken
+  ```
+- `cd` to your clone, most likely:
+  ```bash
+  cd ~/go/src/github.com/Jigsaw-Code/outline-ss-server
+  ```
+- Create a new tag and push it to GitHub e.g.:
+  ```bash
+  git tag v1.0.0
+  git push origin v1.0.0
+  ```
+- Build and upload:
+  ```bash
+  goreleaser
+  ```
+
+To test locally without tagging/uploading , use `--skip-publish`:
+```bash
+goreleaser --skip-publish
+```
+
+Full instructions in [GoReleaser's Quick Start](https://goreleaser.com/quick-start) (jump to the section starting "You’ll need to export a GITHUB_TOKEN environment variable").
