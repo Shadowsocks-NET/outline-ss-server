@@ -16,7 +16,7 @@ The Outline Shadowsocks service allows for:
 
 Fetch dependencies and build:
 ```
-go get github.com/Jigsaw-Code/outline-ss-server github.com/shadowsocks/go-shadowsocks2 github.com/prometheus/prometheus/cmd/...
+go get github.com/Jigsaw-Code/outline-ss-server
 ```
 
 On Terminal 1, start the SS server:
