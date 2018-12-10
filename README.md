@@ -14,14 +14,14 @@ The Outline Shadowsocks service allows for:
 
 ## Try it!
 
-Fetch dependencies and build:
+Fetch auxiliary dependencies:
 ```
-go get github.com/Jigsaw-Code/outline-ss-server
+GO111MODULE=off go get github.com/shadowsocks/go-shadowsocks2 github.com/prometheus/prometheus/cmd/...
 ```
 
-On Terminal 1, start the SS server:
+On Terminal 1, from the repository directory, build and start the SS server:
 ```
-$(go env GOPATH)/bin/outline-ss-server -config config_example.yml -metrics localhost:8080
+go run . -config config_example.yml -metrics localhost:9091
 ```
 
 On Terminal 2, start prometheus scraper for metrics collection:
@@ -31,7 +31,7 @@ $(go env GOPATH)/bin/prometheus --config.file=prometheus_example.yml
 
 On Terminal 3, start the SS client:
 ```
-$(go env GOPATH)/bin/go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret0@:9000 -verbose  -socks :1080
+$(go env GOPATH)/bin/go-shadowsocks2 -c ss://chacha20-ietf-poly1305:Secret0@:9000 -verbose  -socks localhost:1080
 ```
 
 On Terminal 4, fetch a page using the SS client:
@@ -41,7 +41,7 @@ curl --proxy socks5h://localhost:1080 example.com
 
 Stop and restart the client on Terminal 3 with "Secret1" as the password and try to fetch the page again on Terminal 4.
 
-Open http://localhost:8080/metrics and see the exported Prometheus variables.
+Open http://localhost:9091/metrics and see the exported Prometheus variables.
 
 Open http://localhost:9090/ and see the Prometheus server dashboard.
 
@@ -55,8 +55,7 @@ iperf3 -s
 
 Start the SS server (listening on port 9000):
 ```
-go build github.com/Jigsaw-Code/outline-ss-server && \
-./outline-ss-server -config config_example.yml
+go run . -config config_example.yml
 ```
 
 Start the SS tunnel to redirect port 8000 -> localhost:5201 via the proxy on 9000:
@@ -109,14 +108,6 @@ Run the iperf3 client tests listed above on port 10002.
 You can mix and match the libev and go servers and clients.
 
 
-## Development
-
-For development you may want to use `git clone` over SSH instead of `go get`:
-
-```
-git clone git@github.com:Jigsaw-Code/outline-ss-server.git $(go env GOPATH)/src/github.com/Jigsaw-Code/outline-ss-server
-```
-
 ## Release
 
 We use [GoReleaser](https://goreleaser.com/) to build and upload binaries to our [GitHub releases](https://github.com/Jigsaw-Code/outline-ss-server/releases).
@@ -126,10 +117,6 @@ Summary:
 - Export an environment variable named `GITHUB_TOKEN` with a repo-scoped GitHub token ([create one here](https://github.com/settings/tokens/new)):
   ```bash
   export GITHUB_TOKEN=yournewtoken
-  ```
-- `cd` to your clone, most likely:
-  ```bash
-  cd ~/go/src/github.com/Jigsaw-Code/outline-ss-server
   ```
 - Create a new tag and push it to GitHub e.g.:
   ```bash
