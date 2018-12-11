@@ -17,7 +17,8 @@
 builds:
   -
     goos:
-      - darwin
+      # Disable macOS while the build is broken: https://github.com/golang/go/issues/29170
+      # - darwin
       - windows
       - linux
     ignore:
