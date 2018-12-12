@@ -22,6 +22,8 @@ import (
 	"net"
 	"time"
 
+	logging "github.com/op/go-logging"
+
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 
@@ -40,7 +42,6 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 	// TODO: Reorder list to try previously successful ciphers first for the client IP.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
 	for id, cipher := range cipherList {
-		logger.Debugf("Trying key %v", id)
 		// tmpReader reads first from the replayBuffer and then from clientConn if it needs more
 		// bytes. All bytes read from clientConn are saved in replayBuffer for future replays.
 		tmpReader := io.MultiReader(bytes.NewReader(replayBuffer.Bytes()), io.TeeReader(clientConn, &replayBuffer))
@@ -48,10 +49,14 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.
 		// Read should read just enough data to authenticate the payload size.
 		_, err := cipherReader.Read(make([]byte, 0))
 		if err != nil {
-			logger.Debugf("Failed key %v: %v", id, err)
+			if logger.IsEnabledFor(logging.DEBUG) {
+				logger.Debugf("Failed TCP cipher %v: %v", id, err)
+			}
 			continue
 		}
-		logger.Debugf("Selected key %v", id)
+		if logger.IsEnabledFor(logging.DEBUG) {
+			logger.Debugf("Selected TCP cipher %v", id)
+		}
 		// We don't need to keep storing and replaying the bytes anymore, but we don't want to drop
 		// those already read into the replayBuffer.
 		ssr := NewShadowsocksReader(io.MultiReader(&replayBuffer, clientConn), cipher)
