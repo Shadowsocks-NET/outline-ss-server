@@ -142,6 +142,7 @@ func NewShadowsocksReader(reader io.Reader, ssCipher shadowaead.Cipher) Shadowso
 // init reads the salt from the inner Reader and sets up the AEAD object
 func (sr *shadowsocksReader) init() (err error) {
 	if sr.aead == nil {
+		// For chacha20-poly1305, SaltSize is 32, NonceSize is 12 and Overhead is 16.
 		salt := make([]byte, sr.ssCipher.SaltSize())
 		if _, err := io.ReadFull(sr.reader, salt); err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
