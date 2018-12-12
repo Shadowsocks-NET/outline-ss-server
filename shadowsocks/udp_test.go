@@ -22,9 +22,6 @@ import (
 )
 
 func BenchmarkUDPUnpack(b *testing.B) {
-	b.StopTimer()
-	b.ResetTimer()
-
 	logging.SetLevel(logging.INFO, "")
 
 	cipherList, err := sstest.MakeTestCiphers(100)
@@ -33,9 +30,8 @@ func BenchmarkUDPUnpack(b *testing.B) {
 	}
 	testPayload := sstest.MakeTestPayload(60)
 	textBuf := make([]byte, udpBufSize)
+	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
-		b.StartTimer()
 		unpack(textBuf, testPayload, cipherList)
-		b.StopTimer()
 	}
 }
