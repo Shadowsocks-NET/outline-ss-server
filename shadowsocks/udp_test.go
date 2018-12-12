@@ -15,43 +15,28 @@
 package shadowsocks
 
 import (
-	"net"
 	"testing"
 
 	sstest "github.com/Jigsaw-Code/outline-ss-server/shadowsocks/testing"
 	logging "github.com/op/go-logging"
 )
 
-func BenchmarkFindCipher(b *testing.B) {
+func BenchmarkUnpack(b *testing.B) {
 	b.StopTimer()
 	b.ResetTimer()
 
 	logging.SetLevel(logging.INFO, "")
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		b.Fatalf("ListenTCP failed: %v", err)
-	}
 
 	cipherList, err := sstest.MakeTestCiphers(100)
 	if err != nil {
 		b.Fatal(err)
 	}
+
 	testPayload := sstest.MakeTestPayload(60)
+	textBuf := make([]byte, udpBufSize)
 	for n := 0; n < b.N; n++ {
-		go func() {
-			conn, err := net.Dial("tcp", listener.Addr().String())
-			if err != nil {
-				b.Fatalf("Failed to dial %v: %v", listener.Addr(), err)
-			}
-			conn.Write(testPayload)
-			conn.Close()
-		}()
-		clientConn, err := listener.AcceptTCP()
-		if err != nil {
-			b.Fatalf("AcceptTCP failed: %v", err)
-		}
 		b.StartTimer()
-		findAccessKey(clientConn, cipherList)
+		unpack(textBuf, testPayload, cipherList)
 		b.StopTimer()
 	}
 }
