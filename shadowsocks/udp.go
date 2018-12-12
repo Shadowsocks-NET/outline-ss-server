@@ -23,6 +23,7 @@ import (
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+	logging "github.com/op/go-logging"
 
 	"sync"
 
@@ -36,13 +37,16 @@ const udpBufSize = 64 * 1024
 // correctly. dst and src must not overlap.
 func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, string, shadowaead.Cipher, error) {
 	for id, cipher := range ciphers {
-		logger.Debugf("Trying UDP cipher %v", id)
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {
-			logger.Debugf("Failed UDP cipher %v: %v", id, err)
+			if logger.IsEnabledFor(logging.DEBUG) {
+				logger.Debugf("Failed UDP cipher %v: %v", id, err)
+			}
 			continue
 		}
-		logger.Debugf("Selected UDP cipher %v", id)
+		if logger.IsEnabledFor(logging.DEBUG) {
+			logger.Debugf("Selected UDP cipher %v", id)
+		}
 		return buf, id, cipher, nil
 	}
 	return nil, "", nil, errors.New("could not find valid cipher")
