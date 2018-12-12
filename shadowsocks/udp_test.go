@@ -21,7 +21,7 @@ import (
 	logging "github.com/op/go-logging"
 )
 
-func BenchmarkUnpack(b *testing.B) {
+func BenchmarkUDPUnpack(b *testing.B) {
 	b.StopTimer()
 	b.ResetTimer()
 
@@ -31,7 +31,6 @@ func BenchmarkUnpack(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-
 	testPayload := sstest.MakeTestPayload(60)
 	textBuf := make([]byte, udpBufSize)
 	for n := 0; n < b.N; n++ {

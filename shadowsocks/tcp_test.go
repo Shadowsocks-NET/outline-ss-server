@@ -22,7 +22,7 @@ import (
 	logging "github.com/op/go-logging"
 )
 
-func BenchmarkFindCipher(b *testing.B) {
+func BenchmarkTCPFindCipher(b *testing.B) {
 	b.StopTimer()
 	b.ResetTimer()
 
