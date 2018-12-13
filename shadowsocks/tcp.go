@@ -16,7 +16,6 @@ package shadowsocks
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,39 +30,68 @@ import (
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
-func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.Cipher) (string, onet.DuplexConn, error) {
-	if len(cipherList) == 0 {
-		return "", nil, errors.New("Empty cipher list")
+func ensureBytes(reader io.Reader, buf []byte, bytesNeeded int) ([]byte, error) {
+	if cap(buf) < bytesNeeded {
+		return buf, io.ErrShortBuffer
 	}
-	// replayBuffer saves the bytes read from shadowConn, in order to allow for replays.
-	var replayBuffer bytes.Buffer
+	bytesToRead := bytesNeeded - len(buf)
+	if bytesToRead <= 0 {
+		return buf, nil
+	}
+	n, err := io.ReadFull(reader, buf[len(buf):bytesNeeded])
+	buf = buf[:len(buf)+n]
+	if (err == nil || err == io.EOF) && n < bytesToRead {
+		err = io.ErrUnexpectedEOF
+	}
+	return buf, err
+}
+
+func findAccessKey(clientConn onet.DuplexConn, cipherList map[string]shadowaead.Cipher) (string, onet.DuplexConn, error) {
+	// This must have enough space to hold the salt + 2 bytes chunk length + AEAD tag (Oeverhead) for any cipher
+	replayBytes := make([]byte, 0, 32+2+16)
+	// Constant of zeroes to use as the start chunk count. This must be as big as the max NonceSize() across all ciphers.
+	zeroCountBuf := make([]byte, 12) // MaxCountSize
+	// To hold the decrypted chunk length.
+	chunkLenBuf := [2]byte{}
+	var err error
+
 	// Try each cipher until we find one that authenticates successfully.
 	// This assumes that all ciphers are AEAD.
 	// TODO: Reorder list to try previously successful ciphers first for the client IP.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
 	for id, cipher := range cipherList {
-		// tmpReader reads first from the replayBuffer and then from clientConn if it needs more
-		// bytes. All bytes read from clientConn are saved in replayBuffer for future replays.
-		tmpReader := io.MultiReader(bytes.NewReader(replayBuffer.Bytes()), io.TeeReader(clientConn, &replayBuffer))
-		cipherReader := NewShadowsocksReader(tmpReader, cipher)
-		// Read should read just enough data to authenticate the payload size.
-		_, err := cipherReader.Read(make([]byte, 0))
+		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize())
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("Failed TCP cipher %v: %v", id, err)
+				logger.Debugf("Failed TCP ciper %v: %v", id, err)
+			}
+			continue
+		}
+		salt := replayBytes[:cipher.SaltSize()]
+		aead, err := cipher.Decrypter(salt)
+		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize()+2+aead.Overhead())
+		if err != nil {
+			if logger.IsEnabledFor(logging.DEBUG) {
+				logger.Debugf("Failed TCP ciper %v: %v", id, err)
+			}
+			continue
+		}
+		cipherText := replayBytes[cipher.SaltSize() : cipher.SaltSize()+2+aead.Overhead()]
+		_, err = aead.Open(chunkLenBuf[:0], zeroCountBuf[:aead.NonceSize()], cipherText, nil)
+		if err != nil {
+			if logger.IsEnabledFor(logging.DEBUG) {
+				logger.Debugf("Failed TCP ciper %v: %v", id, err)
 			}
 			continue
 		}
 		if logger.IsEnabledFor(logging.DEBUG) {
 			logger.Debugf("Selected TCP cipher %v", id)
 		}
-		// We don't need to keep storing and replaying the bytes anymore, but we don't want to drop
-		// those already read into the replayBuffer.
-		ssr := NewShadowsocksReader(io.MultiReader(&replayBuffer, clientConn), cipher)
+		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(replayBytes), clientConn), cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
 	}
-	return "", nil, fmt.Errorf("could not find valid key")
+	return "", nil, fmt.Errorf("Could not find valid TCP cipher")
 }
 
 type tcpService struct {
