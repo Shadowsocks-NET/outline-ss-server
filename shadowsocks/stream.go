@@ -38,9 +38,10 @@ type shadowsocksWriter struct {
 	writer   io.Writer
 	ssCipher shadowaead.Cipher
 	// These are lazily initialized:
-	buf   []byte
-	aead  cipher.AEAD
-	nonce []byte
+	buf  []byte
+	aead cipher.AEAD
+	// Index of the next encrypted chunk to write.
+	counter []byte
 }
 
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
@@ -65,7 +66,7 @@ func (sw *shadowsocksWriter) init() (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
-		sw.nonce = make([]byte, sw.aead.NonceSize())
+		sw.counter = make([]byte, sw.aead.NonceSize())
 		sw.buf = make([]byte, 2+sw.aead.Overhead()+payloadSizeMask+sw.aead.Overhead())
 	}
 	return nil
@@ -73,8 +74,8 @@ func (sw *shadowsocksWriter) init() (err error) {
 
 // WriteBlock encrypts and writes the input buffer as one signed block.
 func (sw *shadowsocksWriter) encryptBlock(ciphertext []byte, plaintext []byte) ([]byte, error) {
-	out := sw.aead.Seal(ciphertext, sw.nonce, plaintext, nil)
-	increment(sw.nonce)
+	out := sw.aead.Seal(ciphertext, sw.counter, plaintext, nil)
+	increment(sw.counter)
 	return out, nil
 }
 
@@ -120,8 +121,9 @@ type shadowsocksReader struct {
 	reader   io.Reader
 	ssCipher shadowaead.Cipher
 	// These are lazily initialized:
-	aead     cipher.AEAD
-	nonce    []byte
+	aead cipher.AEAD
+	// Index of the next encrypted chunk to read.
+	counter  []byte
 	buf      []byte
 	leftover []byte
 }
@@ -154,7 +156,7 @@ func (sr *shadowsocksReader) init() (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
-		sr.nonce = make([]byte, sr.aead.NonceSize())
+		sr.counter = make([]byte, sr.aead.NonceSize())
 		sr.buf = make([]byte, payloadSizeMask+sr.aead.Overhead())
 	}
 	return nil
@@ -176,8 +178,8 @@ func (sr *shadowsocksReader) readBlock(decryptedBlockSize int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	buf, err = sr.aead.Open(buf[:0], sr.nonce, buf, nil)
-	increment(sr.nonce)
+	buf, err = sr.aead.Open(buf[:0], sr.counter, buf, nil)
+	increment(sr.counter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt: %v", err)
 	}

@@ -28,7 +28,7 @@ func BenchmarkUDPUnpack(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	testPayload := sstest.MakeTestPayload(60)
+	testPayload := sstest.MakeTestPayload(50)
 	textBuf := make([]byte, udpBufSize)
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
