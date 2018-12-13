@@ -30,6 +30,8 @@ import (
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
+// Reads bytes from reader and appends to buf to ensure the needed number of bytes.
+// The cpacity of buf must be at least bytesNeeded.
 func ensureBytes(reader io.Reader, buf []byte, bytesNeeded int) ([]byte, error) {
 	if cap(buf) < bytesNeeded {
 		return buf, io.ErrShortBuffer
