@@ -36,7 +36,7 @@ func BenchmarkTCPFindCipher(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	testPayload := sstest.MakeTestPayload(60)
+	testPayload := sstest.MakeTestPayload(50)
 	for n := 0; n < b.N; n++ {
 		go func() {
 			conn, err := net.Dial("tcp", listener.Addr().String())
