@@ -35,8 +35,11 @@ const udpBufSize = 64 * 1024
 
 // upack decrypts src into dst. It tries each cipher until it finds one that authenticates
 // correctly. dst and src must not overlap.
-func unpack(dst, src []byte, ciphers map[string]shadowaead.Cipher) ([]byte, string, shadowaead.Cipher, error) {
-	for id, cipher := range ciphers {
+func unpack(dst, src []byte, cipherMap map[string]shadowaead.Cipher) ([]byte, string, shadowaead.Cipher, error) {
+	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
+	// We shuffle the cipher map so that every connection has the same expected time.
+	for _, entry := range shuffleCipherMap(cipherMap) {
+		id, cipher := entry.id, entry.cipher
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
@@ -60,10 +63,12 @@ type udpService struct {
 	isRunning  bool
 }
 
-func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: ciphers, m: m}
+// NewUDPService creates a UDPService
+func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherMap *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) UDPService {
+	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: cipherMap, m: m}
 }
 
+// UDPService is a UDP shadowsocks service that can be started and stopped.
 type UDPService interface {
 	Start()
 	Stop() error
