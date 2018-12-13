@@ -60,10 +60,12 @@ type udpService struct {
 	isRunning  bool
 }
 
+// NewUDPService creates a UDPService
 func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) UDPService {
 	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: ciphers, m: m}
 }
 
+// UDPService is a UDP shadowsocks service that can be started and stopped.
 type UDPService interface {
 	Start()
 	Stop() error

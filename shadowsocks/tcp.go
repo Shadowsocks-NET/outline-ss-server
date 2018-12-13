@@ -103,10 +103,12 @@ type tcpService struct {
 	isRunning bool
 }
 
+// NewTCPService creates a TCPService
 func NewTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) TCPService {
 	return &tcpService{listener: listener, ciphers: ciphers, m: m}
 }
 
+// TCPService is a Shadowsocks TCP service that can be started and stopped.
 type TCPService interface {
 	Start()
 	Stop() error
@@ -156,24 +158,24 @@ func (s *tcpService) Start() {
 
 			keyID, clientConn, err := findAccessKey(clientConn, *s.ciphers)
 			if err != nil {
-				return &onet.ConnectionError{"ERR_CIPHER", "Failed to find a valid cipher", err}
+				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
 			}
 
 			tgtAddr, err := socks.ReadAddr(clientConn)
 			if err != nil {
-				return &onet.ConnectionError{"ERR_READ_ADDRESS", "Failed to get target address", err}
+				return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
 			}
 			tgtTCPAddr, err := net.ResolveTCPAddr("tcp", tgtAddr.String())
 			if err != nil {
-				return &onet.ConnectionError{"ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err}
+				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 			}
 			if !tgtTCPAddr.IP.IsGlobalUnicast() {
-				return &onet.ConnectionError{"ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err}
+				return onet.NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err)
 			}
 
 			tgtTCPConn, err := net.DialTCP("tcp", nil, tgtTCPAddr)
 			if err != nil {
-				return &onet.ConnectionError{"ERR_CONNECT", "Failed to connect to target", err}
+				return onet.NewConnectionError("ERR_CONNECT", "Failed to connect to target", err)
 			}
 			defer tgtTCPConn.Close()
 			tgtTCPConn.SetKeepAlive(true)
@@ -183,7 +185,7 @@ func (s *tcpService) Start() {
 			logger.Debugf("proxy %s <-> %s", clientConn.RemoteAddr().String(), tgtConn.RemoteAddr().String())
 			_, _, err = onet.Relay(clientConn, tgtConn)
 			if err != nil {
-				return &onet.ConnectionError{"ERR_RELAY", "Failed to relay traffic", err}
+				return onet.NewConnectionError("ERR_RELAY", "Failed to relay traffic", err)
 			}
 			return nil
 		}()
