@@ -107,6 +107,14 @@ Run the iperf3 client tests listed above on port 10002.
 
 You can mix and match the libev and go servers and clients.
 
+## Benchmark
+
+You can benchmark the cipher finding code with
+```
+go test -cpuprofile cpu.prof -memprofile mem.prof -bench . -benchmem -run=^$ github.com/Jigsaw-Code/outline-ss-server/shadowsocks
+```
+
+You can inspect the CPU or memory profiles with `go tool pprof cpu.prof` or `go tool pprof mem.prof`, and then enter `web` on the prompt.
 
 ## Release
 
@@ -114,6 +122,10 @@ We use [GoReleaser](https://goreleaser.com/) to build and upload binaries to our
 
 Summary:
 - [Install GoReleaser](https://goreleaser.com/install/).
+- Test the build locally:
+  ```
+  goreleaser --rm-dist --snapshot
+  ```
 - Export an environment variable named `GITHUB_TOKEN` with a repo-scoped GitHub token ([create one here](https://github.com/settings/tokens/new)):
   ```bash
   export GITHUB_TOKEN=yournewtoken
@@ -127,10 +139,5 @@ Summary:
   ```bash
   goreleaser
   ```
-
-To test locally without tagging/uploading , use `--skip-publish`:
-```bash
-goreleaser --skip-publish
-```
 
 Full instructions in [GoReleaser's Quick Start](https://goreleaser.com/quick-start) (jump to the section starting "You’ll need to export a GITHUB_TOKEN environment variable").
