@@ -12,13 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+project_name: outline-ss-server
+
 # Build for macOS, Linux, and Windows.
 # Skip 32 bit macOS builds.
 builds:
   -
+    env:
+      - CGO_ENABLED=0
     goos:
-      # Disable macOS while the build is broken: https://github.com/golang/go/issues/29170
-      # - darwin
+      - darwin
       - windows
       - linux
     ignore:
