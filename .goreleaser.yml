@@ -40,6 +40,12 @@ checksum:
 snapshot:
   name_template: "{{ .Tag }}-next"
 
+release:
+  # This prevents auto-publishing the release. You need to manually publish it.
+  draft: true
+  # Marks the release as not ready for production in case there's a tag indicator (e.g. -rc1)
+  prerelease: auto
+
 changelog:
   sort: asc
   filters:
