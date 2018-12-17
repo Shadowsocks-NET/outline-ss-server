@@ -139,5 +139,6 @@ Summary:
   ```bash
   goreleaser
   ```
+- Go to https://github.com/Jigsaw-Code/outline-ss-server/releases, review and publish the release.
 
 Full instructions in [GoReleaser's Quick Start](https://goreleaser.com/quick-start) (jump to the section starting "You’ll need to export a GITHUB_TOKEN environment variable").
