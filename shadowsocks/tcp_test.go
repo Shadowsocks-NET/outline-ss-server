@@ -18,7 +18,6 @@ import (
 	"net"
 	"testing"
 
-	sstest "github.com/Jigsaw-Code/outline-ss-server/shadowsocks/testing"
 	logging "github.com/op/go-logging"
 )
 
@@ -32,11 +31,11 @@ func BenchmarkTCPFindCipher(b *testing.B) {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
 
-	cipherList, err := sstest.MakeTestCiphers(100)
+	cipherList, err := MakeTestCiphers(100)
 	if err != nil {
 		b.Fatal(err)
 	}
-	testPayload := sstest.MakeTestPayload(50)
+	testPayload := MakeTestPayload(50)
 	for n := 0; n < b.N; n++ {
 		go func() {
 			conn, err := net.Dial("tcp", listener.Addr().String())

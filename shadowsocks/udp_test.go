@@ -17,18 +17,17 @@ package shadowsocks
 import (
 	"testing"
 
-	sstest "github.com/Jigsaw-Code/outline-ss-server/shadowsocks/testing"
 	logging "github.com/op/go-logging"
 )
 
 func BenchmarkUDPUnpack(b *testing.B) {
 	logging.SetLevel(logging.INFO, "")
 
-	cipherList, err := sstest.MakeTestCiphers(100)
+	cipherList, err := MakeTestCiphers(100)
 	if err != nil {
 		b.Fatal(err)
 	}
-	testPayload := sstest.MakeTestPayload(50)
+	testPayload := MakeTestPayload(50)
 	textBuf := make([]byte, udpBufSize)
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
