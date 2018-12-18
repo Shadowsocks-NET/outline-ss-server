@@ -173,10 +173,10 @@ func (s *tcpService) Start() {
 			clientConn.(*net.TCPConn).SetKeepAlive(true)
 			keyID := ""
 			var proxyMetrics metrics.ProxyMetrics
+			var timeToCipher time.Duration
 			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
 			defer func() {
-				connEnd := time.Now()
-				connDuration := connEnd.Sub(connStart)
+				connDuration := time.Now().Sub(connStart)
 				clientConn.Close()
 				status := "OK"
 				if connError != nil {
@@ -184,10 +184,13 @@ func (s *tcpService) Start() {
 					status = connError.Status
 				}
 				logger.Debugf("Done with status %v, duration %v", status, connDuration)
-				s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, connDuration)
+				s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, timeToCipher, connDuration)
 			}()
 
+			findStartTime := time.Now()
 			keyID, clientConn, err := findAccessKey(clientConn, *s.ciphers)
+			timeToCipher = time.Now().Sub(findStartTime)
+
 			if err != nil {
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
 			}

@@ -97,13 +97,14 @@ func (s *udpService) Start() {
 			clientLocation := ""
 			keyID := ""
 			var clientProxyBytes, proxyTargetBytes int
+			var timeToCipher time.Duration
 			defer func() {
 				status := "OK"
 				if connError != nil {
 					logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 					status = connError.Status
 				}
-				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes)
+				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
 			}()
 			clientProxyBytes, clientAddr, err := s.clientConn.ReadFrom(cipherBuf)
 			if err != nil {
@@ -119,7 +120,10 @@ func (s *udpService) Start() {
 			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
 			defer logger.Debugf("UDP done with %v", clientAddr.String())
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
+			unpackStart := time.Now()
 			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], *s.ciphers)
+			timeToCipher = time.Now().Sub(unpackStart)
+
 			if err != nil {
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to upack data from client", err)
 			}
@@ -206,10 +210,10 @@ func (m *natmap) del(key string) net.PacketConn {
 func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) {
 	m.set(clientAddr.String(), targetConn)
 
-	m.metrics.AddUdpNatEntry()
+	m.metrics.AddUDPNatEntry()
 	go func() {
 		timedCopy(clientAddr, clientConn, cipher, targetConn, m.timeout, clientLocation, keyID, m.metrics)
-		m.metrics.RemoveUdpNatEntry()
+		m.metrics.RemoveUDPNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
 		}
