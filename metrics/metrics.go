@@ -105,7 +105,7 @@ func NewShadowsocksMetrics(ipCountryDB *geoip2.Reader) ShadowsocksMetrics {
 				Name:       "time_to_cipher_ms",
 				Help:       "Time needed to find the cipher",
 				Objectives: map[float64]float64{0.5: 0.02, 0.9: 0.01, 0.99: 0.005},
-			}, []string{"proto", "location", "status", "access_key"}),
+			}, []string{"proto", "location", "access_key"}),
 		udpAddedNatEntries: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Namespace: "shadowsocks",
@@ -177,7 +177,7 @@ func (m *shadowsocksMetrics) AddOpenTCPConnection(clientLocation string) {
 func (m *shadowsocksMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data ProxyMetrics, timeToCipher, duration time.Duration) {
 	m.tcpClosedConnections.WithLabelValues(clientLocation, status, accessKey).Inc()
 	m.tcpConnectionDurationMs.WithLabelValues(clientLocation, status, accessKey).Observe(duration.Seconds() * 1000)
-	m.timeToCipherMs.WithLabelValues("tcp", clientLocation, status, accessKey).Observe(timeToCipher.Seconds() * 1000)
+	m.timeToCipherMs.WithLabelValues("tcp", clientLocation, accessKey).Observe(timeToCipher.Seconds() * 1000)
 	m.dataBytes.WithLabelValues("c>p", "tcp", clientLocation, status, accessKey).Add(float64(data.ClientProxy))
 	m.dataBytes.WithLabelValues("p>t", "tcp", clientLocation, status, accessKey).Add(float64(data.ProxyTarget))
 	m.dataBytes.WithLabelValues("p<t", "tcp", clientLocation, status, accessKey).Add(float64(data.TargetProxy))
@@ -185,7 +185,7 @@ func (m *shadowsocksMetrics) AddClosedTCPConnection(clientLocation, accessKey, s
 }
 
 func (m *shadowsocksMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {
-	m.timeToCipherMs.WithLabelValues("udp", clientLocation, status, accessKey).Observe(timeToCipher.Seconds() * 1000)
+	m.timeToCipherMs.WithLabelValues("udp", clientLocation, accessKey).Observe(timeToCipher.Seconds() * 1000)
 	m.dataBytes.WithLabelValues("c>p", "udp", clientLocation, status, accessKey).Add(float64(clientProxyBytes))
 	m.dataBytes.WithLabelValues("p>t", "udp", clientLocation, status, accessKey).Add(float64(proxyTargetBytes))
 }
