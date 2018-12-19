@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package testing
+package shadowsocks
 
 import (
 	"fmt"
@@ -21,8 +21,8 @@ import (
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
-func MakeTestCiphers(numCiphers int) (map[string]shadowaead.Cipher, error) {
-	cipherList := make(map[string]shadowaead.Cipher)
+func MakeTestCiphers(numCiphers int) (CipherList, error) {
+	cipherList := NewCipherList()
 	for i := 0; i < numCiphers; i++ {
 		cipherID := fmt.Sprintf("id-%v", i)
 		secret := fmt.Sprintf("secret-%v", i)
@@ -30,7 +30,7 @@ func MakeTestCiphers(numCiphers int) (map[string]shadowaead.Cipher, error) {
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create cipher %v: %v", i, err)
 		}
-		cipherList[cipherID] = cipher.(shadowaead.Cipher)
+		cipherList.PushBack(cipherID, cipher.(shadowaead.Cipher))
 	}
 	return cipherList, nil
 }

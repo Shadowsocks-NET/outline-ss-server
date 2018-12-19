@@ -35,11 +35,11 @@ const udpBufSize = 64 * 1024
 
 // upack decrypts src into dst. It tries each cipher until it finds one that authenticates
 // correctly. dst and src must not overlap.
-func unpack(dst, src []byte, cipherMap map[string]shadowaead.Cipher) ([]byte, string, shadowaead.Cipher, error) {
+func unpack(dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
-	// We shuffle the cipher map so that every connection has the same expected time.
-	for _, entry := range shuffleCipherMap(cipherMap) {
-		id, cipher := entry.id, entry.cipher
+	// We snapshot the list because it may be modified while we use it.
+	for _, entry := range cipherList.SafeSnapshot() {
+		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
@@ -50,6 +50,8 @@ func unpack(dst, src []byte, cipherMap map[string]shadowaead.Cipher) ([]byte, st
 		if logger.IsEnabledFor(logging.DEBUG) {
 			logger.Debugf("Selected UDP cipher %v", id)
 		}
+		// Move the active cipher to the front, so that the search is quicker next time.
+		cipherList.SafeMoveToFront(entry)
 		return buf, id, cipher, nil
 	}
 	return nil, "", nil, errors.New("could not find valid cipher")
@@ -58,14 +60,14 @@ func unpack(dst, src []byte, cipherMap map[string]shadowaead.Cipher) ([]byte, st
 type udpService struct {
 	clientConn net.PacketConn
 	natTimeout time.Duration
-	ciphers    *map[string]shadowaead.Cipher
+	ciphers    *CipherList
 	m          metrics.ShadowsocksMetrics
 	isRunning  bool
 }
 
 // NewUDPService creates a UDPService
-func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherMap *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: cipherMap, m: m}
+func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList *CipherList, m metrics.ShadowsocksMetrics) UDPService {
+	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: cipherList, m: m}
 }
 
 // UDPService is a UDP shadowsocks service that can be started and stopped.
@@ -95,13 +97,14 @@ func (s *udpService) Start() {
 			clientLocation := ""
 			keyID := ""
 			var clientProxyBytes, proxyTargetBytes int
+			var timeToCipher time.Duration
 			defer func() {
 				status := "OK"
 				if connError != nil {
 					logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 					status = connError.Status
 				}
-				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes)
+				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
 			}()
 			clientProxyBytes, clientAddr, err := s.clientConn.ReadFrom(cipherBuf)
 			if err != nil {
@@ -117,7 +120,10 @@ func (s *udpService) Start() {
 			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
 			defer logger.Debugf("UDP done with %v", clientAddr.String())
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
+			unpackStart := time.Now()
 			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], *s.ciphers)
+			timeToCipher = time.Now().Sub(unpackStart)
+
 			if err != nil {
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to upack data from client", err)
 			}
@@ -204,10 +210,10 @@ func (m *natmap) del(key string) net.PacketConn {
 func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) {
 	m.set(clientAddr.String(), targetConn)
 
-	m.metrics.AddUdpNatEntry()
+	m.metrics.AddUDPNatEntry()
 	go func() {
 		timedCopy(clientAddr, clientConn, cipher, targetConn, m.timeout, clientLocation, keyID, m.metrics)
-		m.metrics.RemoveUdpNatEntry()
+		m.metrics.RemoveUDPNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
 		}

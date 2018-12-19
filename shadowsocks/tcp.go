@@ -26,7 +26,6 @@ import (
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -48,7 +47,7 @@ func ensureBytes(reader io.Reader, buf []byte, bytesNeeded int) ([]byte, error) 
 	return buf, err
 }
 
-func findAccessKey(clientConn onet.DuplexConn, cipherMap map[string]shadowaead.Cipher) (string, onet.DuplexConn, error) {
+func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, onet.DuplexConn, error) {
 	// This must have enough space to hold the salt + 2 bytes chunk length + AEAD tag (Oeverhead) for any cipher
 	replayBytes := make([]byte, 0, 32+2+16)
 	// Constant of zeroes to use as the start chunk count. This must be as big as the max NonceSize() across all ciphers.
@@ -58,11 +57,10 @@ func findAccessKey(clientConn onet.DuplexConn, cipherMap map[string]shadowaead.C
 	var err error
 
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
-	// We shuffle the cipher map so that every connection has the same expected time.
-	// TODO: Reorder list to try previously successful ciphers first for the client IP.
+	// We snapshot the list because it may be modified while we use it.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-	for _, entry := range shuffleCipherMap(cipherMap) {
-		id, cipher := entry.id, entry.cipher
+	for _, entry := range cipherList.SafeSnapshot() {
+		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize())
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
@@ -90,6 +88,8 @@ func findAccessKey(clientConn onet.DuplexConn, cipherMap map[string]shadowaead.C
 		if logger.IsEnabledFor(logging.DEBUG) {
 			logger.Debugf("Selected TCP cipher %v", id)
 		}
+		// Move the active cipher to the front, so that the search is quicker next time.
+		cipherList.SafeMoveToFront(entry)
 		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(replayBytes), clientConn), cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
@@ -99,13 +99,13 @@ func findAccessKey(clientConn onet.DuplexConn, cipherMap map[string]shadowaead.C
 
 type tcpService struct {
 	listener  *net.TCPListener
-	ciphers   *map[string]shadowaead.Cipher
+	ciphers   *CipherList
 	m         metrics.ShadowsocksMetrics
 	isRunning bool
 }
 
 // NewTCPService creates a TCPService
-func NewTCPService(listener *net.TCPListener, ciphers *map[string]shadowaead.Cipher, m metrics.ShadowsocksMetrics) TCPService {
+func NewTCPService(listener *net.TCPListener, ciphers *CipherList, m metrics.ShadowsocksMetrics) TCPService {
 	return &tcpService{listener: listener, ciphers: ciphers, m: m}
 }
 
@@ -173,10 +173,10 @@ func (s *tcpService) Start() {
 			clientConn.(*net.TCPConn).SetKeepAlive(true)
 			keyID := ""
 			var proxyMetrics metrics.ProxyMetrics
+			var timeToCipher time.Duration
 			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
 			defer func() {
-				connEnd := time.Now()
-				connDuration := connEnd.Sub(connStart)
+				connDuration := time.Now().Sub(connStart)
 				clientConn.Close()
 				status := "OK"
 				if connError != nil {
@@ -184,10 +184,13 @@ func (s *tcpService) Start() {
 					status = connError.Status
 				}
 				logger.Debugf("Done with status %v, duration %v", status, connDuration)
-				s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, connDuration)
+				s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, timeToCipher, connDuration)
 			}()
 
+			findStartTime := time.Now()
 			keyID, clientConn, err := findAccessKey(clientConn, *s.ciphers)
+			timeToCipher = time.Now().Sub(findStartTime)
+
 			if err != nil {
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
 			}

@@ -54,7 +54,7 @@ func init() {
 type SSPort struct {
 	tcpService shadowsocks.TCPService
 	udpService shadowsocks.UDPService
-	keys       map[string]shadowaead.Cipher
+	cipherList shadowsocks.CipherList
 }
 
 type SSServer struct {
@@ -73,10 +73,10 @@ func (s *SSServer) startPort(portNum int) error {
 		return fmt.Errorf("Failed to start UDP on port %v: %v", portNum, err)
 	}
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
-	port := &SSPort{keys: make(map[string]shadowaead.Cipher)}
+	port := &SSPort{cipherList: shadowsocks.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
-	port.tcpService = shadowsocks.NewTCPService(listener, &port.keys, s.m)
-	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, &port.keys, s.m)
+	port.tcpService = shadowsocks.NewTCPService(listener, &port.cipherList, s.m)
+	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, &port.cipherList, s.m)
 	s.ports[portNum] = port
 	go port.udpService.Start()
 	go port.tcpService.Start()
@@ -108,13 +108,13 @@ func (s *SSServer) loadConfig(filename string) error {
 	}
 
 	portChanges := make(map[int]int)
-	portKeys := make(map[int]map[string]shadowaead.Cipher)
+	portCiphers := make(map[int]shadowsocks.CipherList)
 	for _, keyConfig := range config.Keys {
 		portChanges[keyConfig.Port] = 1
-		keys, ok := portKeys[keyConfig.Port]
+		cipherList, ok := portCiphers[keyConfig.Port]
 		if !ok {
-			keys = make(map[string]shadowaead.Cipher)
-			portKeys[keyConfig.Port] = keys
+			cipherList = shadowsocks.NewCipherList()
+			portCiphers[keyConfig.Port] = cipherList
 		}
 		cipher, err := core.PickCipher(keyConfig.Cipher, nil, keyConfig.Secret)
 		if err != nil {
@@ -127,7 +127,7 @@ func (s *SSServer) loadConfig(filename string) error {
 		if !ok {
 			return fmt.Errorf("Only AEAD ciphers are supported. Found %v", keyConfig.Cipher)
 		}
-		keys[keyConfig.ID] = aead
+		cipherList.PushBack(keyConfig.ID, aead)
 	}
 	for port := range s.ports {
 		portChanges[port] = portChanges[port] - 1
@@ -143,11 +143,11 @@ func (s *SSServer) loadConfig(filename string) error {
 			}
 		}
 	}
-	for portNum, keys := range portKeys {
-		s.ports[portNum].keys = keys
+	for portNum, cipherList := range portCiphers {
+		s.ports[portNum].cipherList = cipherList
 	}
 	logger.Infof("Loaded %v access keys", len(config.Keys))
-	s.m.SetNumAccessKeys(len(config.Keys), len(portKeys))
+	s.m.SetNumAccessKeys(len(config.Keys), len(portCiphers))
 	return nil
 }
 
