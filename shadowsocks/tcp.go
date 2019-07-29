@@ -21,10 +21,9 @@ import (
 	"net"
 	"time"
 
-	logging "github.com/op/go-logging"
-
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+	logging "github.com/op/go-logging"
 
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
@@ -47,6 +46,21 @@ func ensureBytes(reader io.Reader, buf []byte, bytesNeeded int) ([]byte, error) 
 	return buf, err
 }
 
+func remoteIP(conn net.Conn) net.IP {
+	addr := conn.RemoteAddr()
+	if addr == nil {
+		return nil
+	}
+	if tcpaddr, ok := addr.(*net.TCPAddr); ok {
+		return tcpaddr.IP
+	}
+	ipstr, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err == nil {
+		return net.ParseIP(ipstr)
+	}
+	return nil
+}
+
 func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, onet.DuplexConn, error) {
 	// This must have enough space to hold the salt + 2 bytes chunk length + AEAD tag (Oeverhead) for any cipher
 	replayBytes := make([]byte, 0, 32+2+16)
@@ -56,15 +70,16 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 	chunkLenBuf := [2]byte{}
 	var err error
 
+	ip := remoteIP(clientConn)
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-	for _, entry := range cipherList.SafeSnapshot() {
+	for n, entry := range cipherList.SafeSnapshot(ip) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize())
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("Failed TCP ciper %v: %v", id, err)
+				logger.Debugf("TCP: Failed to read salt %v: %v", id, err)
 			}
 			continue
 		}
@@ -73,7 +88,7 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize()+2+aead.Overhead())
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("Failed TCP ciper %v: %v", id, err)
+				logger.Debugf("TCP: Failed to read length %v: %v", id, err)
 			}
 			continue
 		}
@@ -81,7 +96,7 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 		_, err = aead.Open(chunkLenBuf[:0], zeroCountBuf[:aead.NonceSize()], cipherText, nil)
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("Failed TCP ciper %v: %v", id, err)
+				logger.Debugf("TCP: failed to decrypt length %v: %v", id, err)
 			}
 			continue
 		}
@@ -89,9 +104,12 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 			logger.Debugf("Selected TCP cipher %v", id)
 		}
 		// Move the active cipher to the front, so that the search is quicker next time.
-		cipherList.SafeMoveToFront(entry)
+		cipherList.SafeMoveToFront(entry, ip)
 		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(replayBytes), clientConn), cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
+		if logger.IsEnabledFor(logging.DEBUG) {
+			logger.Debugf("Found cipher at index #%d", n)
+		}
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
 	}
 	return "", nil, fmt.Errorf("Could not find valid TCP cipher")

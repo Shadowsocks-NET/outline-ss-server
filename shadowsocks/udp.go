@@ -35,10 +35,10 @@ const udpBufSize = 64 * 1024
 
 // upack decrypts src into dst. It tries each cipher until it finds one that authenticates
 // correctly. dst and src must not overlap.
-func unpack(dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
+func unpack(sender net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
-	for _, entry := range cipherList.SafeSnapshot() {
+	for i, entry := range cipherList.SafeSnapshot(sender) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {
@@ -48,10 +48,10 @@ func unpack(dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.
 			continue
 		}
 		if logger.IsEnabledFor(logging.DEBUG) {
-			logger.Debugf("Selected UDP cipher %v", id)
+			logger.Debugf("Selected UDP cipher %v at index %d", id, i)
 		}
 		// Move the active cipher to the front, so that the search is quicker next time.
-		cipherList.SafeMoveToFront(entry)
+		cipherList.SafeMoveToFront(entry, sender)
 		return buf, id, cipher, nil
 	}
 	return nil, "", nil, errors.New("could not find valid cipher")
@@ -121,7 +121,8 @@ func (s *udpService) Start() {
 			defer logger.Debugf("UDP done with %v", clientAddr.String())
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
 			unpackStart := time.Now()
-			buf, keyID, cipher, err := unpack(textBuf, cipherBuf[:clientProxyBytes], *s.ciphers)
+			ip := clientAddr.(*net.IPAddr).IP
+			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], *s.ciphers)
 			timeToCipher = time.Now().Sub(unpackStart)
 
 			if err != nil {
