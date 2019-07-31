@@ -129,7 +129,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		b.Fatal(err)
 	}
 	cipherEntries := [numCiphers]*CipherEntry{}
-	for cipherNumber, element := range cipherList.SafeSnapshot(nil) {
+	for cipherNumber, element := range cipherList.SafeSnapshotForClientIP(nil) {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
 	}
 	for n := 0; n < b.N; n++ {

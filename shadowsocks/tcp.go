@@ -70,11 +70,11 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 	chunkLenBuf := [2]byte{}
 	var err error
 
-	ip := remoteIP(clientConn)
+	clientIP := remoteIP(clientConn)
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-	for n, entry := range cipherList.SafeSnapshot(ip) {
+	for ci, entry := range cipherList.SafeSnapshotForClientIP(clientIP) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize())
 		if err != nil {
@@ -96,20 +96,17 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 		_, err = aead.Open(chunkLenBuf[:0], zeroCountBuf[:aead.NonceSize()], cipherText, nil)
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("TCP: failed to decrypt length %v: %v", id, err)
+				logger.Debugf("TCP: Failed to decrypt length %v: %v", id, err)
 			}
 			continue
 		}
 		if logger.IsEnabledFor(logging.DEBUG) {
-			logger.Debugf("Selected TCP cipher %v", id)
+			logger.Debugf("TCP: Found cipher %v at index %d", id, ci)
 		}
 		// Move the active cipher to the front, so that the search is quicker next time.
-		cipherList.SafeMoveToFront(entry, ip)
+		cipherList.MarkUsedByClientIP(entry, clientIP)
 		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(replayBytes), clientConn), cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
-		if logger.IsEnabledFor(logging.DEBUG) {
-			logger.Debugf("Found cipher at index #%d", n)
-		}
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
 	}
 	return "", nil, fmt.Errorf("Could not find valid TCP cipher")

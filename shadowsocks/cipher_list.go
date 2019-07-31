@@ -25,17 +25,17 @@ import (
 // CipherEntry holds a Cipher with an identifier.
 // The public fields are constant, but lastAddress is mutable under cipherList.mu.
 type CipherEntry struct {
-	ID          string
-	Cipher      shadowaead.Cipher
-	lastAddress net.IP
+	ID           string
+	Cipher       shadowaead.Cipher
+	lastClientIP net.IP
 }
 
 // CipherList is a list of CipherEntry elements that allows for thread-safe snapshotting and
 // moving to front.
 type CipherList interface {
 	PushBack(id string, cipher shadowaead.Cipher) *list.Element
-	SafeSnapshot(addr net.IP) []*list.Element
-	SafeMoveToFront(e *list.Element, addr net.IP)
+	SafeSnapshotForClientIP(clientIP net.IP) []*list.Element
+	MarkUsedByClientIP(e *list.Element, clientIP net.IP)
 }
 
 type cipherList struct {
@@ -53,26 +53,26 @@ func (cl *cipherList) PushBack(id string, cipher shadowaead.Cipher) *list.Elemen
 	return cl.list.PushBack(&CipherEntry{ID: id, Cipher: cipher})
 }
 
-func matchesIP(e *list.Element, addr net.IP) bool {
+func matchesIP(e *list.Element, clientIP net.IP) bool {
 	c := e.Value.(*CipherEntry)
-	return addr != nil && addr.Equal(c.lastAddress)
+	return clientIP != nil && clientIP.Equal(c.lastClientIP)
 }
 
-func (cl *cipherList) SafeSnapshot(addr net.IP) []*list.Element {
+func (cl *cipherList) SafeSnapshotForClientIP(clientIP net.IP) []*list.Element {
 	cl.mu.RLock()
 	defer cl.mu.RUnlock()
 	cipherArray := make([]*list.Element, cl.list.Len())
 	i := 0
 	// First pass: put all ciphers with matching last known IP at the front.
 	for e := cl.list.Front(); e != nil; e = e.Next() {
-		if matchesIP(e, addr) {
+		if matchesIP(e, clientIP) {
 			cipherArray[i] = e
 			i++
 		}
 	}
 	// Second pass: include all remaining ciphers in recency order.
 	for e := cl.list.Front(); e != nil; e = e.Next() {
-		if !matchesIP(e, addr) {
+		if !matchesIP(e, clientIP) {
 			cipherArray[i] = e
 			i++
 		}
@@ -80,11 +80,11 @@ func (cl *cipherList) SafeSnapshot(addr net.IP) []*list.Element {
 	return cipherArray
 }
 
-func (cl *cipherList) SafeMoveToFront(e *list.Element, addr net.IP) {
+func (cl *cipherList) MarkUsedByClientIP(e *list.Element, clientIP net.IP) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 	cl.list.MoveToFront(e)
 
 	c := e.Value.(*CipherEntry)
-	c.lastAddress = addr
+	c.lastClientIP = clientIP
 }
