@@ -51,7 +51,7 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 			logger.Debugf("UDP: Found cipher %v at index %d", id, ci)
 		}
 		// Move the active cipher to the front, so that the search is quicker next time.
-		cipherList.MarkUsedByClientIP(entry, clientIP)
+		cipherList.SafeMarkUsedByClientIP(entry, clientIP)
 		return buf, id, cipher, nil
 	}
 	return nil, "", nil, errors.New("could not find valid cipher")

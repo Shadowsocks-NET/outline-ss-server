@@ -104,7 +104,7 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 			logger.Debugf("TCP: Found cipher %v at index %d", id, ci)
 		}
 		// Move the active cipher to the front, so that the search is quicker next time.
-		cipherList.MarkUsedByClientIP(entry, clientIP)
+		cipherList.SafeMarkUsedByClientIP(entry, clientIP)
 		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(replayBytes), clientConn), cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil

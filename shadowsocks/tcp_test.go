@@ -16,14 +16,13 @@ package shadowsocks
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"testing"
 	"time"
 
 	logging "github.com/op/go-logging"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
+	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 )
 
 // Simulates receiving invalid TCP connection attempts on a server with 100 ciphers.
@@ -64,6 +63,7 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 // Fake DuplexConn
 // 1-way pipe, representing the upstream flow as seen by the server.
 type conn struct {
+	onet.DuplexConn
 	clientAddr net.Addr
 	reader     io.ReadCloser
 	writer     io.WriteCloser
@@ -133,18 +133,12 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
 	}
 	for n := 0; n < b.N; n++ {
-		cipherNumber := n % numCiphers
+		cipherNumber := byte(n % numCiphers)
 		reader, writer := io.Pipe()
-		addr := &net.TCPAddr{IP: net.ParseIP(fmt.Sprintf("192.0.2.%d", cipherNumber)), Port: 54321}
-		c := conn{addr, reader, writer}
-		go func() {
-			cipher := cipherEntries[cipherNumber].Cipher
-			salt := make([]byte, cipher.SaltSize())
-			writer.Write(salt)
-			encrypter, _ := cipher.Encrypter(salt)
-			ssWriter := shadowaead.NewWriter(writer, encrypter)
-			ssWriter.Write(MakeTestPayload(50))
-		}()
+		addr := &net.TCPAddr{IP: net.IPv4(192, 0, 2, cipherNumber), Port: 54321}
+		c := conn{clientAddr: addr, reader: reader, writer: writer}
+		cipher := cipherEntries[cipherNumber].Cipher
+		go NewShadowsocksWriter(writer, cipher).Write(MakeTestPayload(50))
 		b.StartTimer()
 		_, _, err := findAccessKey(&c, cipherList)
 		b.StopTimer()

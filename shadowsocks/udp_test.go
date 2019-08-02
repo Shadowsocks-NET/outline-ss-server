@@ -15,7 +15,6 @@
 package shadowsocks
 
 import (
-	"fmt"
 	"net"
 	"testing"
 
@@ -60,7 +59,7 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 		if err != nil {
 			b.Error(err)
 		}
-		ips[i] = net.ParseIP(fmt.Sprintf("192.0.2.%d", i))
+		ips[i] = net.IPv4(192, 0, 2, byte(i))
 	}
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
@@ -91,7 +90,7 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	const numIPs = 100 // Must be <256
 	ips := [numIPs]net.IP{}
 	for i := 0; i < numIPs; i++ {
-		ips[i] = net.ParseIP(fmt.Sprintf("192.0.2.%d", i))
+		ips[i] = net.IPv4(192, 0, 2, byte(i))
 	}
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
