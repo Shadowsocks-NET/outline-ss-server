@@ -121,7 +121,7 @@ func (s *udpService) Start() {
 			defer logger.Debugf("UDP done with %v", clientAddr.String())
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
 			unpackStart := time.Now()
-			ip := clientAddr.(*net.IPAddr).IP
+			ip := clientAddr.(*net.UDPAddr).IP
 			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], *s.ciphers)
 			timeToCipher = time.Now().Sub(unpackStart)
 
@@ -139,7 +139,7 @@ func (s *udpService) Start() {
 				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 			}
 			if !tgtUDPAddr.IP.IsGlobalUnicast() {
-				return onet.NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err)
+				return onet.NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), nil)
 			}
 			if onet.IsPrivateAddress(tgtUDPAddr.IP) {
 				return onet.NewConnectionError("ERR_ADDRESS_PRIVATE", fmt.Sprintf("Target address is a private address: %v", tgtAddr.String()), nil)
