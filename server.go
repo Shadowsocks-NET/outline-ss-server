@@ -40,6 +40,8 @@ import (
 
 var logger *logging.Logger
 
+const tcpReadTimeout time.Duration = 59 * time.Second
+
 func init() {
 	var prefix = "%{level:.1s}%{time:2006-01-02T15:04:05.000Z07:00} %{pid} %{shortfile}]"
 	if terminal.IsTerminal(int(os.Stderr.Fd())) {
@@ -75,7 +77,7 @@ func (s *SSServer) startPort(portNum int) error {
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &SSPort{cipherList: shadowsocks.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
-	port.tcpService = shadowsocks.NewTCPService(listener, &port.cipherList, s.m)
+	port.tcpService = shadowsocks.NewTCPService(listener, &port.cipherList, s.m, tcpReadTimeout)
 	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, &port.cipherList, s.m)
 	s.ports[portNum] = port
 	go port.udpService.Start()

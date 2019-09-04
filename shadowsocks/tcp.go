@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"time"
 
@@ -29,7 +30,7 @@ import (
 )
 
 // Reads bytes from reader and appends to buf to ensure the needed number of bytes.
-// The cpacity of buf must be at least bytesNeeded.
+// The capacity of buf must be at least bytesNeeded.
 func ensureBytes(reader io.Reader, buf []byte, bytesNeeded int) ([]byte, error) {
 	if cap(buf) < bytesNeeded {
 		return buf, io.ErrShortBuffer
@@ -109,19 +110,20 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 		ssw := NewShadowsocksWriter(clientConn, cipher)
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
 	}
-	return "", nil, fmt.Errorf("Could not find valid TCP cipher")
+	return "", clientConn, fmt.Errorf("Could not find valid TCP cipher")
 }
 
 type tcpService struct {
-	listener  *net.TCPListener
-	ciphers   *CipherList
-	m         metrics.ShadowsocksMetrics
-	isRunning bool
+	listener    *net.TCPListener
+	ciphers     *CipherList
+	m           metrics.ShadowsocksMetrics
+	isRunning   bool
+	readTimeout time.Duration
 }
 
 // NewTCPService creates a TCPService
-func NewTCPService(listener *net.TCPListener, ciphers *CipherList, m metrics.ShadowsocksMetrics) TCPService {
-	return &tcpService{listener: listener, ciphers: ciphers, m: m}
+func NewTCPService(listener *net.TCPListener, ciphers *CipherList, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
+	return &tcpService{listener: listener, ciphers: ciphers, m: m, readTimeout: timeout}
 }
 
 // TCPService is a Shadowsocks TCP service that can be started and stopped.
@@ -189,6 +191,7 @@ func (s *tcpService) Start() {
 			}()
 			connStart := time.Now()
 			clientConn.(*net.TCPConn).SetKeepAlive(true)
+			clientConn.SetReadDeadline(connStart.Add(s.readTimeout))
 			keyID := ""
 			var proxyMetrics metrics.ProxyMetrics
 			var timeToCipher time.Duration
@@ -210,9 +213,12 @@ func (s *tcpService) Start() {
 			timeToCipher = time.Now().Sub(findStartTime)
 
 			if err != nil {
+				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
+				io.Copy(ioutil.Discard, clientConn) // drain socket
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
 			}
 
+			clientConn.SetReadDeadline(time.Time{})
 			return proxyConnection(clientConn, &proxyMetrics)
 		}()
 	}

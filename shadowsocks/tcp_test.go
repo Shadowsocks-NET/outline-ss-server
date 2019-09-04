@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	logging "github.com/op/go-logging"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+	logging "github.com/op/go-logging"
 )
 
 // Simulates receiving invalid TCP connection attempts on a server with 100 ciphers.
