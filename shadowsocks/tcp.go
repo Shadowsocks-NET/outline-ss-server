@@ -191,6 +191,7 @@ func (s *tcpService) Start() {
 			}()
 			connStart := time.Now()
 			clientConn.(*net.TCPConn).SetKeepAlive(true)
+			// Set a deadline for connection authentication
 			clientConn.SetReadDeadline(connStart.Add(s.readTimeout))
 			keyID := ""
 			var proxyMetrics metrics.ProxyMetrics
@@ -213,11 +214,13 @@ func (s *tcpService) Start() {
 			timeToCipher = time.Now().Sub(findStartTime)
 
 			if err != nil {
+				// Keep the connection open until we hit the authentication deadline to protect against probing attacks
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
 				io.Copy(ioutil.Discard, clientConn) // drain socket
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
 			}
 
+			// Clear the authentication deadline
 			clientConn.SetReadDeadline(time.Time{})
 			return proxyConnection(clientConn, &proxyMetrics)
 		}()
