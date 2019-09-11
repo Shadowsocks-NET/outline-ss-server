@@ -40,6 +40,7 @@ import (
 
 var logger *logging.Logger
 
+// 59 seconds is most common timeout for servers that do not respond to invalid requests
 const tcpReadTimeout time.Duration = 59 * time.Second
 
 func init() {
