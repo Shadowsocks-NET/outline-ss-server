@@ -34,6 +34,7 @@ type ShadowsocksMetrics interface {
 	// TCP metrics
 	AddOpenTCPConnection(clientLocation string)
 	AddClosedTCPConnection(clientLocation, accessKey, status string, data ProxyMetrics, timeToCipher, duration time.Duration)
+	AddPotentialTCPProbe(clientLocation, drainErrType string, data ProxyMetrics)
 
 	// UDP metrics
 	AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration)
@@ -105,7 +106,7 @@ func NewShadowsocksMetrics(ipCountryDB *geoip2.Reader) ShadowsocksMetrics {
 			Name:      "tcp_probes",
 			Buckets:   []float64{0, 48, 49, 50, 51, 52},
 			Help:      "Histogram of number of bytes from client to proxy, for detecting possible probes",
-		}, []string{"location"}),
+		}, []string{"location", "drain_error"}),
 		timeToCipherMs: prometheus.NewSummaryVec(
 			prometheus.SummaryOpts{
 				Namespace:  "shadowsocks",
@@ -189,9 +190,10 @@ func (m *shadowsocksMetrics) AddClosedTCPConnection(clientLocation, accessKey, s
 	m.dataBytes.WithLabelValues("p>t", "tcp", clientLocation, status, accessKey).Add(float64(data.ProxyTarget))
 	m.dataBytes.WithLabelValues("p<t", "tcp", clientLocation, status, accessKey).Add(float64(data.TargetProxy))
 	m.dataBytes.WithLabelValues("c<p", "tcp", clientLocation, status, accessKey).Add(float64(data.ProxyClient))
-	if status == "ERR_CIPHER" { 
-		m.tcpProbes.WithLabelValues(clientLocation).Observe(float64(data.ClientProxy))
-	}
+}
+
+func (m *shadowsocksMetrics) AddPotentialTCPProbe(clientLocation, drainErrType string, data ProxyMetrics) {
+	m.tcpProbes.WithLabelValues(clientLocation, drainErrType).Observe(float64(data.ClientProxy))
 }
 
 func (m *shadowsocksMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {
