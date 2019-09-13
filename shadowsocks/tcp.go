@@ -20,7 +20,6 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
@@ -218,17 +217,9 @@ func (s *tcpService) Start() {
 				// Keep the connection open until we hit the authentication deadline to protect against probing attacks
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
 				_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
-				logger.Debugf("Drain error: %v", drainErr)
-				var drainErrType string
-				switch {
-				case drainErr == nil:
-					drainErrType = "nil"
-				case strings.Contains(drainErr.Error(), "timeout"):
-					drainErrType = "timeout"
-				default:
-					drainErrType = "other"
-				}
-				s.m.AddPotentialTCPProbe(clientLocation, drainErrType, proxyMetrics)
+				drainResult := drainErrToString(drainErr)
+				logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
+				s.m.AddTCPProbe(clientLocation, drainResult, proxyMetrics)
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
 			}
 
@@ -236,6 +227,18 @@ func (s *tcpService) Start() {
 			clientConn.SetReadDeadline(time.Time{})
 			return proxyConnection(clientConn, &proxyMetrics)
 		}()
+	}
+}
+
+func drainErrToString(drainErr error) string {
+	netErr, ok := drainErr.(net.Error)
+	switch {
+	case drainErr == nil:
+		return "eof"
+	case ok && netErr.Timeout():
+		return "timeout"
+	default:
+		return "other"
 	}
 }
 
