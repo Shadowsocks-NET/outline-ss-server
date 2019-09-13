@@ -87,13 +87,49 @@ func Relay(leftConn, rightConn DuplexConn) (int64, int64, error) {
 	return n, rs.N, err
 }
 
+type ProbeType int
+
+const (
+	Timeout ProbeType = iota
+	Eof
+	Other
+)
+
+func (pt ProbeType) String() string {
+	switch pt {
+	case Timeout:
+		return "timeout"
+	case Eof:
+		return "eof"
+	default:
+		return "other"
+	}
+}
+
 type ConnectionError struct {
 	// TODO: create status enums and move to metrics.go
-	Status  string
-	Message string
-	Cause   error
+	Status    string
+	Message   string
+	Cause     error
+	probeType ProbeType
+}
+
+func (e *ConnectionError) Error() string {
+	return e.Message
+}
+
+func (e *ConnectionError) IsTimeout() bool {
+	return e.probeType == Timeout
+}
+
+func (e *ConnectionError) IsEOF() bool {
+	return e.probeType == Eof
 }
 
 func NewConnectionError(status, message string, cause error) *ConnectionError {
 	return &ConnectionError{Status: status, Message: message, Cause: cause}
+}
+
+func NewConnectionProbeError(status, message string, cause error, probeType ProbeType) *ConnectionError {
+	return &ConnectionError{Status: status, Message: message, Cause: cause, probeType: probeType}
 }
