@@ -216,7 +216,10 @@ func (s *tcpService) Start() {
 			if err != nil {
 				// Keep the connection open until we hit the authentication deadline to protect against probing attacks
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
-				io.Copy(ioutil.Discard, clientConn) // drain socket
+				_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
+				drainResult := drainErrToString(drainErr)
+				logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
+				s.m.AddTCPProbe(clientLocation, drainResult, proxyMetrics)
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
 			}
 
@@ -224,6 +227,18 @@ func (s *tcpService) Start() {
 			clientConn.SetReadDeadline(time.Time{})
 			return proxyConnection(clientConn, &proxyMetrics)
 		}()
+	}
+}
+
+func drainErrToString(drainErr error) string {
+	netErr, ok := drainErr.(net.Error)
+	switch {
+	case drainErr == nil:
+		return "eof"
+	case ok && netErr.Timeout():
+		return "timeout"
+	default:
+		return "other"
 	}
 }
 
