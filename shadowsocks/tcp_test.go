@@ -150,45 +150,19 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 	}
 }
 
-var testMetrics = metrics.NewShadowsocksMetrics(nil)
-
 // Test 49, 50, and 51 bytes to ensure they have the same behavior.
 // 50 bytes used to be the cutoff for different behavior.
 func TestTCPProbeTimeout(t *testing.T) {
 	logging.SetLevel(logging.CRITICAL, "")
-	probeExpectTimeout(t, 49)
-	probeExpectTimeout(t, 50)
-	probeExpectTimeout(t, 51)
+	var testMetrics = metrics.NewShadowsocksMetrics(nil)
+	probeExpectTimeout(t, 49, testMetrics)
+	probeExpectTimeout(t, 50, testMetrics)
+	probeExpectTimeout(t, 51, testMetrics)
 }
 
-func TestTCPProbeEOF(t *testing.T) {
-	probeExpectEOF(t, 49)
-	probeExpectEOF(t, 50)
-	probeExpectEOF(t, 51)
-}
+func probeExpectTimeout(t *testing.T, payloadSize int, testMetrics metrics.ShadowsocksMetrics) {
+	const testTimeout = 200 * time.Millisecond
 
-func probeExpectEOF(t *testing.T, payloadSize int) {
-	closeConn := true
-	s := setupProbe(t, payloadSize, closeConn)
-	err := (*s).Start()
-	if cErr, ok := err.(*onet.ConnectionError); ok && cErr.IsEOF() {
-		return
-	}
-	t.Fatalf("Unexpected error %v", err)
-}
-
-func probeExpectTimeout(t *testing.T, payloadSize int) {
-	closeConn := false
-	s := setupProbe(t, payloadSize, closeConn)
-	err := (*s).Start()
-	if cErr, ok := err.(*onet.ConnectionError); ok && cErr.IsTimeout() {
-		return
-	}
-	t.Fatalf("Unexpected error %v", err)
-}
-
-func setupProbe(t *testing.T, payloadSize int, closeConn bool) *TCPService {
-	timeout := 500 * time.Millisecond
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
@@ -198,24 +172,33 @@ func setupProbe(t *testing.T, payloadSize int, closeConn bool) *TCPService {
 		t.Fatal(err)
 	}
 	testPayload := MakeTestPayload(payloadSize)
-	s := NewTCPService(listener, &cipherList, testMetrics, timeout)
+	s := NewTCPService(listener, &cipherList, testMetrics, testTimeout)
 
+	done := make(chan bool)
 	go func() {
+		defer func() { done <- true }()
 		conn, err := net.Dial("tcp", listener.Addr().String())
 		if err != nil {
 			t.Fatalf("Failed to dial %v: %v", listener.Addr(), err)
 		}
 		conn.Write(testPayload)
-		if closeConn {
-			conn.Close()
+		timerStart := time.Now()
+		buf := make([]byte, 1024)
+		bytesRead, err := conn.Read(buf) // will hang until connection is closed
+		elapsedTime := time.Since(timerStart)
+		switch {
+		case err != io.EOF:
+			t.Fatalf("Expected error EOF, got %v", err)
+		case bytesRead > 0:
+			t.Fatalf("Expected to read 0 bytes, got %v bytes", bytesRead)
+		case elapsedTime < testTimeout || elapsedTime > testTimeout+10*time.Millisecond:
+			t.Fatalf("Expected elapsed time close to %v, got %v", testTimeout, elapsedTime)
+		default:
+			// ok
 		}
 	}()
 
-	defer func() {
-		time.AfterFunc(timeout+50*time.Millisecond, func() {
-			s.Stop()
-		})
-	}()
-
-	return &s
+	go s.Start()
+	<-done
+	s.Stop()
 }
