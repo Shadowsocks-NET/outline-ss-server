@@ -20,6 +20,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
@@ -218,8 +219,9 @@ func (s *tcpService) Start() {
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
 				_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
 				drainResult := drainErrToString(drainErr)
+				port := strconv.Itoa(s.listener.Addr().(*net.TCPAddr).Port)
 				logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
-				s.m.AddTCPProbe(clientLocation, drainResult, proxyMetrics)
+				s.m.AddTCPProbe(clientLocation, port, drainResult, proxyMetrics)
 				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
 			}
 
