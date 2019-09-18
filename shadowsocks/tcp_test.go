@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	logging "github.com/op/go-logging"
 )
@@ -147,4 +148,57 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		}
 		c.Close()
 	}
+}
+
+// Test 49, 50, and 51 bytes to ensure they have the same behavior.
+// 50 bytes used to be the cutoff for different behavior.
+func TestTCPProbeTimeout(t *testing.T) {
+	logging.SetLevel(logging.CRITICAL, "")
+	var testMetrics = metrics.NewShadowsocksMetrics(nil)
+	probeExpectTimeout(t, 49, testMetrics)
+	probeExpectTimeout(t, 50, testMetrics)
+	probeExpectTimeout(t, 51, testMetrics)
+}
+
+func probeExpectTimeout(t *testing.T, payloadSize int, testMetrics metrics.ShadowsocksMetrics) {
+	const testTimeout = 200 * time.Millisecond
+
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenTCP failed: %v", err)
+	}
+	cipherList, err := MakeTestCiphers(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testPayload := MakeTestPayload(payloadSize)
+	s := NewTCPService(listener, &cipherList, testMetrics, testTimeout)
+
+	done := make(chan bool)
+	go func() {
+		defer func() { done <- true }()
+		conn, err := net.Dial("tcp", listener.Addr().String())
+		if err != nil {
+			t.Fatalf("Failed to dial %v: %v", listener.Addr(), err)
+		}
+		conn.Write(testPayload)
+		timerStart := time.Now()
+		buf := make([]byte, 1024)
+		bytesRead, err := conn.Read(buf) // will hang until connection is closed
+		elapsedTime := time.Since(timerStart)
+		switch {
+		case err != io.EOF:
+			t.Fatalf("Expected error EOF, got %v", err)
+		case bytesRead > 0:
+			t.Fatalf("Expected to read 0 bytes, got %v bytes", bytesRead)
+		case elapsedTime < testTimeout || elapsedTime > testTimeout+10*time.Millisecond:
+			t.Fatalf("Expected elapsed time close to %v, got %v", testTimeout, elapsedTime)
+		default:
+			// ok
+		}
+	}()
+
+	go s.Start()
+	<-done
+	s.Stop()
 }
