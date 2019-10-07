@@ -1,6 +1,6 @@
 # Outline ss-server
 
-This repository has the Shadowsocks service soon to be used by Outline servers. It uses components from [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2), and adds a number of improvements to meet the needs of the Outline users.
+This repository has the Shadowsocks service used by Outline servers. It uses components from [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2), and adds a number of improvements to meet the needs of the Outline users.
 
 The Outline Shadowsocks service allows for:
 - Multiple users on a single port.
