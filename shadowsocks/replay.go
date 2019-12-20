@@ -27,18 +27,19 @@ const maxCapacity = 20_000
 type empty struct{}
 
 // IVCache allows us to check whether an initialization vector was among
-// the last `capacity` IVs.  It requires approximately 15*capacity bytes
-// of memory (4 bytes per key plus 10.79 bytes of overhead:
+// the last `capacity` IVs.  It requires approximately 30*capacity bytes
+// of memory (4 bytes per key plus 10.79 bytes of overhead for each set:
 // https://go.googlesource.com/go/+/refs/tags/go1.13.5/src/runtime/map.go#43).
 // The zero value is a cache with capacity 0, i.e. no cache.
 type IVCache struct {
-	sync.Mutex
+	mutex    sync.Mutex
 	capacity int
 	active   map[uint32]empty
 	archive  map[uint32]empty
 }
 
-// NewIVCache returns a fresh IVCache.
+// NewIVCache returns a fresh IVCache that promises to remember at least
+// the most recent `capacity` IVs.
 func NewIVCache(capacity int) IVCache {
 	if capacity > maxCapacity {
 		panic("IVCache capacity would result in too many false positives")
@@ -63,8 +64,8 @@ func (c *IVCache) Add(iv []byte) bool {
 	// algorithmic complexity attack with nearly-colliding hashes.
 	// https://dave.cheney.net/2018/05/29/how-the-go-runtime-implements-maps-efficiently-without-generics
 	hash := binary.BigEndian.Uint32(iv[:4])
-	c.Lock()
-	defer c.Unlock()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 	if _, ok := c.active[hash]; ok {
 		// Fast replay: `iv` is already in the active set.
 		return false

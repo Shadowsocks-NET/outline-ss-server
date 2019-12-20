@@ -67,7 +67,7 @@ func (s *tcpService) findAccessKey(clientConn onet.DuplexConn) (string, onet.Dup
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-	for ci, entry := range s.ciphers.SafeSnapshotForClientIP(clientIP) {
+	for ci, entry := range (*s.ciphers).SafeSnapshotForClientIP(clientIP) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		if cipher.SaltSize() != 32 {
 			logger.Errorf("TCP %v: Salt size must be 32, not %d", id, cipher.SaltSize())
@@ -91,7 +91,7 @@ func (s *tcpService) findAccessKey(clientConn onet.DuplexConn) (string, onet.Dup
 		}
 
 		// Move the active cipher to the front, so that the search is quicker next time.
-		s.ciphers.SafeMarkUsedByClientIP(entry, clientIP)
+		(*s.ciphers).SafeMarkUsedByClientIP(entry, clientIP)
 		src := io.MultiReader(bytes.NewReader(salt[:]), bytes.NewReader(cipherText[:]), clientConn)
 		ssr := NewShadowsocksReader(src, cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
@@ -102,7 +102,7 @@ func (s *tcpService) findAccessKey(clientConn onet.DuplexConn) (string, onet.Dup
 
 type tcpService struct {
 	listener    *net.TCPListener
-	ciphers     CipherList
+	ciphers     *CipherList
 	m           metrics.ShadowsocksMetrics
 	isRunning   bool
 	readTimeout time.Duration
@@ -113,7 +113,7 @@ type tcpService struct {
 const replayHistory = 10_000
 
 // NewTCPService creates a TCPService
-func NewTCPService(listener *net.TCPListener, ciphers CipherList, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
+func NewTCPService(listener *net.TCPListener, ciphers *CipherList, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
 	return &tcpService{
 		listener:    listener,
 		ciphers:     ciphers,

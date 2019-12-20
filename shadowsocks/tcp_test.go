@@ -40,7 +40,7 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	s := &tcpService{ciphers: cipherList}
+	s := &tcpService{ciphers: &cipherList}
 	testPayload := MakeTestPayload(50)
 	for n := 0; n < b.N; n++ {
 		go func() {
@@ -129,7 +129,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	s := &tcpService{ciphers: cipherList}
+	s := &tcpService{ciphers: &cipherList}
 	cipherEntries := [numCiphers]*CipherEntry{}
 	for cipherNumber, element := range cipherList.SafeSnapshotForClientIP(nil) {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
@@ -157,7 +157,7 @@ func TestReplayDefense(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &tcpService{
-		ciphers: cipherList,
+		ciphers: &cipherList,
 		ivCache: NewIVCache(1),
 	}
 	cipherEntry := cipherList.SafeSnapshotForClientIP(nil)[0].Value.(*CipherEntry)
@@ -209,7 +209,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int, testMetrics metrics.Shado
 		t.Fatal(err)
 	}
 	testPayload := MakeTestPayload(payloadSize)
-	s := NewTCPService(listener, cipherList, testMetrics, testTimeout)
+	s := NewTCPService(listener, &cipherList, testMetrics, testTimeout)
 
 	done := make(chan bool)
 	go func() {
