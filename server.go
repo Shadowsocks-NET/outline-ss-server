@@ -78,8 +78,8 @@ func (s *SSServer) startPort(portNum int) error {
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &SSPort{cipherList: shadowsocks.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
-	port.tcpService = shadowsocks.NewTCPService(listener, &port.cipherList, s.m, tcpReadTimeout)
-	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, &port.cipherList, s.m)
+	port.tcpService = shadowsocks.NewTCPService(listener, port.cipherList, s.m, tcpReadTimeout)
+	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, port.cipherList, s.m)
 	s.ports[portNum] = port
 	go port.udpService.Start()
 	go port.tcpService.Start()

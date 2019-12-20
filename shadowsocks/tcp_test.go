@@ -30,7 +30,6 @@ import (
 func BenchmarkTCPFindCipherFail(b *testing.B) {
 	b.StopTimer()
 	b.ResetTimer()
-
 	logging.SetLevel(logging.INFO, "")
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -41,6 +40,7 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	s := &tcpService{ciphers: cipherList}
 	testPayload := MakeTestPayload(50)
 	for n := 0; n < b.N; n++ {
 		go func() {
@@ -56,7 +56,7 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 			b.Fatalf("AcceptTCP failed: %v", err)
 		}
 		b.StartTimer()
-		findAccessKey(clientConn, cipherList)
+		s.findAccessKey(clientConn)
 		b.StopTimer()
 	}
 }
@@ -129,6 +129,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	s := &tcpService{ciphers: cipherList}
 	cipherEntries := [numCiphers]*CipherEntry{}
 	for cipherNumber, element := range cipherList.SafeSnapshotForClientIP(nil) {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
@@ -141,12 +142,48 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		cipher := cipherEntries[cipherNumber].Cipher
 		go NewShadowsocksWriter(writer, cipher).Write(MakeTestPayload(50))
 		b.StartTimer()
-		_, _, err := findAccessKey(&c, cipherList)
+		_, _, err := s.findAccessKey(&c)
 		b.StopTimer()
 		if err != nil {
 			b.Error(err)
 		}
 		c.Close()
+	}
+}
+
+func TestReplayDefense(t *testing.T) {
+	cipherList, err := MakeTestCiphers(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &tcpService{
+		ciphers: cipherList,
+		ivCache: NewIVCache(1),
+	}
+	cipherEntry := cipherList.SafeSnapshotForClientIP(nil)[0].Value.(*CipherEntry)
+	cipher := cipherEntry.Cipher
+	reader, writer := io.Pipe()
+	go NewShadowsocksWriter(writer, cipher).Write([]byte{0})
+	preamble := make([]byte, 32+2+16)
+	if _, err := io.ReadFull(reader, preamble); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func() error {
+		reader, writer := io.Pipe()
+		addr := &net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 54321}
+		c := conn{clientAddr: addr, reader: reader, writer: writer}
+		go writer.Write(preamble)
+		_, _, err := s.findAccessKey(&c)
+		c.Close()
+		return err
+	}
+
+	if err := run(); err != nil {
+		t.Errorf("First run should have succeeded: %w", err)
+	}
+	if err := run(); err == nil {
+		t.Error("Second run should have failed due to replay defense")
 	}
 }
 
@@ -172,7 +209,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int, testMetrics metrics.Shado
 		t.Fatal(err)
 	}
 	testPayload := MakeTestPayload(payloadSize)
-	s := NewTCPService(listener, &cipherList, testMetrics, testTimeout)
+	s := NewTCPService(listener, cipherList, testMetrics, testTimeout)
 
 	done := make(chan bool)
 	go func() {

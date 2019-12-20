@@ -16,6 +16,7 @@ package shadowsocks
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -24,28 +25,9 @@ import (
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-	logging "github.com/op/go-logging"
 
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
-
-// Reads bytes from reader and appends to buf to ensure the needed number of bytes.
-// The capacity of buf must be at least bytesNeeded.
-func ensureBytes(reader io.Reader, buf []byte, bytesNeeded int) ([]byte, error) {
-	if cap(buf) < bytesNeeded {
-		return buf, io.ErrShortBuffer
-	}
-	bytesToRead := bytesNeeded - len(buf)
-	if bytesToRead <= 0 {
-		return buf, nil
-	}
-	n, err := io.ReadFull(reader, buf[len(buf):bytesNeeded])
-	buf = buf[:len(buf)+n]
-	if (err == nil || err == io.EOF) && n < bytesToRead {
-		err = io.ErrUnexpectedEOF
-	}
-	return buf, err
-}
 
 func remoteIP(conn net.Conn) net.IP {
 	addr := conn.RemoteAddr()
@@ -62,51 +44,56 @@ func remoteIP(conn net.Conn) net.IP {
 	return nil
 }
 
-func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, onet.DuplexConn, error) {
-	// This must have enough space to hold the salt + 2 bytes chunk length + AEAD tag (Oeverhead) for any cipher
-	replayBytes := make([]byte, 0, 32+2+16)
+func (s *tcpService) findAccessKey(clientConn onet.DuplexConn) (string, onet.DuplexConn, error) {
+	// All supported ciphers must use a 32-byte salt.
+	salt := [32]byte{}
+	// The ciphertext consists of a 2-byte chunk length and a 16-byte AEAD tag.
+	cipherText := [2 + 16]byte{}
 	// Constant of zeroes to use as the start chunk count. This must be as big as the max NonceSize() across all ciphers.
-	zeroCountBuf := make([]byte, 12) // MaxCountSize
+	zeroCountBuf := [12]byte{} // MaxCountSize
 	// To hold the decrypted chunk length.
 	chunkLenBuf := [2]byte{}
-	var err error
 
 	clientIP := remoteIP(clientConn)
+	if _, err := io.ReadFull(clientConn, salt[:]); err != nil {
+		logger.Debugf("TCP: Failed to read salt: %v", err)
+		return "", clientConn, err
+	}
+	if _, err := io.ReadFull(clientConn, cipherText[:]); err != nil {
+		logger.Debugf("TCP: Failed to read ciphertext: %v", err)
+		return "", clientConn, err
+	}
+
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-	for ci, entry := range cipherList.SafeSnapshotForClientIP(clientIP) {
+	for ci, entry := range s.ciphers.SafeSnapshotForClientIP(clientIP) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
-		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize())
-		if err != nil {
-			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("TCP: Failed to read salt %v: %v", id, err)
-			}
+		if cipher.SaltSize() != 32 {
+			logger.Errorf("TCP %v: Salt size must be 32, not %d", id, cipher.SaltSize())
 			continue
 		}
-		salt := replayBytes[:cipher.SaltSize()]
-		aead, err := cipher.Decrypter(salt)
-		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize()+2+aead.Overhead())
+		aead, err := cipher.Decrypter(salt[:])
 		if err != nil {
-			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("TCP: Failed to read length %v: %v", id, err)
-			}
+			logger.Errorf("TCP %v: Decrypter initialization failed: %v", id, err)
 			continue
 		}
-		cipherText := replayBytes[cipher.SaltSize() : cipher.SaltSize()+2+aead.Overhead()]
-		_, err = aead.Open(chunkLenBuf[:0], zeroCountBuf[:aead.NonceSize()], cipherText, nil)
+		_, err = aead.Open(chunkLenBuf[:0], zeroCountBuf[:aead.NonceSize()], cipherText[:], nil)
 		if err != nil {
-			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("TCP: Failed to decrypt length %v: %v", id, err)
-			}
+			logger.Debugf("TCP %v: Failed to decrypt length: %v", id, err)
 			continue
 		}
-		if logger.IsEnabledFor(logging.DEBUG) {
-			logger.Debugf("TCP: Found cipher %v at index %d", id, ci)
+		logger.Debugf("TCP %v: Found cipher at index %d", id, ci)
+
+		if !s.ivCache.Add(salt[:]) {
+			logger.Warningf("TCP %v: Replay detected", id)
+			return "", clientConn, errors.New("TCP: Replay detected")
 		}
+
 		// Move the active cipher to the front, so that the search is quicker next time.
-		cipherList.SafeMarkUsedByClientIP(entry, clientIP)
-		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(replayBytes), clientConn), cipher)
+		s.ciphers.SafeMarkUsedByClientIP(entry, clientIP)
+		src := io.MultiReader(bytes.NewReader(salt[:]), bytes.NewReader(cipherText[:]), clientConn)
+		ssr := NewShadowsocksReader(src, cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
 	}
@@ -115,15 +102,25 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 
 type tcpService struct {
 	listener    *net.TCPListener
-	ciphers     *CipherList
+	ciphers     CipherList
 	m           metrics.ShadowsocksMetrics
 	isRunning   bool
 	readTimeout time.Duration
+	ivCache     IVCache
 }
 
+// Prevent replays of this many of the most recent handshakes.
+const replayHistory = 10_000
+
 // NewTCPService creates a TCPService
-func NewTCPService(listener *net.TCPListener, ciphers *CipherList, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
-	return &tcpService{listener: listener, ciphers: ciphers, m: m, readTimeout: timeout}
+func NewTCPService(listener *net.TCPListener, ciphers CipherList, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
+	return &tcpService{
+		listener:    listener,
+		ciphers:     ciphers,
+		m:           m,
+		readTimeout: timeout,
+		ivCache:     NewIVCache(replayHistory),
+	}
 }
 
 // TCPService is a Shadowsocks TCP service that can be started and stopped.
@@ -210,7 +207,7 @@ func (s *tcpService) Start() {
 			}()
 
 			findStartTime := time.Now()
-			keyID, clientConn, err := findAccessKey(clientConn, *s.ciphers)
+			keyID, clientConn, err := s.findAccessKey(clientConn)
 			timeToCipher = time.Now().Sub(findStartTime)
 
 			if err != nil {
