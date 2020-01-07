@@ -35,7 +35,7 @@ type ShadowsocksMetrics interface {
 	// TCP metrics
 	AddOpenTCPConnection(clientLocation string)
 	AddClosedTCPConnection(clientLocation, accessKey, status string, data ProxyMetrics, timeToCipher, duration time.Duration)
-	AddTCPProbe(clientLocation, drainResult string, port int, data ProxyMetrics)
+	AddTCPProbe(clientLocation, status, drainResult string, port int, data ProxyMetrics)
 
 	// UDP metrics
 	AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration)
@@ -193,8 +193,8 @@ func (m *shadowsocksMetrics) AddClosedTCPConnection(clientLocation, accessKey, s
 	m.dataBytes.WithLabelValues("c<p", "tcp", clientLocation, status, accessKey).Add(float64(data.ProxyClient))
 }
 
-func (m *shadowsocksMetrics) AddTCPProbe(clientLocation, drainResult string, port int, data ProxyMetrics) {
-	m.tcpProbes.WithLabelValues(clientLocation, strconv.Itoa(port), drainResult).Observe(float64(data.ClientProxy))
+func (m *shadowsocksMetrics) AddTCPProbe(clientLocation, status, drainResult string, port int, data ProxyMetrics) {
+	m.tcpProbes.WithLabelValues(clientLocation, strconv.Itoa(port), status, drainResult).Observe(float64(data.ClientProxy))
 }
 
 func (m *shadowsocksMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {

@@ -110,7 +110,7 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 		ssw := NewShadowsocksWriter(clientConn, cipher)
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), salt, nil
 	}
-	return "", clientConn, firstBytes, fmt.Errorf("Could not find valid TCP cipher")
+	return "", clientConn, nil, fmt.Errorf("Could not find valid TCP cipher")
 }
 
 type tcpService struct {
@@ -124,6 +124,7 @@ type tcpService struct {
 }
 
 // Prevent replays of this many of the most recent handshakes.
+// The false positive probability will be 2 * replayHistory / 2^32 = 1/200,000.
 const replayHistory = 10_000
 
 // NewTCPService creates a TCPService
@@ -226,12 +227,14 @@ func (s *tcpService) Start() {
 
 			if err != nil {
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
-				s.absorbProbe(clientConn, clientLocation, &proxyMetrics)
-				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
+				const status = "ERR_CIPHER"
+				s.absorbProbe(clientConn, clientLocation, status, &proxyMetrics)
+				return onet.NewConnectionError(status, "Failed to find a valid cipher", err)
 			} else if !s.replayCache.Add(salt) { // Only check the cache if findAccessKey succeeded.
-				logger.Debug("Replay detected")
-				s.absorbProbe(clientConn, clientLocation, &proxyMetrics)
-				return onet.NewConnectionError("ERR_REPLAY", "Replay detected", nil)
+				const status = "ERR_REPLAY"
+				s.absorbProbe(clientConn, clientLocation, status, &proxyMetrics)
+				logger.Debugf("Replay: %v in %s sent %d bytes, starting with %v", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy, salt[:4])
+				return onet.NewConnectionError(status, "Replay detected", nil)
 			}
 
 			// Clear the authentication deadline
@@ -243,12 +246,12 @@ func (s *tcpService) Start() {
 
 // Keep the connection open until we hit the authentication deadline to protect against probing attacks
 // `proxyMetrics` is a pointer because its value is being mutated by `clientConn`.
-func (s *tcpService) absorbProbe(clientConn io.ReadCloser, clientLocation string, proxyMetrics *metrics.ProxyMetrics) {
+func (s *tcpService) absorbProbe(clientConn io.ReadCloser, clientLocation, status string, proxyMetrics *metrics.ProxyMetrics) {
 	_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
 	drainResult := drainErrToString(drainErr)
 	port := s.listener.Addr().(*net.TCPAddr).Port
 	logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
-	s.m.AddTCPProbe(clientLocation, drainResult, port, *proxyMetrics)
+	s.m.AddTCPProbe(clientLocation, status, drainResult, port, *proxyMetrics)
 }
 
 func drainErrToString(drainErr error) string {

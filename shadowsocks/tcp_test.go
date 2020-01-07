@@ -153,15 +153,17 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 // Stub metrics implementation for testing replay defense.
 type probeTestMetrics struct {
 	metrics.ShadowsocksMetrics
-	probeData []metrics.ProxyMetrics
-	statuses []string
+	probeData   []metrics.ProxyMetrics
+	probeStatus []string
+	closeStatus []string
 }
 
-func (m *probeTestMetrics) AddTCPProbe(clientLocation, drainResult string, port int, data metrics.ProxyMetrics) {
+func (m *probeTestMetrics) AddTCPProbe(clientLocation, status, drainResult string, port int, data metrics.ProxyMetrics) {
 	m.probeData = append(m.probeData, data)
+	m.probeStatus = append(m.probeStatus, status)
 }
 func (m *probeTestMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data metrics.ProxyMetrics, timeToCipher, duration time.Duration) {
-	m.statuses = append(m.statuses, status)
+	m.closeStatus = append(m.closeStatus, status)
 }
 
 func (m *probeTestMetrics) GetLocation(net.Addr) (string, error) {
@@ -220,7 +222,7 @@ func TestReplayDefense(t *testing.T) {
 	if len(testMetrics.probeData) != 0 {
 		t.Errorf("First connection should not have triggered probe detection: %v", testMetrics.probeData[0])
 	}
-	if len(testMetrics.statuses) != 0 {
+	if len(testMetrics.closeStatus) != 0 {
 		t.Errorf("First connection should not have been closed yet: %v", testMetrics.probeData[0])
 	}
 
@@ -233,13 +235,17 @@ func TestReplayDefense(t *testing.T) {
 		if data.ClientProxy != int64(len(preamble)) {
 			t.Errorf("Unexpected probe data: %v", data)
 		}
+		status := testMetrics.probeStatus[0]
+		if status != "ERR_REPLAY" {
+			t.Errorf("Unexpected TCP probe status: %s", status)
+		}
 	} else {
 		t.Error("Replay should have triggered probe detection")
 	}
-	if len(testMetrics.statuses) == 1 {
-		status := testMetrics.statuses[0]
+	if len(testMetrics.closeStatus) == 1 {
+		status := testMetrics.closeStatus[0]
 		if status != "ERR_REPLAY" {
-			t.Errorf("Unexpected TCP status: %s", status)
+			t.Errorf("Unexpected TCP close status: %s", status)
 		}
 	} else {
 		t.Error("Replay should have reported an error status")
@@ -308,10 +314,18 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 	} else {
 		t.Error("Bad handshake should have triggered probe detection")
 	}
-	if len(testMetrics.statuses) == 1 {
-		status := testMetrics.statuses[0]
+	if len(testMetrics.probeStatus) == 1 {
+		status := testMetrics.probeStatus[0]
 		if status != "ERR_CIPHER" {
-			t.Errorf("Unexpected TCP status: %s", status)
+			t.Errorf("Unexpected TCP probe status: %s", status)
+		}
+	} else {
+		t.Error("Bad handshake should have reported an error status")
+	}
+	if len(testMetrics.closeStatus) == 1 {
+		status := testMetrics.closeStatus[0]
+		if status != "ERR_CIPHER" {
+			t.Errorf("Unexpected TCP close status: %s", status)
 		}
 	} else {
 		t.Error("Bad handshake should have reported an error status")
