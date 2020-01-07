@@ -26,56 +26,56 @@ const maxCapacity = 20_000
 
 type empty struct{}
 
-// IVCache allows us to check whether an initialization vector was among
-// the last `capacity` IVs.  It requires approximately 30*capacity bytes
+// ReplayCache allows us to check whether a handshake salt was used within
+// the last `capacity` handshakes.  It requires approximately 30*capacity bytes
 // of memory (4 bytes per key plus 10.79 bytes of overhead for each set:
 // https://go.googlesource.com/go/+/refs/tags/go1.13.5/src/runtime/map.go#43).
 // The zero value is a cache with capacity 0, i.e. no cache.
-type IVCache struct {
+type ReplayCache struct {
 	mutex    sync.Mutex
 	capacity int
 	active   map[uint32]empty
 	archive  map[uint32]empty
 }
 
-// NewIVCache returns a fresh IVCache that promises to remember at least
-// the most recent `capacity` IVs.
-func NewIVCache(capacity int) IVCache {
+// NewReplayCache returns a fresh ReplayCache that promises to remember at least
+// the most recent `capacity` handshakes.
+func NewReplayCache(capacity int) ReplayCache {
 	if capacity > maxCapacity {
-		panic("IVCache capacity would result in too many false positives")
+		panic("ReplayCache capacity would result in too many false positives")
 	}
-	return IVCache{
+	return ReplayCache{
 		capacity: capacity,
 		active:   make(map[uint32]empty),
 		archive:  make(map[uint32]empty),
 	}
 }
 
-// Add an IV to the cache.  Returns false if the IV is already present.
-func (c *IVCache) Add(iv []byte) bool {
+// Add a handshake's salt to the cache.  Returns false if it is already present.
+func (c *ReplayCache) Add(salt []byte) bool {
 	if c == nil || c.capacity == 0 {
-		// Cache is disabled, so every IV is new.
+		// Cache is disabled, so every salt is new.
 		return true
 	}
-	// IVs are supposed to be random, and only authenticated IVs are added
-	// to the cache.  A hostile client could produce colliding IVs, but
+	// Salts are supposed to be random, and only authenticated handshakes are added
+	// to the cache.  A hostile client could produce colliding salts, but
 	// this would not impact other users.  Each map uses a new random hash
 	// function, so it is not trivial for a hostile client to mount an
 	// algorithmic complexity attack with nearly-colliding hashes.
 	// https://dave.cheney.net/2018/05/29/how-the-go-runtime-implements-maps-efficiently-without-generics
-	hash := binary.BigEndian.Uint32(iv[:4])
+	hash := binary.BigEndian.Uint32(salt[:4])
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	if _, ok := c.active[hash]; ok {
-		// Fast replay: `iv` is already in the active set.
+		// Fast replay: `salt` is already in the active set.
 		return false
 	}
 	_, inArchive := c.archive[hash]
-	c.active[hash] = empty{}
 	if len(c.active) == c.capacity {
 		// Discard the archive and move active to archive.
 		c.archive = c.active
 		c.active = make(map[uint32]empty)
 	}
+	c.active[hash] = empty{}
 	return !inArchive
 }

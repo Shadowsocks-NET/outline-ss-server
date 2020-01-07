@@ -30,6 +30,7 @@ import (
 func BenchmarkTCPFindCipherFail(b *testing.B) {
 	b.StopTimer()
 	b.ResetTimer()
+
 	logging.SetLevel(logging.INFO, "")
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -40,7 +41,6 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	s := &tcpService{ciphers: &cipherList}
 	testPayload := MakeTestPayload(50)
 	for n := 0; n < b.N; n++ {
 		go func() {
@@ -56,7 +56,7 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 			b.Fatalf("AcceptTCP failed: %v", err)
 		}
 		b.StartTimer()
-		s.findAccessKey(clientConn)
+		findAccessKey(clientConn, cipherList)
 		b.StopTimer()
 	}
 }
@@ -129,7 +129,6 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	s := &tcpService{ciphers: &cipherList}
 	cipherEntries := [numCiphers]*CipherEntry{}
 	for cipherNumber, element := range cipherList.SafeSnapshotForClientIP(nil) {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
@@ -142,7 +141,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		cipher := cipherEntries[cipherNumber].Cipher
 		go NewShadowsocksWriter(writer, cipher).Write(MakeTestPayload(50))
 		b.StartTimer()
-		_, _, err := s.findAccessKey(&c)
+		_, _, _, err := findAccessKey(&c, cipherList)
 		b.StopTimer()
 		if err != nil {
 			b.Error(err)
@@ -151,15 +150,48 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 	}
 }
 
+// Stub metrics implementation for testing replay defense.
+type probeTestMetrics struct {
+	metrics.ShadowsocksMetrics
+	probeData []metrics.ProxyMetrics
+	statuses []string
+}
+
+func (m *probeTestMetrics) AddTCPProbe(clientLocation, drainResult string, port int, data metrics.ProxyMetrics) {
+	m.probeData = append(m.probeData, data)
+}
+func (m *probeTestMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data metrics.ProxyMetrics, timeToCipher, duration time.Duration) {
+	m.statuses = append(m.statuses, status)
+}
+
+func (m *probeTestMetrics) GetLocation(net.Addr) (string, error) {
+	return "", nil
+}
+func (m *probeTestMetrics) SetNumAccessKeys(numKeys int, numPorts int) {
+}
+func (m *probeTestMetrics) AddOpenTCPConnection(clientLocation string) {
+}
+func (m *probeTestMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {
+}
+func (m *probeTestMetrics) AddUDPPacketFromTarget(clientLocation, accessKey, status string, targetProxyBytes, proxyClientBytes int) {
+}
+func (m *probeTestMetrics) AddUDPNatEntry()    {}
+func (m *probeTestMetrics) RemoveUDPNatEntry() {}
+
 func TestReplayDefense(t *testing.T) {
+	logging.SetLevel(logging.DEBUG, "")
+
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenTCP failed: %v", err)
+	}
 	cipherList, err := MakeTestCiphers(1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &tcpService{
-		ciphers: &cipherList,
-		ivCache: NewIVCache(1),
-	}
+	testMetrics := &probeTestMetrics{}
+	const testTimeout = 200 * time.Millisecond
+	s := NewTCPService(listener, &cipherList, testMetrics, testTimeout)
 	cipherEntry := cipherList.SafeSnapshotForClientIP(nil)[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
@@ -169,35 +201,64 @@ func TestReplayDefense(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := func() error {
-		reader, writer := io.Pipe()
-		addr := &net.TCPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 54321}
-		c := conn{clientAddr: addr, reader: reader, writer: writer}
-		go writer.Write(preamble)
-		_, _, err := s.findAccessKey(&c)
-		c.Close()
-		return err
+	run := func() net.Conn {
+		conn, err := net.Dial(listener.Addr().Network(), listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := conn.Write(preamble)
+		if n < len(preamble) {
+			t.Error(err)
+		}
+		return conn
 	}
 
-	if err := run(); err != nil {
-		t.Errorf("First run should have succeeded: %w", err)
+	go s.Start()
+
+	// First run.
+	conn1 := run()
+	if len(testMetrics.probeData) != 0 {
+		t.Errorf("First connection should not have triggered probe detection: %v", testMetrics.probeData[0])
 	}
-	if err := run(); err == nil {
-		t.Error("Second run should have failed due to replay defense")
+	if len(testMetrics.statuses) != 0 {
+		t.Errorf("First connection should not have been closed yet: %v", testMetrics.probeData[0])
 	}
+
+	// Replay.
+	conn2 := run()
+	// Wait for the connection to be closed by the proxy after testTimeout.
+	conn2.Read(make([]byte, 1))
+	if len(testMetrics.probeData) == 1 {
+		data := testMetrics.probeData[0]
+		if data.ClientProxy != int64(len(preamble)) {
+			t.Errorf("Unexpected probe data: %v", data)
+		}
+	} else {
+		t.Error("Replay should have triggered probe detection")
+	}
+	if len(testMetrics.statuses) == 1 {
+		status := testMetrics.statuses[0]
+		if status != "ERR_REPLAY" {
+			t.Errorf("Unexpected TCP status: %s", status)
+		}
+	} else {
+		t.Error("Replay should have reported an error status")
+	}
+
+	conn1.Close()
+	s.Stop()
 }
 
 // Test 49, 50, and 51 bytes to ensure they have the same behavior.
 // 50 bytes used to be the cutoff for different behavior.
 func TestTCPProbeTimeout(t *testing.T) {
 	logging.SetLevel(logging.CRITICAL, "")
-	var testMetrics = metrics.NewShadowsocksMetrics(nil)
-	probeExpectTimeout(t, 49, testMetrics)
-	probeExpectTimeout(t, 50, testMetrics)
-	probeExpectTimeout(t, 51, testMetrics)
+	probeExpectTimeout(t, 49)
+	probeExpectTimeout(t, 50)
+	probeExpectTimeout(t, 51)
 }
 
-func probeExpectTimeout(t *testing.T, payloadSize int, testMetrics metrics.ShadowsocksMetrics) {
+func probeExpectTimeout(t *testing.T, payloadSize int) {
 	const testTimeout = 200 * time.Millisecond
 
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
@@ -208,9 +269,10 @@ func probeExpectTimeout(t *testing.T, payloadSize int, testMetrics metrics.Shado
 	if err != nil {
 		t.Fatal(err)
 	}
-	testPayload := MakeTestPayload(payloadSize)
+	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(listener, &cipherList, testMetrics, testTimeout)
 
+	testPayload := MakeTestPayload(payloadSize)
 	done := make(chan bool)
 	go func() {
 		defer func() { done <- true }()
@@ -237,5 +299,23 @@ func probeExpectTimeout(t *testing.T, payloadSize int, testMetrics metrics.Shado
 
 	go s.Start()
 	<-done
+
+	if len(testMetrics.probeData) == 1 {
+		data := testMetrics.probeData[0]
+		if data.ClientProxy != int64(payloadSize) {
+			t.Errorf("Unexpected probe data: %v, expected %d", data, payloadSize)
+		}
+	} else {
+		t.Error("Bad handshake should have triggered probe detection")
+	}
+	if len(testMetrics.statuses) == 1 {
+		status := testMetrics.statuses[0]
+		if status != "ERR_CIPHER" {
+			t.Errorf("Unexpected TCP status: %s", status)
+		}
+	} else {
+		t.Error("Bad handshake should have reported an error status")
+	}
+
 	s.Stop()
 }

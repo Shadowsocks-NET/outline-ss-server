@@ -15,101 +15,107 @@
 package shadowsocks
 
 import (
-	"math/rand"
+	"encoding/binary"
 	"testing"
 )
 
-func MakeVecs(n int) [][32]byte {
-	vecs := make([][32]byte, n)
+var counter uint32 = 0
+func makeSalts(n int) [][]byte {
+	salts := make([][]byte, n)
 	for i := 0; i < n; i++ {
-		rand.Read(vecs[i][:])
+		salts[i] = make([]byte, 4)
+		binary.BigEndian.PutUint32(salts[i], counter)
+		counter++
+		if counter == 0 {
+			panic("Salt counter overflow")
+		}
 	}
-	return vecs
+	return salts
 }
 
-func TestIVCache_Active(t *testing.T) {
-	vecs := MakeVecs(2)
-	cache := NewIVCache(10)
-	if !cache.Add(vecs[0][:]) {
+func TestReplayCache_Active(t *testing.T) {
+	salts := makeSalts(2)
+	cache := NewReplayCache(10)
+	if !cache.Add(salts[0]) {
 		t.Error("First addition to a clean cache should succeed")
 	}
-	if cache.Add(vecs[0][:]) {
+	if cache.Add(salts[0]) {
 		t.Error("Duplicate add should fail")
 	}
-	if !cache.Add(vecs[1][:]) {
+	if !cache.Add(salts[1]) {
 		t.Error("Addition of a new vector should succeed")
 	}
-	if cache.Add(vecs[1][:]) {
+	if cache.Add(salts[1]) {
 		t.Error("Second duplicate add should fail")
 	}
 }
 
-func TestIVCache_Archive(t *testing.T) {
-	vecs0 := MakeVecs(10)
-	vecs1 := MakeVecs(10)
-	cache := NewIVCache(10)
+func TestReplayCache_Archive(t *testing.T) {
+	salts0 := makeSalts(10)
+	salts1 := makeSalts(10)
+	cache := NewReplayCache(10)
 	// Add vectors to the active set until it hits the limit
 	// and spills into the archive.
-	for _, v := range vecs0 {
-		if !cache.Add(v[:]) {
+	for _, s := range salts0 {
+		if !cache.Add(s) {
 			t.Error("Addition of a new vector should succeed")
 		}
 	}
 
-	for _, v := range vecs0 {
-		if cache.Add(v[:]) {
+	for _, s := range salts0 {
+		if cache.Add(s) {
 			t.Error("Duplicate add should fail")
 		}
 	}
 
 	// Repopulate the active set.
-	for _, v := range vecs1 {
-		if !cache.Add(v[:]) {
+	for _, s := range salts1 {
+		if !cache.Add(s) {
 			t.Error("Addition of a new vector should succeed")
 		}
 	}
 
 	// Both active and archive are full.  Adding another vector
 	// should wipe the archive.
-	lastStraw := MakeVecs(1)[0]
-	if !cache.Add(lastStraw[:]) {
+	lastStraw := makeSalts(1)[0]
+	if !cache.Add(lastStraw) {
 		t.Error("Addition of a new vector should succeed")
 	}
-	for _, v := range vecs0 {
-		if !cache.Add(v[:]) {
+	for _, s := range salts0 {
+		if !cache.Add(s) {
 			t.Error("First 10 vectors should have been forgotten")
 		}
 	}
 }
 
-func BenchmarkIVCache_Max(b *testing.B) {
-	vecs := MakeVecs(b.N)
-	// All vectors will fit in the active set.
-	cache := NewIVCache(maxCapacity)
+func BenchmarkReplayCache_Max(b *testing.B) {
+	salts := makeSalts(b.N)
+	// Archive replacements will be infrequent.
+	cache := NewReplayCache(maxCapacity)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cache.Add(vecs[i][:])
+		cache.Add(salts[i])
 	}
 }
 
-func BenchmarkIVCache_Min(b *testing.B) {
-	vecs := MakeVecs(b.N)
+func BenchmarkReplayCache_Min(b *testing.B) {
+	salts := makeSalts(b.N)
 	// Every addition will archive the active set.
-	cache := NewIVCache(1)
+	cache := NewReplayCache(1)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cache.Add(vecs[i][:])
+		cache.Add(salts[i])
 	}
 }
 
-func BenchmarkIVCache_Parallel(b *testing.B) {
+func BenchmarkReplayCache_Parallel(b *testing.B) {
 	c := make(chan []byte, b.N)
-	for _, v := range MakeVecs(b.N) {
-		c <- v[:]
+	for _, s := range makeSalts(b.N) {
+		c <- s
 	}
 	close(c)
 	// Exercise both expansion and archiving.
-	cache := NewIVCache(100)
+	cache := NewReplayCache(100)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
