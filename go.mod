@@ -10,7 +10,8 @@ require (
 	github.com/prometheus/client_golang v0.9.2
 	github.com/shadowsocks/go-shadowsocks2 v0.0.11
 	github.com/stretchr/testify v1.2.2 // indirect
-	golang.org/x/crypto v0.0.0-20181203042331-505ab145d0a9
-	golang.org/x/sys v0.0.0-20181210030007-2a47403f2ae5 // indirect
+	golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2
 	gopkg.in/yaml.v2 v2.2.2
 )
+
+go 1.13

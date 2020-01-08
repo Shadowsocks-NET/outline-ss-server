@@ -9,6 +9,7 @@ The Outline Shadowsocks service allows for:
 - Whitebox monitoring of the service using [prometheus.io](https://prometheus.io)
   - Includes traffic measurements and other health indicators.
 - Live updates via config change + SIGHUP
+- Experimental: optional replay defense (--replay_history).
 
 ![Graphana Dashboard](https://user-images.githubusercontent.com/113565/44177062-419d7700-a0ba-11e8-9621-db519692ff6c.png "Graphana Dashboard")
 

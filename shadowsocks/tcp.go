@@ -62,9 +62,9 @@ func remoteIP(conn net.Conn) net.IP {
 	return nil
 }
 
-func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, onet.DuplexConn, error) {
-	// This must have enough space to hold the salt + 2 bytes chunk length + AEAD tag (Oeverhead) for any cipher
-	replayBytes := make([]byte, 0, 32+2+16)
+func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, onet.DuplexConn, []byte, error) {
+	// This must have enough space to hold the salt + 2 bytes chunk length + AEAD tag (Overhead) for any cipher
+	firstBytes := make([]byte, 0, 32+2+16)
 	// Constant of zeroes to use as the start chunk count. This must be as big as the max NonceSize() across all ciphers.
 	zeroCountBuf := make([]byte, 12) // MaxCountSize
 	// To hold the decrypted chunk length.
@@ -77,23 +77,23 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
 	for ci, entry := range cipherList.SafeSnapshotForClientIP(clientIP) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
-		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize())
+		firstBytes, err = ensureBytes(clientConn, firstBytes, cipher.SaltSize())
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
 				logger.Debugf("TCP: Failed to read salt %v: %v", id, err)
 			}
 			continue
 		}
-		salt := replayBytes[:cipher.SaltSize()]
+		salt := firstBytes[:cipher.SaltSize()]
 		aead, err := cipher.Decrypter(salt)
-		replayBytes, err = ensureBytes(clientConn, replayBytes, cipher.SaltSize()+2+aead.Overhead())
+		firstBytes, err = ensureBytes(clientConn, firstBytes, cipher.SaltSize()+2+aead.Overhead())
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
 				logger.Debugf("TCP: Failed to read length %v: %v", id, err)
 			}
 			continue
 		}
-		cipherText := replayBytes[cipher.SaltSize() : cipher.SaltSize()+2+aead.Overhead()]
+		cipherText := firstBytes[cipher.SaltSize() : cipher.SaltSize()+2+aead.Overhead()]
 		_, err = aead.Open(chunkLenBuf[:0], zeroCountBuf[:aead.NonceSize()], cipherText, nil)
 		if err != nil {
 			if logger.IsEnabledFor(logging.DEBUG) {
@@ -106,24 +106,33 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 		}
 		// Move the active cipher to the front, so that the search is quicker next time.
 		cipherList.SafeMarkUsedByClientIP(entry, clientIP)
-		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(replayBytes), clientConn), cipher)
+		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(firstBytes), clientConn), cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
-		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), nil
+		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), salt, nil
 	}
-	return "", clientConn, fmt.Errorf("Could not find valid TCP cipher")
+	return "", clientConn, nil, fmt.Errorf("Could not find valid TCP cipher")
 }
 
 type tcpService struct {
-	listener    *net.TCPListener
+	listener *net.TCPListener
+	// `ciphers` is a pointer to SSPort.cipherList, which can be updated by SSServer.loadConfig.
 	ciphers     *CipherList
 	m           metrics.ShadowsocksMetrics
 	isRunning   bool
 	readTimeout time.Duration
+	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
+	replayCache *ReplayCache
 }
 
 // NewTCPService creates a TCPService
-func NewTCPService(listener *net.TCPListener, ciphers *CipherList, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
-	return &tcpService{listener: listener, ciphers: ciphers, m: m, readTimeout: timeout}
+func NewTCPService(listener *net.TCPListener, ciphers *CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
+	return &tcpService{
+		listener:    listener,
+		ciphers:     ciphers,
+		m:           m,
+		readTimeout: timeout,
+		replayCache: replayCache,
+	}
 }
 
 // TCPService is a Shadowsocks TCP service that can be started and stopped.
@@ -199,29 +208,30 @@ func (s *tcpService) Start() {
 			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
 			defer func() {
 				connDuration := time.Now().Sub(connStart)
-				clientConn.Close()
 				status := "OK"
 				if connError != nil {
 					logger.Debugf("TCP Error: %v: %v", connError.Message, connError.Cause)
 					status = connError.Status
 				}
-				logger.Debugf("Done with status %v, duration %v", status, connDuration)
 				s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, timeToCipher, connDuration)
+				clientConn.Close() // Closing after the metrics are added aids integration testing.
+				logger.Debugf("Done with status %v, duration %v", status, connDuration)
 			}()
 
 			findStartTime := time.Now()
-			keyID, clientConn, err := findAccessKey(clientConn, *s.ciphers)
+			keyID, clientConn, salt, err := findAccessKey(clientConn, *s.ciphers)
 			timeToCipher = time.Now().Sub(findStartTime)
 
 			if err != nil {
-				// Keep the connection open until we hit the authentication deadline to protect against probing attacks
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
-				_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
-				drainResult := drainErrToString(drainErr)
-				port := s.listener.Addr().(*net.TCPAddr).Port
-				logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
-				s.m.AddTCPProbe(clientLocation, drainResult, port, proxyMetrics)
-				return onet.NewConnectionError("ERR_CIPHER", "Failed to find a valid cipher", err)
+				const status = "ERR_CIPHER"
+				s.absorbProbe(clientConn, clientLocation, status, &proxyMetrics)
+				return onet.NewConnectionError(status, "Failed to find a valid cipher", err)
+			} else if !s.replayCache.Add(keyID, salt) { // Only check the cache if findAccessKey succeeded.
+				const status = "ERR_REPLAY"
+				s.absorbProbe(clientConn, clientLocation, status, &proxyMetrics)
+				logger.Debugf("Replay: %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
+				return onet.NewConnectionError(status, "Replay detected", nil)
 			}
 
 			// Clear the authentication deadline
@@ -229,6 +239,16 @@ func (s *tcpService) Start() {
 			return proxyConnection(clientConn, &proxyMetrics)
 		}()
 	}
+}
+
+// Keep the connection open until we hit the authentication deadline to protect against probing attacks
+// `proxyMetrics` is a pointer because its value is being mutated by `clientConn`.
+func (s *tcpService) absorbProbe(clientConn io.ReadCloser, clientLocation, status string, proxyMetrics *metrics.ProxyMetrics) {
+	_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
+	drainResult := drainErrToString(drainErr)
+	port := s.listener.Addr().(*net.TCPAddr).Port
+	logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
+	s.m.AddTCPProbe(clientLocation, status, drainResult, port, *proxyMetrics)
 }
 
 func drainErrToString(drainErr error) string {
