@@ -91,10 +91,19 @@ func TestReplayCache_Archive(t *testing.T) {
 	}
 }
 
+// Benchmark to determine the memory usage of ReplayCache.
+// Note that NewReplayCache only allocates the active set,
+// so the eventual memory usage will be roughly double.
+func BenchmarkReplayCache_Creation(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		NewReplayCache(MaxCapacity)
+	}
+}
+
 func BenchmarkReplayCache_Max(b *testing.B) {
 	salts := makeSalts(b.N)
 	// Archive replacements will be infrequent.
-	cache := NewReplayCache(maxCapacity)
+	cache := NewReplayCache(MaxCapacity)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		cache.Add(keyID, salts[i])

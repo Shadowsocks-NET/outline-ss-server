@@ -19,18 +19,20 @@ import (
 	"sync"
 )
 
+// MaxCapacity is the largest allowed size of ReplayCache.
+//
 // Capacities in excess of 20,000 are not recommended, due to the false
 // positive rate of up to 2 * capacity / 2^32 = 1 / 100,000.  If larger
 // capacities are desired, the key type should be changed to uint64.
-const maxCapacity = 20_000
+const MaxCapacity = 20_000
 
 type empty struct{}
 
 // ReplayCache allows us to check whether a handshake salt was used within
-// the last `capacity` handshakes.  It requires approximately 30*capacity bytes
-// of memory (4 bytes per key plus 10.79 bytes of overhead for each set:
-// https://go.googlesource.com/go/+/refs/tags/go1.13.5/src/runtime/map.go#43).
-// The zero value is a cache with capacity 0, i.e. no cache.
+// the last `capacity` handshakes.  It requires approximately 20*capacity
+// bytes of memory (as measured by BenchmarkReplayCache_Creation).
+//
+// The nil and zero values represent a cache with capacity 0, i.e. no cache.
 type ReplayCache struct {
 	mutex    sync.Mutex
 	capacity int
@@ -41,13 +43,13 @@ type ReplayCache struct {
 // NewReplayCache returns a fresh ReplayCache that promises to remember at least
 // the most recent `capacity` handshakes.
 func NewReplayCache(capacity int) ReplayCache {
-	if capacity > maxCapacity {
+	if capacity > MaxCapacity {
 		panic("ReplayCache capacity would result in too many false positives")
 	}
 	return ReplayCache{
 		capacity: capacity,
 		active:   make(map[uint32]empty, capacity),
-		archive:  make(map[uint32]empty, capacity),
+		// `archive` is read-only and initially empty.
 	}
 }
 
