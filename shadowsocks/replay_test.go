@@ -19,7 +19,10 @@ import (
 	"testing"
 )
 
+const keyID = "the key"
+
 var counter uint32 = 0
+
 func makeSalts(n int) [][]byte {
 	salts := make([][]byte, n)
 	for i := 0; i < n; i++ {
@@ -36,16 +39,16 @@ func makeSalts(n int) [][]byte {
 func TestReplayCache_Active(t *testing.T) {
 	salts := makeSalts(2)
 	cache := NewReplayCache(10)
-	if !cache.Add(salts[0]) {
+	if !cache.Add(keyID, salts[0]) {
 		t.Error("First addition to a clean cache should succeed")
 	}
-	if cache.Add(salts[0]) {
+	if cache.Add(keyID, salts[0]) {
 		t.Error("Duplicate add should fail")
 	}
-	if !cache.Add(salts[1]) {
+	if !cache.Add(keyID, salts[1]) {
 		t.Error("Addition of a new vector should succeed")
 	}
-	if cache.Add(salts[1]) {
+	if cache.Add(keyID, salts[1]) {
 		t.Error("Second duplicate add should fail")
 	}
 }
@@ -57,20 +60,20 @@ func TestReplayCache_Archive(t *testing.T) {
 	// Add vectors to the active set until it hits the limit
 	// and spills into the archive.
 	for _, s := range salts0 {
-		if !cache.Add(s) {
+		if !cache.Add(keyID, s) {
 			t.Error("Addition of a new vector should succeed")
 		}
 	}
 
 	for _, s := range salts0 {
-		if cache.Add(s) {
+		if cache.Add(keyID, s) {
 			t.Error("Duplicate add should fail")
 		}
 	}
 
 	// Repopulate the active set.
 	for _, s := range salts1 {
-		if !cache.Add(s) {
+		if !cache.Add(keyID, s) {
 			t.Error("Addition of a new vector should succeed")
 		}
 	}
@@ -78,11 +81,11 @@ func TestReplayCache_Archive(t *testing.T) {
 	// Both active and archive are full.  Adding another vector
 	// should wipe the archive.
 	lastStraw := makeSalts(1)[0]
-	if !cache.Add(lastStraw) {
+	if !cache.Add(keyID, lastStraw) {
 		t.Error("Addition of a new vector should succeed")
 	}
 	for _, s := range salts0 {
-		if !cache.Add(s) {
+		if !cache.Add(keyID, s) {
 			t.Error("First 10 vectors should have been forgotten")
 		}
 	}
@@ -94,7 +97,7 @@ func BenchmarkReplayCache_Max(b *testing.B) {
 	cache := NewReplayCache(maxCapacity)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cache.Add(salts[i])
+		cache.Add(keyID, salts[i])
 	}
 }
 
@@ -104,7 +107,7 @@ func BenchmarkReplayCache_Min(b *testing.B) {
 	cache := NewReplayCache(1)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cache.Add(salts[i])
+		cache.Add(keyID, salts[i])
 	}
 }
 
@@ -119,7 +122,7 @@ func BenchmarkReplayCache_Parallel(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			cache.Add(<-c)
+			cache.Add(keyID, <-c)
 		}
 	})
 }

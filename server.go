@@ -61,9 +61,10 @@ type SSPort struct {
 }
 
 type SSServer struct {
-	natTimeout time.Duration
-	m          metrics.ShadowsocksMetrics
-	ports      map[int]*SSPort
+	natTimeout  time.Duration
+	m           metrics.ShadowsocksMetrics
+	replayCache shadowsocks.ReplayCache
+	ports       map[int]*SSPort
 }
 
 func (s *SSServer) startPort(portNum int) error {
@@ -78,7 +79,7 @@ func (s *SSServer) startPort(portNum int) error {
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &SSPort{cipherList: shadowsocks.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
-	port.tcpService = shadowsocks.NewTCPService(listener, &port.cipherList, s.m, tcpReadTimeout)
+	port.tcpService = shadowsocks.NewTCPService(listener, &port.cipherList, &s.replayCache, s.m, tcpReadTimeout)
 	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, &port.cipherList, s.m)
 	s.ports[portNum] = port
 	go port.udpService.Start()
@@ -154,8 +155,13 @@ func (s *SSServer) loadConfig(filename string) error {
 	return nil
 }
 
-func runSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics) error {
-	server := &SSServer{natTimeout: natTimeout, m: sm, ports: make(map[int]*SSPort)}
+func runSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int) error {
+	server := &SSServer{
+		natTimeout:  natTimeout,
+		m:           sm,
+		replayCache: shadowsocks.NewReplayCache(replayHistory),
+		ports:       make(map[int]*SSPort),
+	}
 	err := server.loadConfig(filename)
 	if err != nil {
 		return fmt.Errorf("Failed to load config file %v: %v", filename, err)
@@ -194,16 +200,18 @@ func readConfig(filename string) (*Config, error) {
 
 func main() {
 	var flags struct {
-		ConfigFile  string
-		MetricsAddr string
-		IPCountryDB string
-		Verbose     bool
-		natTimeout  time.Duration
+		ConfigFile    string
+		MetricsAddr   string
+		IPCountryDB   string
+		natTimeout    time.Duration
+		replayHistory int
+		Verbose       bool
 	}
 	flag.StringVar(&flags.ConfigFile, "config", "", "Configuration filename")
 	flag.StringVar(&flags.MetricsAddr, "metrics", "", "Address for the Prometheus metrics")
 	flag.StringVar(&flags.IPCountryDB, "ip_country_db", "", "Path to the GeoLite2-Country.mmdb file")
 	flag.DurationVar(&flags.natTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
+	flag.IntVar(&flags.replayHistory, "replay_history", 0, "Replay buffer size (# of handshakes)")
 	flag.BoolVar(&flags.Verbose, "verbose", false, "Enables verbose logging output")
 
 	flag.Parse()
@@ -237,7 +245,8 @@ func main() {
 		}
 		defer ipCountryDB.Close()
 	}
-	err = runSSServer(flags.ConfigFile, flags.natTimeout, metrics.NewShadowsocksMetrics(ipCountryDB))
+	m := metrics.NewShadowsocksMetrics(ipCountryDB)
+	err = runSSServer(flags.ConfigFile, flags.natTimeout, m, flags.replayHistory)
 	if err != nil {
 		logger.Fatal(err)
 	}

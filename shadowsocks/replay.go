@@ -46,24 +46,43 @@ func NewReplayCache(capacity int) ReplayCache {
 	}
 	return ReplayCache{
 		capacity: capacity,
-		active:   make(map[uint32]empty),
-		archive:  make(map[uint32]empty),
+		active:   make(map[uint32]empty, capacity),
+		archive:  make(map[uint32]empty, capacity),
 	}
 }
 
-// Add a handshake's salt to the cache.  Returns false if it is already present.
-func (c *ReplayCache) Add(salt []byte) bool {
+// Trivially reduces the key and salt to a uint32, avoiding collisions
+// in case of salts with a shared prefix or suffix.  Salts are normally
+// random, but in principle a client might use a counter instead, so
+// using only the prefix or suffix is not sufficient.  Including the key
+// ID in the hash avoids accidental collisions when the same salt is used
+// by different access keys, as might happen in the case of a counter.
+//
+// Secure hashing is not required, because only authenticated handshakes
+// are added to the cache.  A hostile client could produce colliding salts,
+// but this would not impact other users.  Each map uses a new random hash
+// function, so it is not trivial for a hostile client to mount an
+// algorithmic complexity attack with nearly-colliding hashes:
+// https://dave.cheney.net/2018/05/29/how-the-go-runtime-implements-maps-efficiently-without-generics
+func preHash(id string, salt []byte) uint32 {
+	buf := [4]byte{}
+	for i := 0; i < len(id); i++ {
+		buf[i&0x3] ^= id[i]
+	}
+	for i, v := range salt {
+		buf[i&0x3] ^= v
+	}
+	return binary.BigEndian.Uint32(buf[:])
+}
+
+// Add a handshake with this key ID and salt to the cache.
+// Returns false if it is already present.
+func (c *ReplayCache) Add(id string, salt []byte) bool {
 	if c == nil || c.capacity == 0 {
 		// Cache is disabled, so every salt is new.
 		return true
 	}
-	// Salts are supposed to be random, and only authenticated handshakes are added
-	// to the cache.  A hostile client could produce colliding salts, but
-	// this would not impact other users.  Each map uses a new random hash
-	// function, so it is not trivial for a hostile client to mount an
-	// algorithmic complexity attack with nearly-colliding hashes.
-	// https://dave.cheney.net/2018/05/29/how-the-go-runtime-implements-maps-efficiently-without-generics
-	hash := binary.BigEndian.Uint32(salt[:4])
+	hash := preHash(id, salt)
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	if _, ok := c.active[hash]; ok {
@@ -74,7 +93,7 @@ func (c *ReplayCache) Add(salt []byte) bool {
 	if len(c.active) == c.capacity {
 		// Discard the archive and move active to archive.
 		c.archive = c.active
-		c.active = make(map[uint32]empty)
+		c.active = make(map[uint32]empty, c.capacity)
 	}
 	c.active[hash] = empty{}
 	return !inArchive

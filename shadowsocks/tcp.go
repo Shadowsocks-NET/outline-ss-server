@@ -120,21 +120,18 @@ type tcpService struct {
 	m           metrics.ShadowsocksMetrics
 	isRunning   bool
 	readTimeout time.Duration
-	replayCache ReplayCache
+	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
+	replayCache *ReplayCache
 }
 
-// Prevent replays of this many of the most recent handshakes.
-// The false positive probability will be 2 * replayHistory / 2^32 = 1/200,000.
-const replayHistory = 10_000
-
 // NewTCPService creates a TCPService
-func NewTCPService(listener *net.TCPListener, ciphers *CipherList, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
+func NewTCPService(listener *net.TCPListener, ciphers *CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
 	return &tcpService{
 		listener:    listener,
 		ciphers:     ciphers,
 		m:           m,
 		readTimeout: timeout,
-		replayCache: NewReplayCache(replayHistory),
+		replayCache: replayCache,
 	}
 }
 
@@ -230,10 +227,10 @@ func (s *tcpService) Start() {
 				const status = "ERR_CIPHER"
 				s.absorbProbe(clientConn, clientLocation, status, &proxyMetrics)
 				return onet.NewConnectionError(status, "Failed to find a valid cipher", err)
-			} else if !s.replayCache.Add(salt) { // Only check the cache if findAccessKey succeeded.
+			} else if !s.replayCache.Add(keyID, salt) { // Only check the cache if findAccessKey succeeded.
 				const status = "ERR_REPLAY"
 				s.absorbProbe(clientConn, clientLocation, status, &proxyMetrics)
-				logger.Debugf("Replay: %v in %s sent %d bytes, starting with %v", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy, salt[:4])
+				logger.Debugf("Replay: %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
 				return onet.NewConnectionError(status, "Replay detected", nil)
 			}
 
