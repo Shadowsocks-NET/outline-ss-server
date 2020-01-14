@@ -115,8 +115,7 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 
 type tcpService struct {
 	listener *net.TCPListener
-	// `ciphers` is a pointer to SSPort.cipherList, which can be updated by SSServer.loadConfig.
-	ciphers     *CipherList
+	ciphers     CipherList
 	m           metrics.ShadowsocksMetrics
 	isRunning   bool
 	readTimeout time.Duration
@@ -125,7 +124,7 @@ type tcpService struct {
 }
 
 // NewTCPService creates a TCPService
-func NewTCPService(listener *net.TCPListener, ciphers *CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
+func NewTCPService(listener *net.TCPListener, ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
 	return &tcpService{
 		listener:    listener,
 		ciphers:     ciphers,
@@ -219,7 +218,7 @@ func (s *tcpService) Start() {
 			}()
 
 			findStartTime := time.Now()
-			keyID, clientConn, salt, err := findAccessKey(clientConn, *s.ciphers)
+			keyID, clientConn, salt, err := findAccessKey(clientConn, s.ciphers)
 			timeToCipher = time.Now().Sub(findStartTime)
 
 			if err != nil {

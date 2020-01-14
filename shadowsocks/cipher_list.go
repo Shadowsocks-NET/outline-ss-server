@@ -36,6 +36,7 @@ type CipherList interface {
 	PushBack(id string, cipher shadowaead.Cipher) *list.Element
 	SafeSnapshotForClientIP(clientIP net.IP) []*list.Element
 	SafeMarkUsedByClientIP(e *list.Element, clientIP net.IP)
+	SafeSwap(other CipherList)
 }
 
 type cipherList struct {
@@ -87,4 +88,13 @@ func (cl *cipherList) SafeMarkUsedByClientIP(e *list.Element, clientIP net.IP) {
 
 	c := e.Value.(*CipherEntry)
 	c.lastClientIP = clientIP
+}
+
+func (cl *cipherList) SafeSwap(other CipherList) {
+	cl2 := other.(*cipherList)
+	cl.mu.Lock()
+	cl2.mu.Lock()
+	cl.list, cl2.list = cl2.list, cl.list
+	cl2.mu.Unlock()
+	cl.mu.Unlock()
 }

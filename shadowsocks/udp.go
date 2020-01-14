@@ -60,13 +60,13 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 type udpService struct {
 	clientConn net.PacketConn
 	natTimeout time.Duration
-	ciphers    *CipherList
+	ciphers    CipherList
 	m          metrics.ShadowsocksMetrics
 	isRunning  bool
 }
 
 // NewUDPService creates a UDPService
-func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList *CipherList, m metrics.ShadowsocksMetrics) UDPService {
+func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
 	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: cipherList, m: m}
 }
 
@@ -122,7 +122,7 @@ func (s *udpService) Start() {
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
 			unpackStart := time.Now()
 			ip := clientAddr.(*net.UDPAddr).IP
-			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], *s.ciphers)
+			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], s.ciphers)
 			timeToCipher = time.Now().Sub(unpackStart)
 
 			if err != nil {

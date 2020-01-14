@@ -194,7 +194,7 @@ func TestReplayDefense(t *testing.T) {
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	s := NewTCPService(listener, &cipherList, &replayCache, testMetrics, testTimeout)
+	s := NewTCPService(listener, cipherList, &replayCache, testMetrics, testTimeout)
 	cipherEntry := cipherList.SafeSnapshotForClientIP(nil)[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
@@ -277,7 +277,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 		t.Fatal(err)
 	}
 	testMetrics := &probeTestMetrics{}
-	s := NewTCPService(listener, &cipherList, nil, testMetrics, testTimeout)
+	s := NewTCPService(listener, cipherList, nil, testMetrics, testTimeout)
 
 	testPayload := MakeTestPayload(payloadSize)
 	done := make(chan bool)
