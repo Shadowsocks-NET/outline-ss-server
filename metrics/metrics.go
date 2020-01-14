@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// IP Geolocation by DB-IP (https://db-ip.com)
+
 package metrics
 
 import (
