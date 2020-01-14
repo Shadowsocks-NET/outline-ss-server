@@ -27,9 +27,9 @@ import (
 // payloadSizeMask is the maximum size of payload in bytes.
 const payloadSizeMask = 0x3FFF // 16*1024 - 1
 
-// ShadowsocksWriter is an io.Writer that also implements io.ReaderFrom to
+// Writer is an io.Writer that also implements io.ReaderFrom to
 // allow for piping the data without extra allocations and copies.
-type ShadowsocksWriter interface {
+type Writer interface {
 	io.Writer
 	io.ReaderFrom
 }
@@ -46,7 +46,7 @@ type shadowsocksWriter struct {
 
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksWriter(writer io.Writer, ssCipher shadowaead.Cipher) ShadowsocksWriter {
+func NewShadowsocksWriter(writer io.Writer, ssCipher shadowaead.Cipher) Writer {
 	return &shadowsocksWriter{writer: writer, ssCipher: ssCipher}
 }
 
@@ -128,16 +128,16 @@ type shadowsocksReader struct {
 	leftover []byte
 }
 
-// ShadowsocksReader is an io.Reader that also implements io.WriterTo to
+// Reader is an io.Reader that also implements io.WriterTo to
 // allow for piping the data without extra allocations and copies.
-type ShadowsocksReader interface {
+type Reader interface {
 	io.Reader
 	io.WriterTo
 }
 
 // NewShadowsocksReader creates a Reader that decrypts the given Reader using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksReader(reader io.Reader, ssCipher shadowaead.Cipher) ShadowsocksReader {
+func NewShadowsocksReader(reader io.Reader, ssCipher shadowaead.Cipher) Reader {
 	return &shadowsocksReader{reader: reader, ssCipher: ssCipher}
 }
 

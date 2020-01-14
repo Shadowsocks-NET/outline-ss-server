@@ -23,7 +23,6 @@ import (
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-	logging "github.com/op/go-logging"
 
 	"sync"
 
@@ -42,14 +41,10 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {
-			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("UDP: Failed to unpack with cipher %v: %v", id, err)
-			}
+			debugLogID("UDP %s: Failed to unpack: %v", id, err)
 			continue
 		}
-		if logger.IsEnabledFor(logging.DEBUG) {
-			logger.Debugf("UDP: Found cipher %v at index %d", id, ci)
-		}
+		debugLogID("UDP %s: Found cipher at index %d", id, ci)
 		// Move the active cipher to the front, so that the search is quicker next time.
 		cipherList.MarkUsedByClientIP(entry, clientIP)
 		return buf, id, cipher, nil

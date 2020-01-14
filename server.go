@@ -55,20 +55,20 @@ func init() {
 	logger = logging.MustGetLogger("")
 }
 
-type SSPort struct {
+type ssPort struct {
 	tcpService shadowsocks.TCPService
 	udpService shadowsocks.UDPService
 	cipherList shadowsocks.CipherList
 }
 
-type SSServer struct {
+type ssServer struct {
 	natTimeout  time.Duration
 	m           metrics.ShadowsocksMetrics
 	replayCache shadowsocks.ReplayCache
-	ports       map[int]*SSPort
+	ports       map[int]*ssPort
 }
 
-func (s *SSServer) startPort(portNum int) error {
+func (s *ssServer) startPort(portNum int) error {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: portNum})
 	if err != nil {
 		return fmt.Errorf("Failed to start TCP on port %v: %v", portNum, err)
@@ -78,7 +78,7 @@ func (s *SSServer) startPort(portNum int) error {
 		return fmt.Errorf("Failed to start UDP on port %v: %v", portNum, err)
 	}
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
-	port := &SSPort{cipherList: shadowsocks.NewCipherList()}
+	port := &ssPort{cipherList: shadowsocks.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
 	port.tcpService = shadowsocks.NewTCPService(listener, port.cipherList, &s.replayCache, s.m, tcpReadTimeout)
 	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, port.cipherList, s.m)
@@ -88,7 +88,7 @@ func (s *SSServer) startPort(portNum int) error {
 	return nil
 }
 
-func (s *SSServer) removePort(portNum int) error {
+func (s *ssServer) removePort(portNum int) error {
 	port, ok := s.ports[portNum]
 	if !ok {
 		return fmt.Errorf("Port %v doesn't exist", portNum)
@@ -106,7 +106,7 @@ func (s *SSServer) removePort(portNum int) error {
 	return nil
 }
 
-func (s *SSServer) loadConfig(filename string) error {
+func (s *ssServer) loadConfig(filename string) error {
 	config, err := readConfig(filename)
 	if err != nil {
 		return fmt.Errorf("Failed to read config file %v: %v", filename, err)
@@ -157,11 +157,11 @@ func (s *SSServer) loadConfig(filename string) error {
 }
 
 func runSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int) error {
-	server := &SSServer{
+	server := &ssServer{
 		natTimeout:  natTimeout,
 		m:           sm,
 		replayCache: shadowsocks.NewReplayCache(replayHistory),
-		ports:       make(map[int]*SSPort),
+		ports:       make(map[int]*ssPort),
 	}
 	err := server.loadConfig(filename)
 	if err != nil {
