@@ -30,13 +30,15 @@ type CipherEntry struct {
 	lastClientIP net.IP
 }
 
-// CipherList is a list of CipherEntry elements that allows for thread-safe snapshotting and
-// moving to front.
+// CipherList is a thread-safe collection of CipherEntry elements that allows for
+// snapshotting and moving to front.
 type CipherList interface {
-	PushBack(id string, cipher shadowaead.Cipher) *list.Element
-	SafeSnapshotForClientIP(clientIP net.IP) []*list.Element
-	SafeMarkUsedByClientIP(e *list.Element, clientIP net.IP)
-	SafeSwap(other CipherList)
+	SnapshotForClientIP(clientIP net.IP) []*list.Element
+	MarkUsedByClientIP(e *list.Element, clientIP net.IP)
+	// Update replaces the current contents of the CipherList with `contents`,
+	// which is a List of *CipherEntry.  Update takes ownership of `contents`,
+	// which must not be read or written after this call.
+	Update(contents *list.List)
 }
 
 type cipherList struct {
@@ -50,16 +52,12 @@ func NewCipherList() CipherList {
 	return &cipherList{list: list.New()}
 }
 
-func (cl *cipherList) PushBack(id string, cipher shadowaead.Cipher) *list.Element {
-	return cl.list.PushBack(&CipherEntry{ID: id, Cipher: cipher})
-}
-
 func matchesIP(e *list.Element, clientIP net.IP) bool {
 	c := e.Value.(*CipherEntry)
 	return clientIP != nil && clientIP.Equal(c.lastClientIP)
 }
 
-func (cl *cipherList) SafeSnapshotForClientIP(clientIP net.IP) []*list.Element {
+func (cl *cipherList) SnapshotForClientIP(clientIP net.IP) []*list.Element {
 	cl.mu.RLock()
 	defer cl.mu.RUnlock()
 	cipherArray := make([]*list.Element, cl.list.Len())
@@ -81,7 +79,7 @@ func (cl *cipherList) SafeSnapshotForClientIP(clientIP net.IP) []*list.Element {
 	return cipherArray
 }
 
-func (cl *cipherList) SafeMarkUsedByClientIP(e *list.Element, clientIP net.IP) {
+func (cl *cipherList) MarkUsedByClientIP(e *list.Element, clientIP net.IP) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 	cl.list.MoveToFront(e)
@@ -90,11 +88,8 @@ func (cl *cipherList) SafeMarkUsedByClientIP(e *list.Element, clientIP net.IP) {
 	c.lastClientIP = clientIP
 }
 
-func (cl *cipherList) SafeSwap(other CipherList) {
-	cl2 := other.(*cipherList)
+func (cl *cipherList) Update(src *list.List) {
 	cl.mu.Lock()
-	cl2.mu.Lock()
-	cl.list, cl2.list = cl2.list, cl.list
-	cl2.mu.Unlock()
+	cl.list = src
 	cl.mu.Unlock()
 }

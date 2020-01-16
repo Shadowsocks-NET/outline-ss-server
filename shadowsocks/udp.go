@@ -38,7 +38,7 @@ const udpBufSize = 64 * 1024
 func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
-	for ci, entry := range cipherList.SafeSnapshotForClientIP(clientIP) {
+	for ci, entry := range cipherList.SnapshotForClientIP(clientIP) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {
@@ -51,7 +51,7 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 			logger.Debugf("UDP: Found cipher %v at index %d", id, ci)
 		}
 		// Move the active cipher to the front, so that the search is quicker next time.
-		cipherList.SafeMarkUsedByClientIP(entry, clientIP)
+		cipherList.MarkUsedByClientIP(entry, clientIP)
 		return buf, id, cipher, nil
 	}
 	return nil, "", nil, errors.New("could not find valid cipher")

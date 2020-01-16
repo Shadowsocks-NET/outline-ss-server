@@ -130,7 +130,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		b.Fatal(err)
 	}
 	cipherEntries := [numCiphers]*CipherEntry{}
-	for cipherNumber, element := range cipherList.SafeSnapshotForClientIP(nil) {
+	for cipherNumber, element := range cipherList.SnapshotForClientIP(nil) {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
 	}
 	for n := 0; n < b.N; n++ {
@@ -195,7 +195,7 @@ func TestReplayDefense(t *testing.T) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	s := NewTCPService(listener, cipherList, &replayCache, testMetrics, testTimeout)
-	cipherEntry := cipherList.SafeSnapshotForClientIP(nil)[0].Value.(*CipherEntry)
+	cipherEntry := cipherList.SnapshotForClientIP(nil)[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
 	go NewShadowsocksWriter(writer, cipher).Write([]byte{0})

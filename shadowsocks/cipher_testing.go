@@ -15,6 +15,7 @@
 package shadowsocks
 
 import (
+	"container/list"
 	"fmt"
 
 	"github.com/shadowsocks/go-shadowsocks2/core"
@@ -22,7 +23,7 @@ import (
 )
 
 func MakeTestCiphers(numCiphers int) (CipherList, error) {
-	cipherList := NewCipherList()
+	l := list.New()
 	for i := 0; i < numCiphers; i++ {
 		cipherID := fmt.Sprintf("id-%v", i)
 		secret := fmt.Sprintf("secret-%v", i)
@@ -30,8 +31,10 @@ func MakeTestCiphers(numCiphers int) (CipherList, error) {
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create cipher %v: %v", i, err)
 		}
-		cipherList.PushBack(cipherID, cipher.(shadowaead.Cipher))
+		l.PushBack(&CipherEntry{ID: cipherID, Cipher: cipher.(shadowaead.Cipher)})
 	}
+	cipherList := NewCipherList()
+	cipherList.Update(l)
 	return cipherList, nil
 }
 
