@@ -209,7 +209,7 @@ func main() {
 	}
 	flag.StringVar(&flags.ConfigFile, "config", "", "Configuration filename")
 	flag.StringVar(&flags.MetricsAddr, "metrics", "", "Address for the Prometheus metrics")
-	flag.StringVar(&flags.IPCountryDB, "ip_country_db", "", "Path to the GeoLite2-Country.mmdb file")
+	flag.StringVar(&flags.IPCountryDB, "ip_country_db", "", "Path to the dip-to-country mmdb file")
 	flag.DurationVar(&flags.natTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
 	flag.IntVar(&flags.replayHistory, "replay_history", 0, "Replay buffer size (# of handshakes)")
 	flag.BoolVar(&flags.Verbose, "verbose", false, "Enables verbose logging output")
