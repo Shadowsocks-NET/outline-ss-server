@@ -15,6 +15,7 @@
 package main
 
 import (
+	"container/list"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -79,8 +80,8 @@ func (s *SSServer) startPort(portNum int) error {
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &SSPort{cipherList: shadowsocks.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
-	port.tcpService = shadowsocks.NewTCPService(listener, &port.cipherList, &s.replayCache, s.m, tcpReadTimeout)
-	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, &port.cipherList, s.m)
+	port.tcpService = shadowsocks.NewTCPService(listener, port.cipherList, &s.replayCache, s.m, tcpReadTimeout)
+	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, port.cipherList, s.m)
 	s.ports[portNum] = port
 	go port.udpService.Start()
 	go port.tcpService.Start()
@@ -112,12 +113,12 @@ func (s *SSServer) loadConfig(filename string) error {
 	}
 
 	portChanges := make(map[int]int)
-	portCiphers := make(map[int]shadowsocks.CipherList)
+	portCiphers := make(map[int]*list.List) // Values are *List of *CipherEntry.
 	for _, keyConfig := range config.Keys {
 		portChanges[keyConfig.Port] = 1
 		cipherList, ok := portCiphers[keyConfig.Port]
 		if !ok {
-			cipherList = shadowsocks.NewCipherList()
+			cipherList = list.New()
 			portCiphers[keyConfig.Port] = cipherList
 		}
 		cipher, err := core.PickCipher(keyConfig.Cipher, nil, keyConfig.Secret)
@@ -131,7 +132,7 @@ func (s *SSServer) loadConfig(filename string) error {
 		if !ok {
 			return fmt.Errorf("Only AEAD ciphers are supported. Found %v", keyConfig.Cipher)
 		}
-		cipherList.PushBack(keyConfig.ID, aead)
+		cipherList.PushBack(&shadowsocks.CipherEntry{ID: keyConfig.ID, Cipher: aead})
 	}
 	for port := range s.ports {
 		portChanges[port] = portChanges[port] - 1
@@ -148,7 +149,7 @@ func (s *SSServer) loadConfig(filename string) error {
 		}
 	}
 	for portNum, cipherList := range portCiphers {
-		s.ports[portNum].cipherList = cipherList
+		s.ports[portNum].cipherList.Update(cipherList)
 	}
 	logger.Infof("Loaded %v access keys", len(config.Keys))
 	s.m.SetNumAccessKeys(len(config.Keys), len(portCiphers))

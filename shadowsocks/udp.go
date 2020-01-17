@@ -38,7 +38,7 @@ const udpBufSize = 64 * 1024
 func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
-	for ci, entry := range cipherList.SafeSnapshotForClientIP(clientIP) {
+	for ci, entry := range cipherList.SnapshotForClientIP(clientIP) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {
@@ -51,7 +51,7 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 			logger.Debugf("UDP: Found cipher %v at index %d", id, ci)
 		}
 		// Move the active cipher to the front, so that the search is quicker next time.
-		cipherList.SafeMarkUsedByClientIP(entry, clientIP)
+		cipherList.MarkUsedByClientIP(entry, clientIP)
 		return buf, id, cipher, nil
 	}
 	return nil, "", nil, errors.New("could not find valid cipher")
@@ -60,13 +60,13 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 type udpService struct {
 	clientConn net.PacketConn
 	natTimeout time.Duration
-	ciphers    *CipherList
+	ciphers    CipherList
 	m          metrics.ShadowsocksMetrics
 	isRunning  bool
 }
 
 // NewUDPService creates a UDPService
-func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList *CipherList, m metrics.ShadowsocksMetrics) UDPService {
+func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
 	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: cipherList, m: m}
 }
 
@@ -122,7 +122,7 @@ func (s *udpService) Start() {
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
 			unpackStart := time.Now()
 			ip := clientAddr.(*net.UDPAddr).IP
-			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], *s.ciphers)
+			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], s.ciphers)
 			timeToCipher = time.Now().Sub(unpackStart)
 
 			if err != nil {

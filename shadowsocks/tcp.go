@@ -75,7 +75,7 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-	for ci, entry := range cipherList.SafeSnapshotForClientIP(clientIP) {
+	for ci, entry := range cipherList.SnapshotForClientIP(clientIP) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		firstBytes, err = ensureBytes(clientConn, firstBytes, cipher.SaltSize())
 		if err != nil {
@@ -105,7 +105,7 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 			logger.Debugf("TCP: Found cipher %v at index %d", id, ci)
 		}
 		// Move the active cipher to the front, so that the search is quicker next time.
-		cipherList.SafeMarkUsedByClientIP(entry, clientIP)
+		cipherList.MarkUsedByClientIP(entry, clientIP)
 		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(firstBytes), clientConn), cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
 		return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), salt, nil
@@ -114,9 +114,8 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 }
 
 type tcpService struct {
-	listener *net.TCPListener
-	// `ciphers` is a pointer to SSPort.cipherList, which can be updated by SSServer.loadConfig.
-	ciphers     *CipherList
+	listener    *net.TCPListener
+	ciphers     CipherList
 	m           metrics.ShadowsocksMetrics
 	isRunning   bool
 	readTimeout time.Duration
@@ -125,7 +124,7 @@ type tcpService struct {
 }
 
 // NewTCPService creates a TCPService
-func NewTCPService(listener *net.TCPListener, ciphers *CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
+func NewTCPService(listener *net.TCPListener, ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
 	return &tcpService{
 		listener:    listener,
 		ciphers:     ciphers,
@@ -219,7 +218,7 @@ func (s *tcpService) Start() {
 			}()
 
 			findStartTime := time.Now()
-			keyID, clientConn, salt, err := findAccessKey(clientConn, *s.ciphers)
+			keyID, clientConn, salt, err := findAccessKey(clientConn, s.ciphers)
 			timeToCipher = time.Now().Sub(findStartTime)
 
 			if err != nil {
