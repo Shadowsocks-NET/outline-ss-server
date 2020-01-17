@@ -62,12 +62,12 @@ func remoteIP(conn net.Conn) net.IP {
 	return nil
 }
 
-// Wrapper for logger.Debugf with a fixed number of arguments.
-// This is an optimization to reduce unnecessary allocations due to an interaction
-// between Go's inlining/escape analysis and varargs functions like logger.Debugf.
-func debugLogID(template, id string, v2 interface{}) {
+// Wrapper for logger.Debugf during TCP access key searches.
+func debugTCP(cipherID, template string, val interface{}) {
+	// This is an optimization to reduce unnecessary allocations due to an interaction
+	// between Go's inlining/escape analysis and varargs functions like logger.Debugf.
 	if logger.IsEnabledFor(logging.DEBUG) {
-		logger.Debugf(template, id, v2)
+		logger.Debugf("TCP(%s): "+template, cipherID, val)
 	}
 }
 
@@ -89,28 +89,28 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 		saltsize := cipher.SaltSize()
 		firstBytes, err = ensureBytes(clientConn, firstBytes, saltsize)
 		if err != nil {
-			debugLogID("TCP %s: Failed to read salt: %v", id, err)
+			debugTCP(id, "Failed to read salt: %v", err)
 			continue
 		}
 		salt := firstBytes[:saltsize]
 		aead, err := cipher.Decrypter(salt)
 		if err != nil {
-			debugLogID("TCP %s: Failed to create decrypter: %v", id, err)
+			debugTCP(id, "Failed to create decrypter: %v", err)
 			continue
 		}
 		cipherTextLength := 2 + aead.Overhead()
 		firstBytes, err = ensureBytes(clientConn, firstBytes, saltsize+cipherTextLength)
 		if err != nil {
-			debugLogID("TCP %s: Failed to read length: %v", id, err)
+			debugTCP(id, "Failed to read length: %v", err)
 			continue
 		}
 		cipherText := firstBytes[saltsize : saltsize+cipherTextLength]
 		_, err = aead.Open(chunkLenBuf[:0], zeroCountBuf[:aead.NonceSize()], cipherText, nil)
 		if err != nil {
-			debugLogID("TCP %s: Failed to decrypt length: %v", id, err)
+			debugTCP(id, "Failed to decrypt length: %v", err)
 			continue
 		}
-		debugLogID("TCP %s: Found cipher at index %d", id, ci)
+		debugTCP(id, "Found cipher at index %d", ci)
 		// Move the active cipher to the front, so that the search is quicker next time.
 		cipherList.MarkUsedByClientIP(entry, clientIP)
 		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(firstBytes), clientConn), cipher)
