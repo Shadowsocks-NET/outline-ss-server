@@ -55,18 +55,27 @@ func remoteIP(conn net.Conn) net.IP {
 	if tcpaddr, ok := addr.(*net.TCPAddr); ok {
 		return tcpaddr.IP
 	}
-	ipstr, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	ipstr, _, err := net.SplitHostPort(addr.String())
 	if err == nil {
 		return net.ParseIP(ipstr)
 	}
 	return nil
 }
 
+// Wrapper for logger.Debugf during TCP access key searches.
+func debugTCP(cipherID, template string, val interface{}) {
+	// This is an optimization to reduce unnecessary allocations due to an interaction
+	// between Go's inlining/escape analysis and varargs functions like logger.Debugf.
+	if logger.IsEnabledFor(logging.DEBUG) {
+		logger.Debugf("TCP(%s): "+template, cipherID, val)
+	}
+}
+
 func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, onet.DuplexConn, []byte, error) {
 	// This must have enough space to hold the salt + 2 bytes chunk length + AEAD tag (Overhead) for any cipher
 	firstBytes := make([]byte, 0, 32+2+16)
 	// Constant of zeroes to use as the start chunk count. This must be as big as the max NonceSize() across all ciphers.
-	zeroCountBuf := make([]byte, 12) // MaxCountSize
+	zeroCountBuf := [12]byte{} // MaxCountSize
 	// To hold the decrypted chunk length.
 	chunkLenBuf := [2]byte{}
 	var err error
@@ -77,33 +86,31 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 	// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
 	for ci, entry := range cipherList.SnapshotForClientIP(clientIP) {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
-		firstBytes, err = ensureBytes(clientConn, firstBytes, cipher.SaltSize())
+		saltsize := cipher.SaltSize()
+		firstBytes, err = ensureBytes(clientConn, firstBytes, saltsize)
 		if err != nil {
-			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("TCP: Failed to read salt %v: %v", id, err)
-			}
+			debugTCP(id, "Failed to read salt: %v", err)
 			continue
 		}
-		salt := firstBytes[:cipher.SaltSize()]
+		salt := firstBytes[:saltsize]
 		aead, err := cipher.Decrypter(salt)
-		firstBytes, err = ensureBytes(clientConn, firstBytes, cipher.SaltSize()+2+aead.Overhead())
 		if err != nil {
-			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("TCP: Failed to read length %v: %v", id, err)
-			}
+			debugTCP(id, "Failed to create decrypter: %v", err)
 			continue
 		}
-		cipherText := firstBytes[cipher.SaltSize() : cipher.SaltSize()+2+aead.Overhead()]
+		cipherTextLength := 2 + aead.Overhead()
+		firstBytes, err = ensureBytes(clientConn, firstBytes, saltsize+cipherTextLength)
+		if err != nil {
+			debugTCP(id, "Failed to read length: %v", err)
+			continue
+		}
+		cipherText := firstBytes[saltsize : saltsize+cipherTextLength]
 		_, err = aead.Open(chunkLenBuf[:0], zeroCountBuf[:aead.NonceSize()], cipherText, nil)
 		if err != nil {
-			if logger.IsEnabledFor(logging.DEBUG) {
-				logger.Debugf("TCP: Failed to decrypt length %v: %v", id, err)
-			}
+			debugTCP(id, "Failed to decrypt length: %v", err)
 			continue
 		}
-		if logger.IsEnabledFor(logging.DEBUG) {
-			logger.Debugf("TCP: Found cipher %v at index %d", id, ci)
-		}
+		debugTCP(id, "Found cipher at index %d", ci)
 		// Move the active cipher to the front, so that the search is quicker next time.
 		cipherList.MarkUsedByClientIP(entry, clientIP)
 		ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(firstBytes), clientConn), cipher)

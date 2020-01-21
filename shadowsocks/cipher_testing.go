@@ -22,6 +22,7 @@ import (
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
+// MakeTestCiphers creates a CipherList containing `numCiphers` fresh AEAD ciphers.
 func MakeTestCiphers(numCiphers int) (CipherList, error) {
 	l := list.New()
 	for i := 0; i < numCiphers; i++ {
@@ -38,6 +39,7 @@ func MakeTestCiphers(numCiphers int) (CipherList, error) {
 	return cipherList, nil
 }
 
+// MakeTestPayload returns a slice of `size` arbitrary bytes.
 func MakeTestPayload(size int) []byte {
 	payload := make([]byte, size)
 	for i := 0; i < size; i++ {
