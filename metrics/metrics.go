@@ -107,7 +107,7 @@ func NewShadowsocksMetrics(ipCountryDB *geoip2.Reader) ShadowsocksMetrics {
 			Name:      "tcp_probes",
 			Buckets:   []float64{0, 48, 49, 50, 51, 52},
 			Help:      "Histogram of number of bytes from client to proxy, for detecting possible probes",
-		}, []string{"location", "port", "error"}),
+		}, []string{"location", "port", "status", "error"}),
 		timeToCipherMs: prometheus.NewSummaryVec(
 			prometheus.SummaryOpts{
 				Namespace:  "shadowsocks",
