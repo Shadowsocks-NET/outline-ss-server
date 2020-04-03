@@ -21,10 +21,19 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/Jigsaw-Code/outline-ss-server/slicepool"
 )
 
 // payloadSizeMask is the maximum size of payload in bytes.
 const payloadSizeMask = 0x3FFF // 16*1024 - 1
+
+// Maximum allowed cipher overhead
+const maxCipherOverhead = 16
+
+// Buffer pool used for encrypting and decrypting Shadowsocks streams.
+// The largest buffer we could need is for encrypting a max-length payload.
+var ssPool = slicepool.MakePool(payloadSizeMask + maxCipherOverhead)
 
 // Writer is an io.Writer that also implements io.ReaderFrom to
 // allow for piping the data without extra allocations and copies.
@@ -262,7 +271,10 @@ type chunkReader struct {
 	aead cipher.AEAD
 	// Index of the next encrypted chunk to read.
 	counter []byte
-	buf     []byte
+	// Buffer for the uint16 size and its AEAD tag.  Made in init().
+	size []byte
+	// Holds a buffer for the payload and its AEAD tag, when needed.
+	payload slicepool.Slice
 }
 
 // Reader is an io.Reader that also implements io.WriterTo to
@@ -276,7 +288,11 @@ type Reader interface {
 // the shadowsocks protocol with the given shadowsocks cipher.
 func NewShadowsocksReader(reader io.Reader, ssCipher *Cipher) Reader {
 	return &readConverter{
-		cr: &chunkReader{reader: reader, ssCipher: ssCipher},
+		cr: &chunkReader{
+			reader:   reader,
+			ssCipher: ssCipher,
+			payload:  ssPool.Slice(),
+		},
 	}
 }
 
@@ -295,8 +311,11 @@ func (cr *chunkReader) init() (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
+		if cr.aead.Overhead() > maxCipherOverhead {
+			return fmt.Errorf("Excessive cipher overhead (%d)", cr.aead.Overhead())
+		}
 		cr.counter = make([]byte, cr.aead.NonceSize())
-		cr.buf = make([]byte, payloadSizeMask+cr.aead.Overhead())
+		cr.size = make([]byte, 2+cr.aead.Overhead())
 	}
 	return nil
 }
@@ -318,31 +337,38 @@ func (cr *chunkReader) readMessage(buf []byte) error {
 	return nil
 }
 
+// ReadChunk returns the next chunk from the stream.  Callers must fully
+// consume and discard the previous chunk before calling ReadChunk again.
 func (cr *chunkReader) ReadChunk() ([]byte, error) {
 	if err := cr.init(); err != nil {
 		return nil, err
 	}
+
+	// Release the previous payload buffer.
+	cr.payload.Release()
+
 	// In Shadowsocks-AEAD, each chunk consists of two
 	// encrypted messages.  The first message contains the payload length,
-	// and the second message is the payload.
-	sizeBuf := cr.buf[:2+cr.aead.Overhead()]
-	if err := cr.readMessage(sizeBuf); err != nil {
+	// and the second message is the payload.  Idle read threads will
+	// block here until the next chunk.
+	if err := cr.readMessage(cr.size); err != nil {
 		if err != io.EOF && err != io.ErrUnexpectedEOF {
 			err = fmt.Errorf("failed to read payload size: %v", err)
 		}
 		return nil, err
 	}
-	size := int(binary.BigEndian.Uint16(sizeBuf) & payloadSizeMask)
+	size := int(binary.BigEndian.Uint16(cr.size) & payloadSizeMask)
 	sizeWithTag := size + cr.aead.Overhead()
-	if cap(cr.buf) < sizeWithTag {
-		// This code is unreachable.
+	payloadBuf := cr.payload.Acquire()
+	if cap(payloadBuf) < sizeWithTag {
+		// This code is unreachable if the constants are set correctly.
 		return nil, io.ErrShortBuffer
 	}
-	payloadBuf := cr.buf[:sizeWithTag]
-	if err := cr.readMessage(payloadBuf); err != nil {
+	if err := cr.readMessage(payloadBuf[:sizeWithTag]); err != nil {
 		if err == io.EOF { // EOF is not expected mid-chunk.
 			err = io.ErrUnexpectedEOF
 		}
+		cr.payload.Release()
 		return nil, err
 	}
 	return payloadBuf[:size], nil
@@ -388,6 +414,7 @@ func (c *readConverter) ensureLeftover() error {
 	if len(c.leftover) > 0 {
 		return nil
 	}
+	c.leftover = nil
 	payload, err := c.cr.ReadChunk()
 	if err != nil {
 		return err
