@@ -64,11 +64,12 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 }
 
 type udpService struct {
-	clientConn net.PacketConn
-	natTimeout time.Duration
-	ciphers    CipherList
-	m          metrics.ShadowsocksMetrics
-	isRunning  bool
+	clientConn  net.PacketConn
+	natTimeout  time.Duration
+	ciphers     CipherList
+	m           metrics.ShadowsocksMetrics
+	isRunning   bool
+	allowAllIPs bool
 }
 
 // NewUDPService creates a UDPService
@@ -144,11 +145,13 @@ func (s *udpService) Start() {
 			if err != nil {
 				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 			}
-			if !tgtUDPAddr.IP.IsGlobalUnicast() {
-				return onet.NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), nil)
-			}
-			if onet.IsPrivateAddress(tgtUDPAddr.IP) {
-				return onet.NewConnectionError("ERR_ADDRESS_PRIVATE", fmt.Sprintf("Target address is a private address: %v", tgtAddr.String()), nil)
+			if !s.allowAllIPs {
+				if !tgtUDPAddr.IP.IsGlobalUnicast() {
+					return onet.NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), nil)
+				}
+				if onet.IsPrivateAddress(tgtUDPAddr.IP) {
+					return onet.NewConnectionError("ERR_ADDRESS_PRIVATE", fmt.Sprintf("Target address is a private address: %v", tgtAddr.String()), nil)
+				}
 			}
 
 			payload := buf[len(tgtAddr):]

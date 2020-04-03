@@ -128,6 +128,7 @@ type tcpService struct {
 	readTimeout time.Duration
 	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
 	replayCache *ReplayCache
+	allowAllIPs bool
 }
 
 // NewTCPService creates a TCPService
@@ -148,7 +149,7 @@ type TCPService interface {
 }
 
 // proxyConnection will route the clientConn according to the address read from the connection.
-func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics) *onet.ConnectionError {
+func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, allowAllIPs bool) *onet.ConnectionError {
 	tgtAddr, err := socks.ReadAddr(clientConn)
 	if err != nil {
 		return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
@@ -157,11 +158,13 @@ func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetr
 	if err != nil {
 		return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 	}
-	if !tgtTCPAddr.IP.IsGlobalUnicast() {
-		return onet.NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err)
-	}
-	if onet.IsPrivateAddress(tgtTCPAddr.IP) {
-		return onet.NewConnectionError("ERR_ADDRESS_PRIVATE", fmt.Sprintf("Target address is a private address: %v", tgtAddr.String()), nil)
+	if !allowAllIPs {
+		if !tgtTCPAddr.IP.IsGlobalUnicast() {
+			return onet.NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err)
+		}
+		if onet.IsPrivateAddress(tgtTCPAddr.IP) {
+			return onet.NewConnectionError("ERR_ADDRESS_PRIVATE", fmt.Sprintf("Target address is a private address: %v", tgtAddr.String()), nil)
+		}
 	}
 
 	tgtTCPConn, err := net.DialTCP("tcp", nil, tgtTCPAddr)
@@ -242,7 +245,7 @@ func (s *tcpService) Start() {
 
 			// Clear the authentication deadline
 			clientConn.SetReadDeadline(time.Time{})
-			return proxyConnection(clientConn, &proxyMetrics)
+			return proxyConnection(clientConn, &proxyMetrics, s.allowAllIPs)
 		}()
 	}
 }
