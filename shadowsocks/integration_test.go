@@ -79,7 +79,8 @@ func TestTCPEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
-	cipherList, secrets, err := MakeTestCiphers(1)
+	secrets := MakeTestSecrets(1)
+	cipherList, err := MakeTestCiphers(secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +146,8 @@ func TestUDPEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
-	cipherList, secrets, err := MakeTestCiphers(1)
+	secrets := MakeTestSecrets(1)
+	cipherList, err := MakeTestCiphers(secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +211,8 @@ func BenchmarkTCPThroughput(b *testing.B) {
 	if err != nil {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
-	cipherList, secrets, err := MakeTestCiphers(1)
+	secrets := MakeTestSecrets(1)
+	cipherList, err := MakeTestCiphers(secrets)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -273,7 +276,8 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
 	const numKeys = 100
-	cipherList, secrets, err := MakeTestCiphers(numKeys)
+	secrets := MakeTestSecrets(numKeys)
+	cipherList, err := MakeTestCiphers(secrets)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -346,7 +350,8 @@ func BenchmarkUDPEcho(b *testing.B) {
 	if err != nil {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
-	cipherList, secrets, err := MakeTestCiphers(1)
+	secrets := MakeTestSecrets(1)
+	cipherList, err := MakeTestCiphers(secrets)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -395,7 +400,8 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
 	const numKeys = 100
-	cipherList, secrets, err := MakeTestCiphers(numKeys)
+	secrets := MakeTestSecrets(numKeys)
+	cipherList, err := MakeTestCiphers(secrets)
 	if err != nil {
 		b.Fatal(err)
 	}

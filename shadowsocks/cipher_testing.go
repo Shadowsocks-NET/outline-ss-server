@@ -24,23 +24,30 @@ import (
 
 const testCipher = "chacha20-ietf-poly1305"
 
-// MakeTestCiphers creates a CipherList containing `numCiphers` fresh AEAD ciphers.
-func MakeTestCiphers(numCiphers int) (CipherList, []string, error) {
+// MakeTestSecrets returns a slice of `n` test passwords.  Not secure!
+func MakeTestSecrets(n int) []string {
+	secrets := make([]string, n)
+	for i := 0; i < n; i++ {
+		secrets[i] = fmt.Sprintf("secret-%v", i)
+	}
+	return secrets
+}
+
+// MakeTestCiphers creates a CipherList containing one fresh AEAD cipher
+// for each secret in `secrets`.
+func MakeTestCiphers(secrets []string) (CipherList, error) {
 	l := list.New()
-	secrets := make([]string, numCiphers)
-	for i := 0; i < numCiphers; i++ {
+	for i := 0; i < len(secrets); i++ {
 		cipherID := fmt.Sprintf("id-%v", i)
-		secret := fmt.Sprintf("secret-%v", i)
-		cipher, err := core.PickCipher(testCipher, nil, secret)
+		cipher, err := core.PickCipher(testCipher, nil, secrets[i])
 		if err != nil {
-			return nil, nil, fmt.Errorf("Failed to create cipher %v: %v", i, err)
+			return nil, fmt.Errorf("Failed to create cipher %v: %v", i, err)
 		}
 		l.PushBack(&CipherEntry{ID: cipherID, Cipher: cipher.(shadowaead.Cipher)})
-		secrets[i] = secret
 	}
 	cipherList := NewCipherList()
 	cipherList.Update(l)
-	return cipherList, secrets, nil
+	return cipherList, nil
 }
 
 // MakeTestPayload returns a slice of `size` arbitrary bytes.

@@ -26,7 +26,7 @@ import (
 func BenchmarkUDPUnpackFail(b *testing.B) {
 	logging.SetLevel(logging.INFO, "")
 
-	cipherList, _, err := MakeTestCiphers(100)
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(100))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 	logging.SetLevel(logging.INFO, "")
 
 	const numCiphers = 100 // Must be <256
-	cipherList, _, err := MakeTestCiphers(numCiphers)
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(numCiphers))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	logging.SetLevel(logging.INFO, "")
 
-	cipherList, _, err := MakeTestCiphers(1) // One widely shared key
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(1)) // One widely shared key
 	if err != nil {
 		b.Fatal(err)
 	}
