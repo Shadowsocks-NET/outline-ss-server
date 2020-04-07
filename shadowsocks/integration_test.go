@@ -43,7 +43,10 @@ func startTCPEchoServer(t testing.TB) *net.TCPListener {
 				t.Logf("AcceptTCP failed: %v", err)
 				return
 			}
-			go io.Copy(clientConn, clientConn)
+			go func() {
+				io.Copy(clientConn, clientConn)
+				clientConn.Close()
+			}()
 		}
 	}()
 	return listener
@@ -123,11 +126,11 @@ func TestTCPEcho(t *testing.T) {
 
 	down := make([]byte, N)
 	n, err = conn.Read(down)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		t.Fatal(err)
 	}
 	if n != N {
-		t.Fatalf("Tried to download %d bytes, but only sent %d", N, n)
+		t.Fatalf("Expected to download %d bytes, but only received %d", N, n)
 	}
 
 	if !bytes.Equal(up, down) {
