@@ -45,9 +45,9 @@ func IsPrivateAddress(ip net.IP) bool {
 	return false
 }
 
-// RestrictIP returns an error if the destination IP is not a
+// RequirePublicIP returns an error if the destination IP is not a
 // standard public IP.
-func RestrictIP(ip net.IP) *ConnectionError {
+func RequirePublicIP(ip net.IP) *ConnectionError {
 	if !ip.IsGlobalUnicast() {
 		return NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Address is not global unicast: %s", ip.String()), nil)
 	}

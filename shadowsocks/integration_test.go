@@ -27,7 +27,9 @@ import (
 	logging "github.com/op/go-logging"
 )
 
-func testIPPolicy(ip net.IP) *onet.ConnectionError {
+func allowAll(ip net.IP) *onet.ConnectionError {
+	// Allow access to localhost so that we can run integration tests with
+	// an actual destination server.
 	return nil
 }
 
@@ -91,7 +93,7 @@ func TestTCPEcho(t *testing.T) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout)
-	proxy.(*tcpService).ipPolicy = testIPPolicy
+	proxy.(*tcpService).checkIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -156,7 +158,7 @@ func TestUDPEcho(t *testing.T) {
 	}
 	testMetrics := &probeTestMetrics{}
 	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
-	proxy.(*udpService).ipPolicy = testIPPolicy
+	proxy.(*udpService).checkIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
@@ -223,7 +225,7 @@ func BenchmarkTCPThroughput(b *testing.B) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout)
-	proxy.(*tcpService).ipPolicy = testIPPolicy
+	proxy.(*tcpService).checkIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -288,7 +290,7 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout)
-	proxy.(*tcpService).ipPolicy = testIPPolicy
+	proxy.(*tcpService).checkIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -360,7 +362,7 @@ func BenchmarkUDPEcho(b *testing.B) {
 	}
 	testMetrics := &probeTestMetrics{}
 	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
-	proxy.(*udpService).ipPolicy = testIPPolicy
+	proxy.(*udpService).checkIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
@@ -410,7 +412,7 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 	}
 	testMetrics := &probeTestMetrics{}
 	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
-	proxy.(*udpService).ipPolicy = testIPPolicy
+	proxy.(*udpService).checkIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())

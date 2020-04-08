@@ -128,7 +128,7 @@ type tcpService struct {
 	readTimeout time.Duration
 	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
 	replayCache *ReplayCache
-	ipPolicy    func(net.IP) *onet.ConnectionError
+	checkIP     func(net.IP) *onet.ConnectionError
 }
 
 // NewTCPService creates a TCPService
@@ -139,7 +139,7 @@ func NewTCPService(listener *net.TCPListener, ciphers CipherList, replayCache *R
 		m:           m,
 		readTimeout: timeout,
 		replayCache: replayCache,
-		ipPolicy:    onet.RestrictIP,
+		checkIP:     onet.RequirePublicIP,
 	}
 }
 
@@ -150,7 +150,7 @@ type TCPService interface {
 }
 
 // proxyConnection will route the clientConn according to the address read from the connection.
-func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, ipPolicy func(net.IP) *onet.ConnectionError) *onet.ConnectionError {
+func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkIP func(net.IP) *onet.ConnectionError) *onet.ConnectionError {
 	tgtAddr, err := socks.ReadAddr(clientConn)
 	if err != nil {
 		return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
@@ -159,7 +159,7 @@ func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetr
 	if err != nil {
 		return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 	}
-	if err := ipPolicy(tgtTCPAddr.IP); err != nil {
+	if err := checkIP(tgtTCPAddr.IP); err != nil {
 		return err
 	}
 
@@ -241,7 +241,7 @@ func (s *tcpService) Start() {
 
 			// Clear the authentication deadline
 			clientConn.SetReadDeadline(time.Time{})
-			return proxyConnection(clientConn, &proxyMetrics, s.ipPolicy)
+			return proxyConnection(clientConn, &proxyMetrics, s.checkIP)
 		}()
 	}
 }
