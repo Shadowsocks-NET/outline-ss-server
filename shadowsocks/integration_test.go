@@ -221,10 +221,9 @@ func BenchmarkTCPThroughput(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout)
+	proxy := NewTCPService(proxyListener, cipherList, nil, testMetrics, testTimeout)
 	proxy.(*tcpService).checkIP = allowAll
 	go proxy.Start()
 

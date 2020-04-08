@@ -244,6 +244,8 @@ func splitHostPortNumber(address string) (host string, port int, err error) {
 	return
 }
 
+// Sends UDP packets into a black hole as fast as possible, in order to
+// benchmark the CPU and memory cost of encrypting and sending UDP packes.
 func BenchmarkShadowsocksClient_UDPWrite(b *testing.B) {
 	proxyHost := "192.0.2.1"
 	proxyPort := 1
