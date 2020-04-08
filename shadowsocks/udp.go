@@ -64,17 +64,17 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 }
 
 type udpService struct {
-	clientConn net.PacketConn
-	natTimeout time.Duration
-	ciphers    CipherList
-	m          metrics.ShadowsocksMetrics
-	isRunning  bool
-	checkIP    func(net.IP) *onet.ConnectionError
+	clientConn     net.PacketConn
+	natTimeout     time.Duration
+	ciphers        CipherList
+	m              metrics.ShadowsocksMetrics
+	isRunning      bool
+	checkAllowedIP func(net.IP) *onet.ConnectionError
 }
 
 // NewUDPService creates a UDPService
 func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: cipherList, m: m, checkIP: onet.RequirePublicIP}
+	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: cipherList, m: m, checkAllowedIP: onet.RequirePublicIP}
 }
 
 // UDPService is a UDP shadowsocks service that can be started and stopped.
@@ -145,7 +145,7 @@ func (s *udpService) Start() {
 			if err != nil {
 				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 			}
-			if err := s.checkIP(tgtUDPAddr.IP); err != nil {
+			if err := s.checkAllowedIP(tgtUDPAddr.IP); err != nil {
 				return err
 			}
 

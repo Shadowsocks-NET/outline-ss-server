@@ -93,7 +93,7 @@ func TestTCPEcho(t *testing.T) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout)
-	proxy.(*tcpService).checkIP = allowAll
+	proxy.(*tcpService).checkAllowedIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -158,7 +158,7 @@ func TestUDPEcho(t *testing.T) {
 	}
 	testMetrics := &probeTestMetrics{}
 	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
-	proxy.(*udpService).checkIP = allowAll
+	proxy.(*udpService).checkAllowedIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
@@ -224,7 +224,7 @@ func BenchmarkTCPThroughput(b *testing.B) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	proxy := NewTCPService(proxyListener, cipherList, nil, testMetrics, testTimeout)
-	proxy.(*tcpService).checkIP = allowAll
+	proxy.(*tcpService).checkAllowedIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -289,7 +289,7 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout)
-	proxy.(*tcpService).checkIP = allowAll
+	proxy.(*tcpService).checkAllowedIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -361,7 +361,7 @@ func BenchmarkUDPEcho(b *testing.B) {
 	}
 	testMetrics := &probeTestMetrics{}
 	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
-	proxy.(*udpService).checkIP = allowAll
+	proxy.(*udpService).checkAllowedIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
@@ -411,7 +411,7 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 	}
 	testMetrics := &probeTestMetrics{}
 	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
-	proxy.(*udpService).checkIP = allowAll
+	proxy.(*udpService).checkAllowedIP = allowAll
 	go proxy.Start()
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())

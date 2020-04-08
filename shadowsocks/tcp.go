@@ -127,19 +127,19 @@ type tcpService struct {
 	isRunning   bool
 	readTimeout time.Duration
 	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
-	replayCache *ReplayCache
-	checkIP     func(net.IP) *onet.ConnectionError
+	replayCache    *ReplayCache
+	checkAllowedIP func(net.IP) *onet.ConnectionError
 }
 
 // NewTCPService creates a TCPService
 func NewTCPService(listener *net.TCPListener, ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
 	return &tcpService{
-		listener:    listener,
-		ciphers:     ciphers,
-		m:           m,
-		readTimeout: timeout,
-		replayCache: replayCache,
-		checkIP:     onet.RequirePublicIP,
+		listener:       listener,
+		ciphers:        ciphers,
+		m:              m,
+		readTimeout:    timeout,
+		replayCache:    replayCache,
+		checkAllowedIP: onet.RequirePublicIP,
 	}
 }
 
@@ -150,7 +150,7 @@ type TCPService interface {
 }
 
 // proxyConnection will route the clientConn according to the address read from the connection.
-func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkIP func(net.IP) *onet.ConnectionError) *onet.ConnectionError {
+func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkAllowedIP func(net.IP) *onet.ConnectionError) *onet.ConnectionError {
 	tgtAddr, err := socks.ReadAddr(clientConn)
 	if err != nil {
 		return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
@@ -159,7 +159,7 @@ func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetr
 	if err != nil {
 		return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 	}
-	if err := checkIP(tgtTCPAddr.IP); err != nil {
+	if err := checkAllowedIP(tgtTCPAddr.IP); err != nil {
 		return err
 	}
 
@@ -241,7 +241,7 @@ func (s *tcpService) Start() {
 
 			// Clear the authentication deadline
 			clientConn.SetReadDeadline(time.Time{})
-			return proxyConnection(clientConn, &proxyMetrics, s.checkIP)
+			return proxyConnection(clientConn, &proxyMetrics, s.checkAllowedIP)
 		}()
 	}
 }
