@@ -37,7 +37,7 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
 
-	cipherList, err := MakeTestCiphers(100)
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(100))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 	logging.SetLevel(logging.INFO, "")
 
 	const numCiphers = 100 // Must be <256
-	cipherList, err := MakeTestCiphers(numCiphers)
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(numCiphers))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestReplayDefense(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
-	cipherList, err := MakeTestCiphers(1)
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
-	cipherList, err := MakeTestCiphers(5)
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(5))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,13 +22,24 @@ import (
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
-// MakeTestCiphers creates a CipherList containing `numCiphers` fresh AEAD ciphers.
-func MakeTestCiphers(numCiphers int) (CipherList, error) {
+const testCipher = "chacha20-ietf-poly1305"
+
+// MakeTestSecrets returns a slice of `n` test passwords.  Not secure!
+func MakeTestSecrets(n int) []string {
+	secrets := make([]string, n)
+	for i := 0; i < n; i++ {
+		secrets[i] = fmt.Sprintf("secret-%v", i)
+	}
+	return secrets
+}
+
+// MakeTestCiphers creates a CipherList containing one fresh AEAD cipher
+// for each secret in `secrets`.
+func MakeTestCiphers(secrets []string) (CipherList, error) {
 	l := list.New()
-	for i := 0; i < numCiphers; i++ {
+	for i := 0; i < len(secrets); i++ {
 		cipherID := fmt.Sprintf("id-%v", i)
-		secret := fmt.Sprintf("secret-%v", i)
-		cipher, err := core.PickCipher("chacha20-ietf-poly1305", nil, secret)
+		cipher, err := core.PickCipher(testCipher, nil, secrets[i])
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create cipher %v: %v", i, err)
 		}

@@ -44,3 +44,41 @@ func TestIsLanAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestRequirePublicIP(t *testing.T) {
+	if err := RequirePublicIP(net.ParseIP("8.8.8.8")); err != nil {
+		t.Error(err)
+	}
+
+	if err := RequirePublicIP(net.ParseIP("2001:4860:4860::8888")); err != nil {
+		t.Error(err)
+	}
+
+	err := RequirePublicIP(net.ParseIP("192.168.0.23"))
+	if err == nil {
+		t.Error("Expected error")
+	} else if err.Status != "ERR_ADDRESS_PRIVATE" {
+		t.Errorf("Wrong status %s", err.Status)
+	}
+
+	err = RequirePublicIP(net.ParseIP("::1"))
+	if err == nil {
+		t.Error("Expected error")
+	} else if err.Status != "ERR_ADDRESS_INVALID" {
+		t.Errorf("Wrong status %s", err.Status)
+	}
+
+	err = RequirePublicIP(net.ParseIP("224.0.0.251"))
+	if err == nil {
+		t.Error("Expected error")
+	} else if err.Status != "ERR_ADDRESS_INVALID" {
+		t.Errorf("Wrong status %s", err.Status)
+	}
+
+	err = RequirePublicIP(net.ParseIP("ff02::fb"))
+	if err == nil {
+		t.Error("Expected error")
+	} else if err.Status != "ERR_ADDRESS_INVALID" {
+		t.Errorf("Wrong status %s", err.Status)
+	}
+}

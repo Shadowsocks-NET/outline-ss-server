@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	testCipher     = "chacha20-ietf-poly1305"
 	testPassword   = "testPassword"
 	testTargetAddr = "test.local:1111"
 )
@@ -243,4 +242,29 @@ func splitHostPortNumber(address string) (host string, port int, err error) {
 		return
 	}
 	return
+}
+
+// Sends UDP packets into a black hole as fast as possible, in order to
+// benchmark the CPU and memory cost of encrypting and sending UDP packes.
+func BenchmarkShadowsocksClient_UDPWrite(b *testing.B) {
+	proxyHost := "192.0.2.1"
+	proxyPort := 1
+	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	if err != nil {
+		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
+	}
+	conn, err := d.ListenUDP(nil)
+	if err != nil {
+		b.Fatalf("ShadowsocksClient.ListenUDP failed: %v", err)
+	}
+	defer conn.Close()
+	payload := MakeTestPayload(1024)
+	destAddr := &net.UDPAddr{
+		IP:   net.ParseIP("192.0.2.2"),
+		Port: 1,
+	}
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		conn.WriteTo(payload, destAddr)
+	}
 }

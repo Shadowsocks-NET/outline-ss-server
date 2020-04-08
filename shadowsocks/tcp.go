@@ -127,17 +127,19 @@ type tcpService struct {
 	isRunning   bool
 	readTimeout time.Duration
 	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
-	replayCache *ReplayCache
+	replayCache    *ReplayCache
+	checkAllowedIP func(net.IP) *onet.ConnectionError
 }
 
 // NewTCPService creates a TCPService
 func NewTCPService(listener *net.TCPListener, ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
 	return &tcpService{
-		listener:    listener,
-		ciphers:     ciphers,
-		m:           m,
-		readTimeout: timeout,
-		replayCache: replayCache,
+		listener:       listener,
+		ciphers:        ciphers,
+		m:              m,
+		readTimeout:    timeout,
+		replayCache:    replayCache,
+		checkAllowedIP: onet.RequirePublicIP,
 	}
 }
 
@@ -148,7 +150,7 @@ type TCPService interface {
 }
 
 // proxyConnection will route the clientConn according to the address read from the connection.
-func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics) *onet.ConnectionError {
+func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkAllowedIP func(net.IP) *onet.ConnectionError) *onet.ConnectionError {
 	tgtAddr, err := socks.ReadAddr(clientConn)
 	if err != nil {
 		return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
@@ -157,11 +159,8 @@ func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetr
 	if err != nil {
 		return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 	}
-	if !tgtTCPAddr.IP.IsGlobalUnicast() {
-		return onet.NewConnectionError("ERR_ADDRESS_INVALID", fmt.Sprintf("Target address is not global unicast: %v", tgtAddr.String()), err)
-	}
-	if onet.IsPrivateAddress(tgtTCPAddr.IP) {
-		return onet.NewConnectionError("ERR_ADDRESS_PRIVATE", fmt.Sprintf("Target address is a private address: %v", tgtAddr.String()), nil)
+	if err := checkAllowedIP(tgtTCPAddr.IP); err != nil {
+		return err
 	}
 
 	tgtTCPConn, err := net.DialTCP("tcp", nil, tgtTCPAddr)
@@ -242,7 +241,7 @@ func (s *tcpService) Start() {
 
 			// Clear the authentication deadline
 			clientConn.SetReadDeadline(time.Time{})
-			return proxyConnection(clientConn, &proxyMetrics)
+			return proxyConnection(clientConn, &proxyMetrics, s.checkAllowedIP)
 		}()
 	}
 }
