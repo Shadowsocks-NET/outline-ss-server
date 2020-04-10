@@ -38,7 +38,7 @@ type shadowsocksWriter struct {
 	writer   io.Writer
 	ssCipher shadowaead.Cipher
 	// Wrapper for input that arrives as a slice.
-	input bytes.Reader
+	byteWrapper bytes.Reader
 	// These are lazily initialized:
 	buf  []byte
 	aead cipher.AEAD
@@ -82,8 +82,8 @@ func (sw *shadowsocksWriter) encryptBlock(ciphertext []byte, plaintext []byte) (
 }
 
 func (sw *shadowsocksWriter) Write(p []byte) (int, error) {
-	sw.input.Reset(p)
-	n, err := sw.ReadFrom(&sw.input)
+	sw.byteWrapper.Reset(p)
+	n, err := sw.ReadFrom(&sw.byteWrapper)
 	return int(n), err
 }
 
