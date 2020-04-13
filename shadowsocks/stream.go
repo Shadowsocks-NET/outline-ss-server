@@ -187,7 +187,7 @@ func (sr *shadowsocksReader) readBlock(decryptedBlockSize int) ([]byte, error) {
 }
 
 func (sr *shadowsocksReader) Read(b []byte) (int, error) {
-	if err := sr.populateLeftover(); err != nil {
+	if err := sr.ensureLeftover(); err != nil {
 		return 0, err
 	}
 	n := copy(b, sr.leftover)
@@ -197,7 +197,7 @@ func (sr *shadowsocksReader) Read(b []byte) (int, error) {
 
 func (sr *shadowsocksReader) WriteTo(w io.Writer) (written int64, err error) {
 	for {
-		if err = sr.populateLeftover(); err != nil {
+		if err = sr.ensureLeftover(); err != nil {
 			if err == io.EOF {
 				err = nil
 			}
@@ -215,22 +215,23 @@ func (sr *shadowsocksReader) WriteTo(w io.Writer) (written int64, err error) {
 // Ensures that sr.leftover is nonempty.  If leftover is empty, this method
 // waits for incoming data and decrypts it.
 // Returns an error only if sr.leftover could not be populated.
-func (sr *shadowsocksReader) populateLeftover() error {
-	if len(sr.leftover) == 0 {
-		buf, err := sr.readBlock(2)
-		if err != nil {
-			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				err = fmt.Errorf("failed to read payload size: %v", err)
-			}
-			return err
-		}
-		size := (int(buf[0])<<8 + int(buf[1])) & payloadSizeMask
-		payload, err := sr.readBlock(size)
-		if err != nil {
-			return fmt.Errorf("failed to read payload: %v", err)
-		}
-		sr.leftover = payload
+func (sr *shadowsocksReader) ensureLeftover() error {
+	if len(sr.leftover) > 0 {
+		return nil
 	}
+	buf, err := sr.readBlock(2)
+	if err != nil {
+		if err != io.EOF && err != io.ErrUnexpectedEOF {
+			err = fmt.Errorf("failed to read payload size: %v", err)
+		}
+		return err
+	}
+	size := (int(buf[0])<<8 + int(buf[1])) & payloadSizeMask
+	payload, err := sr.readBlock(size)
+	if err != nil {
+		return fmt.Errorf("failed to read payload: %v", err)
+	}
+	sr.leftover = payload
 	return nil
 }
 
