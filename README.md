@@ -15,11 +15,6 @@ The Outline Shadowsocks service allows for:
 
 ## Try it!
 
-Fetch auxiliary dependencies:
-```
-GO111MODULE=off go get github.com/shadowsocks/go-shadowsocks2 github.com/prometheus/prometheus/cmd/...
-```
-
 On Terminal 1, from the repository directory, build and start the SS server:
 ```
 go run . -config config_example.yml -metrics localhost:9091
