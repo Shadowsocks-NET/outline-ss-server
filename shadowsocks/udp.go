@@ -120,11 +120,6 @@ func (s *udpService) Start() {
 				}
 				return onet.NewConnectionError("ERR_READ", "Failed to read from client", err)
 			}
-			clientLocation, locErr := s.m.GetLocation(clientAddr)
-			if locErr != nil {
-				logger.Warningf("Failed location lookup: %v", locErr)
-			}
-			logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
 			defer logger.Debugf("UDP done with %v", clientAddr.String())
 			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
 			unpackStart := time.Now()
@@ -151,12 +146,17 @@ func (s *udpService) Start() {
 
 			payload := buf[len(tgtAddr):]
 
-			targetConn := nm.Get(clientAddr.String())
+			targetConn, clientLocation := nm.Get(clientAddr.String())
 			if targetConn == nil {
 				targetConn, err = net.ListenPacket("udp", "")
 				if err != nil {
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
+				clientLocation, locErr := s.m.GetLocation(clientAddr)
+				if locErr != nil {
+					logger.Warningf("Failed location lookup: %v", locErr)
+				}
+				logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
 				nm.Add(clientAddr, s.clientConn, cipher, targetConn, clientLocation, keyID)
 			}
 			logger.Debugf("UDP NAT: client %v <-> proxy exit %v", clientAddr, targetConn.LocalAddr())
@@ -175,48 +175,54 @@ func (s *udpService) Stop() error {
 	return s.clientConn.Close()
 }
 
+type natentry struct {
+	conn           net.PacketConn
+	clientLocation string
+}
+
 // Packet NAT table
 type natmap struct {
 	sync.RWMutex
-	keyConn map[string]net.PacketConn
+	keyConn map[string]natentry
 	timeout time.Duration
 	metrics metrics.ShadowsocksMetrics
 }
 
 func newNATmap(timeout time.Duration, sm metrics.ShadowsocksMetrics) *natmap {
 	m := &natmap{metrics: sm}
-	m.keyConn = make(map[string]net.PacketConn)
+	m.keyConn = make(map[string]natentry)
 	m.timeout = timeout
 	return m
 }
 
-func (m *natmap) Get(key string) net.PacketConn {
+func (m *natmap) Get(key string) (net.PacketConn, string) {
 	m.RLock()
 	defer m.RUnlock()
-	return m.keyConn[key]
+	entry := m.keyConn[key]
+	return entry.conn, entry.clientLocation
 }
 
-func (m *natmap) set(key string, pc net.PacketConn) {
+func (m *natmap) set(key string, pc net.PacketConn, clientLocation string) {
 	m.Lock()
 	defer m.Unlock()
 
-	m.keyConn[key] = pc
+	m.keyConn[key] = natentry{pc, clientLocation}
 }
 
 func (m *natmap) del(key string) net.PacketConn {
 	m.Lock()
 	defer m.Unlock()
 
-	pc, ok := m.keyConn[key]
+	entry, ok := m.keyConn[key]
 	if ok {
 		delete(m.keyConn, key)
-		return pc
+		return entry.conn
 	}
 	return nil
 }
 
 func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) {
-	m.set(clientAddr.String(), targetConn)
+	m.set(clientAddr.String(), targetConn, clientLocation)
 
 	m.metrics.AddUDPNatEntry()
 	go func() {
