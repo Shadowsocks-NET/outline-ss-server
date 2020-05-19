@@ -9,14 +9,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-func makeTestMetrics(ipCountryDB *geoip2.Reader, registerer prometheus.Registerer) ShadowsocksMetrics {
-	m := newShadowsocksMetrics(ipCountryDB)
-	m.register(registerer)
-	return m
-}
-
 func TestMethodsDontPanic(t *testing.T) {
-	ssMetrics := makeTestMetrics(nil, prometheus.NewPedanticRegistry())
+	ssMetrics := NewPrometheusShadowsocksMetrics(nil, prometheus.NewPedanticRegistry())
 	proxyMetrics := ProxyMetrics{
 		ClientProxy: 1,
 		ProxyTarget: 2,
@@ -36,14 +30,14 @@ func TestMethodsDontPanic(t *testing.T) {
 func BenchmarkGetLocation(b *testing.B) {
 	var ipCountryDB *geoip2.Reader
 	// The test data is in a git submodule that must be initialized before running the test.
-	dbPath := "test-data/test-data/GeoIP2-Country-Test.mmdb"
+	dbPath := "../third_party/maxmind/test-data/GeoIP2-Country-Test.mmdb"
 	ipCountryDB, err := geoip2.Open(dbPath)
 	if err != nil {
 		b.Fatalf("Could not open geoip database at %v: %v", dbPath, err)
 	}
 	defer ipCountryDB.Close()
 
-	ssMetrics := makeTestMetrics(ipCountryDB, prometheus.NewRegistry())
+	ssMetrics := NewPrometheusShadowsocksMetrics(ipCountryDB, prometheus.NewRegistry())
 	testIP := net.ParseIP("217.65.48.1")
 	testAddr := &net.TCPAddr{IP: testIP, Port: 12345}
 	b.ResetTimer()
@@ -56,7 +50,7 @@ func BenchmarkGetLocation(b *testing.B) {
 }
 
 func BenchmarkOpenTCP(b *testing.B) {
-	ssMetrics := makeTestMetrics(nil, prometheus.NewRegistry())
+	ssMetrics := NewPrometheusShadowsocksMetrics(nil, prometheus.NewRegistry())
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ssMetrics.AddOpenTCPConnection("ZZ")
@@ -64,7 +58,7 @@ func BenchmarkOpenTCP(b *testing.B) {
 }
 
 func BenchmarkCloseTCP(b *testing.B) {
-	ssMetrics := makeTestMetrics(nil, prometheus.NewRegistry())
+	ssMetrics := NewPrometheusShadowsocksMetrics(nil, prometheus.NewRegistry())
 	clientLocation := "ZZ"
 	accessKey := "key 1"
 	status := "OK"
@@ -78,7 +72,7 @@ func BenchmarkCloseTCP(b *testing.B) {
 }
 
 func BenchmarkProbe(b *testing.B) {
-	ssMetrics := makeTestMetrics(nil, prometheus.NewRegistry())
+	ssMetrics := NewPrometheusShadowsocksMetrics(nil, prometheus.NewRegistry())
 	clientLocation := "ZZ"
 	status := "ERR_REPLAY"
 	drainResult := "other"
@@ -91,7 +85,7 @@ func BenchmarkProbe(b *testing.B) {
 }
 
 func BenchmarkClientUDP(b *testing.B) {
-	ssMetrics := makeTestMetrics(nil, prometheus.NewRegistry())
+	ssMetrics := NewPrometheusShadowsocksMetrics(nil, prometheus.NewRegistry())
 	clientLocation := "ZZ"
 	accessKey := "key 1"
 	status := "OK"
@@ -104,7 +98,7 @@ func BenchmarkClientUDP(b *testing.B) {
 }
 
 func BenchmarkTargetUDP(b *testing.B) {
-	ssMetrics := makeTestMetrics(nil, prometheus.NewRegistry())
+	ssMetrics := NewPrometheusShadowsocksMetrics(nil, prometheus.NewRegistry())
 	clientLocation := "ZZ"
 	accessKey := "key 1"
 	status := "OK"
@@ -116,7 +110,7 @@ func BenchmarkTargetUDP(b *testing.B) {
 }
 
 func BenchmarkNAT(b *testing.B) {
-	ssMetrics := makeTestMetrics(nil, prometheus.NewRegistry())
+	ssMetrics := NewPrometheusShadowsocksMetrics(nil, prometheus.NewRegistry())
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ssMetrics.AddUDPNatEntry()

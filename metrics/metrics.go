@@ -132,16 +132,16 @@ func newShadowsocksMetrics(ipCountryDB *geoip2.Reader) *shadowsocksMetrics {
 	}
 }
 
-func NewShadowsocksMetrics(ipCountryDB *geoip2.Reader) ShadowsocksMetrics {
+// NewPrometheusShadowsocksMetrics constructs a metrics object that uses
+// `ipCountryDB` to convert IP addresses to countries, and reports all
+// metrics to Prometheus via `registerer`.  `ipCountryDB` may be nil, but
+// `registerer` must not be.
+func NewPrometheusShadowsocksMetrics(ipCountryDB *geoip2.Reader, registerer prometheus.Registerer) ShadowsocksMetrics {
 	m := newShadowsocksMetrics(ipCountryDB)
 	// TODO: Is it possible to pass where to register the collectors?
-	m.register(prometheus.DefaultRegisterer)
-	return m
-}
-
-func (m *shadowsocksMetrics) register(registerer prometheus.Registerer) {
 	registerer.MustRegister(m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpProbes, m.tcpClosedConnections, m.tcpConnectionDurationMs,
 		m.dataBytes, m.timeToCipherMs, m.udpAddedNatEntries, m.udpRemovedNatEntries)
+	return m
 }
 
 const (
