@@ -288,12 +288,12 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 	done := make(chan bool)
 	go func() {
 		defer func() { done <- true }()
+		timerStart := time.Now()
 		conn, err := net.Dial("tcp", listener.Addr().String())
 		if err != nil {
 			t.Fatalf("Failed to dial %v: %v", listener.Addr(), err)
 		}
 		conn.Write(testPayload)
-		timerStart := time.Now()
 		buf := make([]byte, 1024)
 		bytesRead, err := conn.Read(buf) // will hang until connection is closed
 		elapsedTime := time.Since(timerStart)
