@@ -1,4 +1,5 @@
 # Outline ss-server
+[![Build Status](https://travis-ci.org/Jigsaw-Code/outline-ss-server.svg?branch=master)](https://travis-ci.org/Jigsaw-Code/outline-ss-server)
 
 This repository has the Shadowsocks service used by Outline servers. It uses components from [go-shadowsocks2](https://github.com/shadowsocks/go-shadowsocks2), and adds a number of improvements to meet the needs of the Outline users.
 
@@ -15,7 +16,7 @@ The Outline Shadowsocks service allows for:
 
 ## Try it!
 
-Fetch auxiliary dependencies:
+Fetch dependencies for this demo:
 ```
 GO111MODULE=off go get github.com/shadowsocks/go-shadowsocks2 github.com/prometheus/prometheus/cmd/...
 ```
