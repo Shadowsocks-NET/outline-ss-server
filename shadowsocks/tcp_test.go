@@ -226,6 +226,11 @@ func TestReplayDefense(t *testing.T) {
 	if len(testMetrics.closeStatus) != 0 {
 		t.Errorf("First connection should not have been closed yet: %v", testMetrics.probeData[0])
 	}
+	// Write a minimal invalid chunk to trigger a proxy-driven close.
+	conn1.Write(make([]byte, 2+16))
+	// Wait for the close.  This ensures that conn1 and conn2 can't be
+	// processed out of order at the proxy.
+	conn1.Read(make([]byte, 1))
 
 	// Replay.
 	conn2 := run()
@@ -243,8 +248,8 @@ func TestReplayDefense(t *testing.T) {
 	} else {
 		t.Error("Replay should have triggered probe detection")
 	}
-	if len(testMetrics.closeStatus) == 1 {
-		status := testMetrics.closeStatus[0]
+	if len(testMetrics.closeStatus) == 2 {
+		status := testMetrics.closeStatus[1]
 		if status != "ERR_REPLAY" {
 			t.Errorf("Unexpected TCP close status: %s", status)
 		}
