@@ -63,8 +63,8 @@ type shadowsocksMetrics struct {
 	udpRemovedNatEntries prometheus.Counter
 }
 
-func NewShadowsocksMetrics(ipCountryDB *geoip2.Reader) ShadowsocksMetrics {
-	m := &shadowsocksMetrics{
+func newShadowsocksMetrics(ipCountryDB *geoip2.Reader) *shadowsocksMetrics {
+	return &shadowsocksMetrics{
 		ipCountryDB: ipCountryDB,
 		accessKeys: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "shadowsocks",
@@ -130,8 +130,16 @@ func NewShadowsocksMetrics(ipCountryDB *geoip2.Reader) ShadowsocksMetrics {
 				Help:      "Entries removed from the UDP NAT table",
 			}),
 	}
+}
+
+// NewPrometheusShadowsocksMetrics constructs a metrics object that uses
+// `ipCountryDB` to convert IP addresses to countries, and reports all
+// metrics to Prometheus via `registerer`.  `ipCountryDB` may be nil, but
+// `registerer` must not be.
+func NewPrometheusShadowsocksMetrics(ipCountryDB *geoip2.Reader, registerer prometheus.Registerer) ShadowsocksMetrics {
+	m := newShadowsocksMetrics(ipCountryDB)
 	// TODO: Is it possible to pass where to register the collectors?
-	prometheus.MustRegister(m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpProbes, m.tcpClosedConnections, m.tcpConnectionDurationMs,
+	registerer.MustRegister(m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpProbes, m.tcpClosedConnections, m.tcpConnectionDurationMs,
 		m.dataBytes, m.timeToCipherMs, m.udpAddedNatEntries, m.udpRemovedNatEntries)
 	return m
 }

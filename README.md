@@ -108,7 +108,16 @@ Run the iperf3 client tests listed above on port 10002.
 
 You can mix and match the libev and go servers and clients.
 
-## Benchmark
+## Tests and Benchmarks
+
+Before running tests, you should first run
+```
+git submodule update --init
+```
+to download test data used by the GeoIP metrics tests.  To run all tests, you can use
+```
+go test -v ./...
+```
 
 You can benchmark the cipher finding code with
 ```
