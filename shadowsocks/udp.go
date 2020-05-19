@@ -176,7 +176,9 @@ func (s *udpService) Stop() error {
 }
 
 type natentry struct {
-	conn           net.PacketConn
+	conn net.PacketConn
+	// We store the client location in the NAT map to avoid recomputing it
+	// for every outbound packet in a UDP-based connection.
 	clientLocation string
 }
 
