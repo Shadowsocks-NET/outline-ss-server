@@ -148,15 +148,16 @@ func (s *udpService) Start() {
 
 			targetConn, clientLocation := nm.Get(clientAddr.String())
 			if targetConn == nil {
-				targetConn, err = net.ListenPacket("udp", "")
-				if err != nil {
-					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
-				}
 				clientLocation, locErr := s.m.GetLocation(clientAddr)
 				if locErr != nil {
 					logger.Warningf("Failed location lookup: %v", locErr)
 				}
 				logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
+
+				targetConn, err = net.ListenPacket("udp", "")
+				if err != nil {
+					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
+				}
 				nm.Add(clientAddr, s.clientConn, cipher, targetConn, clientLocation, keyID)
 			}
 			logger.Debugf("UDP NAT: client %v <-> proxy exit %v", clientAddr, targetConn.LocalAddr())
