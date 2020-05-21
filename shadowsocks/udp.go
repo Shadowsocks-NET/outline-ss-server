@@ -246,11 +246,30 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 	}()
 }
 
+// Get the length of the shadowsocks address header by parsing
+// addresses from the example range.
+var v6AddrLen int = len(socks.ParseAddr("[2001:db8::1]:12345"))
+var v4AddrLen int = len(socks.ParseAddr("192.0.2.1:12345"))
+
 // copy from src to dst at target with read timeout
 func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn,
 	timeout time.Duration, clientLocation, keyID string, sm metrics.ShadowsocksMetrics) {
-	textBuf := make([]byte, udpBufSize)
-	cipherBuf := make([]byte, udpBufSize)
+	// pkt is used for in-place encryption of downstream UDP packets, with the following layout.
+	// Receiving by proxy: | ------------------------------ | body | ---->
+	//
+	// If the server is IPv4, processing proceeds as follows:
+	// Prepared plaintext: | ---------- | server v4 address | body | ---->
+	// After encryption:   | --- | salt |        ciphertext        | tag | ---->
+	// Sent to client:           | salt |        ciphertext        | tag |
+	//
+	// If the server is IPv6, the address is longer, so the initial padding is not needed:
+	// Prepared plaintext: | ---- |    server v6 address    | body | ---->
+	// Sent to client:     | salt |              ciphertext        | tag |
+	pkt := make([]byte, udpBufSize)
+
+	saltSize := cipher.SaltSize()
+	// Leave enough room at the beginning of the packet for a max-length header (i.e. IPv6).
+	bodyStart := saltSize + v6AddrLen
 
 	expired := false
 	for !expired {
@@ -261,7 +280,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 				err   error
 			)
 			targetConn.SetReadDeadline(time.Now().Add(timeout))
-			targetProxyBytes, raddr, err = targetConn.ReadFrom(textBuf)
+			targetProxyBytes, raddr, err = targetConn.ReadFrom(pkt[bodyStart:])
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok {
 					if netErr.Timeout() {
@@ -274,11 +293,13 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 
 			debugUDPAddr(clientAddr, "Got response from %v", raddr)
 			srcAddr := socks.ParseAddr(raddr.String())
-			// Shift data buffer to prepend with srcAddr.
-			copy(textBuf[len(srcAddr):], textBuf[:targetProxyBytes])
-			copy(textBuf, srcAddr)
+			addrStart := bodyStart - len(srcAddr)
+			plaintextBuf := pkt[addrStart : bodyStart+targetProxyBytes]
+			copy(plaintextBuf, srcAddr)
 
-			buf, err := shadowaead.Pack(cipherBuf, textBuf[:len(srcAddr)+targetProxyBytes], cipher)
+			// saltStart is 0 if raddr is IPv6.
+			saltStart := addrStart - saltSize
+			buf, err := shadowaead.Pack(pkt[saltStart:], plaintextBuf, cipher) // Encrypt in-place
 			if err != nil {
 				return onet.NewConnectionError("ERR_PACK", "Failed to pack data to client", err)
 			}
