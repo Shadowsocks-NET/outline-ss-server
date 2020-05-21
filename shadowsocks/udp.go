@@ -269,8 +269,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 	// Leave enough room at the beginning of the packet for a max-length header (i.e. IPv6).
 	bodyStart := saltSize + maxAddrLen
 
-	expired := false
-	for !expired {
+	for {
 		var bodyLen, proxyClientBytes int
 		connError := func() (connError *onet.ConnectionError) {
 			var (
@@ -285,7 +284,6 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok {
 					if netErr.Timeout() {
-						expired = true
 						return nil
 					}
 				}
