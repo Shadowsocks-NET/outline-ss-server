@@ -129,7 +129,7 @@ func (s *udpService) Start() {
 			}
 			if logger.IsEnabledFor(logging.DEBUG) {
 				defer logger.Debugf("UDP(%v): done", clientAddr)
-				debugUDPAddr(clientAddr, "Outbound packet has %d bytes", clientProxyBytes)
+				logger.Debugf("UDP(%v): Outbound packet has %d bytes", clientAddr, clientProxyBytes)
 			}
 			unpackStart := time.Now()
 			ip := clientAddr.(*net.UDPAddr).IP
