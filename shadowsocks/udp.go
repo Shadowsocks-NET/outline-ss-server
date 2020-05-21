@@ -171,6 +171,7 @@ func (s *udpService) Start() {
 			}
 
 			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
+			nm.Refresh(targetConn)
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to target", err)
@@ -214,6 +215,12 @@ func (m *natmap) Get(key string) (net.PacketConn, string) {
 	return entry.conn, entry.clientLocation
 }
 
+// Refresh the NAT mapping.  This should be called on every write for
+// outbound-refresh behavior.
+func (m *natmap) Refresh(targetConn net.PacketConn) {
+	targetConn.SetReadDeadline(time.Now().Add(m.timeout))
+}
+
 func (m *natmap) set(key string, pc net.PacketConn, clientLocation string) {
 	m.Lock()
 	defer m.Unlock()
@@ -238,7 +245,7 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 
 	m.metrics.AddUDPNatEntry()
 	go func() {
-		timedCopy(clientAddr, clientConn, cipher, targetConn, m.timeout, clientLocation, keyID, m.metrics)
+		timedCopy(clientAddr, clientConn, cipher, targetConn, clientLocation, keyID, m.metrics)
 		m.metrics.RemoveUDPNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
@@ -250,9 +257,9 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 // and serializing an IPv6 address from the example range.
 var maxAddrLen int = len(socks.ParseAddr("[2001:db8::1]:12345"))
 
-// copy from src to dst at target with read timeout
+// copy from target to client until read timeout
 func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn,
-	timeout time.Duration, clientLocation, keyID string, sm metrics.ShadowsocksMetrics) {
+	clientLocation, keyID string, sm metrics.ShadowsocksMetrics) {
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
 	// [padding?][salt][address][body][tag][extra]
 	// Padding is only used if the address is IPv4.
@@ -270,7 +277,6 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 				raddr net.Addr
 				err   error
 			)
-			targetConn.SetReadDeadline(time.Now().Add(timeout))
 			// `readBuf` receives the plaintext body in `pkt`:
 			// [padding?][salt][address][body][tag][unused]
 			// |--     bodyStart     --|[      readBuf    ]
