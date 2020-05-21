@@ -34,12 +34,19 @@ import (
 
 const udpBufSize = 64 * 1024
 
-// Wrapper for logger.Debugf during UDP access key searches.
-func debugUDP(cipherID, template string, val interface{}) {
+// Wrapper for logger.Debugf during UDP proxying.
+func debugUDP(tag string, template string, val interface{}) {
 	// This is an optimization to reduce unnecessary allocations due to an interaction
 	// between Go's inlining/escape analysis and varargs functions like logger.Debugf.
 	if logger.IsEnabledFor(logging.DEBUG) {
-		logger.Debugf("UDP(%s): "+template, cipherID, val)
+		logger.Debugf("UDP(%s): "+template, tag, val)
+	}
+}
+
+func debugUDPAddr(addr net.Addr, template string, val interface{}) {
+	if logger.IsEnabledFor(logging.DEBUG) {
+		// Avoid calling addr.String() unless debugging is enabled.
+		debugUDP(addr.String(), template, val)
 	}
 }
 
@@ -120,8 +127,10 @@ func (s *udpService) Start() {
 				}
 				return onet.NewConnectionError("ERR_READ", "Failed to read from client", err)
 			}
-			defer logger.Debugf("UDP done with %v", clientAddr.String())
-			logger.Debugf("UDP Request from %v with %v bytes", clientAddr, clientProxyBytes)
+			if logger.IsEnabledFor(logging.DEBUG) {
+				defer logger.Debugf("UDP(%v): done", clientAddr)
+				logger.Debugf("UDP(%v): Outbound packet has %d bytes", clientAddr, clientProxyBytes)
+			}
 			unpackStart := time.Now()
 			ip := clientAddr.(*net.UDPAddr).IP
 			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], s.ciphers)
@@ -138,7 +147,7 @@ func (s *udpService) Start() {
 
 			tgtUDPAddr, err := net.ResolveUDPAddr("udp", tgtAddr.String())
 			if err != nil {
-				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
+				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
 			}
 			if err := s.checkAllowedIP(tgtUDPAddr.IP); err != nil {
 				return err
@@ -152,7 +161,7 @@ func (s *udpService) Start() {
 				if locErr != nil {
 					logger.Warningf("Failed location lookup: %v", locErr)
 				}
-				logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientAddr.String())
+				debugUDPAddr(clientAddr, "Got location \"%s\"", clientLocation)
 
 				targetConn, err = net.ListenPacket("udp", "")
 				if err != nil {
@@ -160,8 +169,8 @@ func (s *udpService) Start() {
 				}
 				nm.Add(clientAddr, s.clientConn, cipher, targetConn, clientLocation, keyID)
 			}
-			logger.Debugf("UDP NAT: client %v <-> proxy exit %v", clientAddr, targetConn.LocalAddr())
 
+			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to target", err)
@@ -263,8 +272,8 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 				return onet.NewConnectionError("ERR_READ", "Failed to read from target", err)
 			}
 
+			debugUDPAddr(clientAddr, "Got response from %v", raddr)
 			srcAddr := socks.ParseAddr(raddr.String())
-			logger.Debugf("UDP response from %v to %v", srcAddr, clientAddr)
 			// Shift data buffer to prepend with srcAddr.
 			copy(textBuf[len(srcAddr):], textBuf[:targetProxyBytes])
 			copy(textBuf, srcAddr)
