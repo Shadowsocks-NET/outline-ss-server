@@ -216,7 +216,7 @@ func (m *natmap) Get(key string) (net.PacketConn, string) {
 }
 
 // Refresh the NAT mapping.  This should be called on every write for
-// outbound-refresh behavior.
+// outbound-refresh behavior (as required by RFC 4787 Section 4.3).
 func (m *natmap) Refresh(targetConn net.PacketConn) {
 	targetConn.SetReadDeadline(time.Now().Add(m.timeout))
 }
