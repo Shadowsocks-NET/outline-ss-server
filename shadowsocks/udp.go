@@ -246,41 +246,36 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 	}()
 }
 
-// Get the length of the shadowsocks address header by parsing
-// addresses from the example range.
-var v6AddrLen int = len(socks.ParseAddr("[2001:db8::1]:12345"))
-var v4AddrLen int = len(socks.ParseAddr("192.0.2.1:12345"))
+// Get the maximum length of the shadowsocks address header by parsing
+// and serializing an IPv6 address from the example range.
+var maxAddrLen int = len(socks.ParseAddr("[2001:db8::1]:12345"))
 
 // copy from src to dst at target with read timeout
 func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn,
 	timeout time.Duration, clientLocation, keyID string, sm metrics.ShadowsocksMetrics) {
-	// pkt is used for in-place encryption of downstream UDP packets, with the following layout.
-	// Receiving by proxy: | ------------------------------ | body | ---->
-	//
-	// If the server is IPv4, processing proceeds as follows:
-	// Prepared plaintext: | ---------- | server v4 address | body | ---->
-	// After encryption:   | --- | salt |        ciphertext        | tag | ---->
-	// Sent to client:           | salt |        ciphertext        | tag |
-	//
-	// If the server is IPv6, the address is longer, so the initial padding is not needed:
-	// Prepared plaintext: | ---- |    server v6 address    | body | ---->
-	// Sent to client:     | salt |              ciphertext        | tag |
+	// pkt is used for in-place encryption of downstream UDP packets, with the layout
+	// [padding?][salt][address][body][tag][extra]
+	// Padding is only used if the address is IPv4.
 	pkt := make([]byte, udpBufSize)
 
 	saltSize := cipher.SaltSize()
 	// Leave enough room at the beginning of the packet for a max-length header (i.e. IPv6).
-	bodyStart := saltSize + v6AddrLen
+	bodyStart := saltSize + maxAddrLen
 
 	expired := false
 	for !expired {
-		var targetProxyBytes, proxyClientBytes int
+		var bodyLen, proxyClientBytes int
 		connError := func() (connError *onet.ConnectionError) {
 			var (
 				raddr net.Addr
 				err   error
 			)
 			targetConn.SetReadDeadline(time.Now().Add(timeout))
-			targetProxyBytes, raddr, err = targetConn.ReadFrom(pkt[bodyStart:])
+			// `readBuf` receives the plaintext body in `pkt`:
+			// [padding?][salt][address][body][tag][unused]
+			// |--     bodyStart     --|[      readBuf    ]
+			readBuf := pkt[bodyStart:]
+			bodyLen, raddr, err = targetConn.ReadFrom(readBuf)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok {
 					if netErr.Timeout() {
@@ -294,12 +289,21 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			debugUDPAddr(clientAddr, "Got response from %v", raddr)
 			srcAddr := socks.ParseAddr(raddr.String())
 			addrStart := bodyStart - len(srcAddr)
-			plaintextBuf := pkt[addrStart : bodyStart+targetProxyBytes]
+			// `plainTextBuf` concatenates the SOCKS address and body:
+			// [padding?][salt][address][body][tag][unused]
+			// |-- addrStart -|[plaintextBuf ]
+			plaintextBuf := pkt[addrStart : bodyStart+bodyLen]
 			copy(plaintextBuf, srcAddr)
 
 			// saltStart is 0 if raddr is IPv6.
 			saltStart := addrStart - saltSize
-			buf, err := shadowaead.Pack(pkt[saltStart:], plaintextBuf, cipher) // Encrypt in-place
+			// `packBuf` adds space for the salt and tag.
+			// `buf` shows the space that was used.
+			// [padding?][salt][address][body][tag][unused]
+			//           [            packBuf             ]
+			//           [          buf           ]
+			packBuf := pkt[saltStart:]
+			buf, err := shadowaead.Pack(packBuf, plaintextBuf, cipher) // Encrypt in-place
 			if err != nil {
 				return onet.NewConnectionError("ERR_PACK", "Failed to pack data to client", err)
 			}
@@ -314,6 +318,6 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 			status = connError.Status
 		}
-		sm.AddUDPPacketFromTarget(clientLocation, keyID, status, targetProxyBytes, proxyClientBytes)
+		sm.AddUDPPacketFromTarget(clientLocation, keyID, status, bodyLen, proxyClientBytes)
 	}
 }
