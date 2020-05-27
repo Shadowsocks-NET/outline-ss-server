@@ -45,6 +45,9 @@ var logger *logging.Logger
 // 59 seconds is most common timeout for servers that do not respond to invalid requests
 const tcpReadTimeout time.Duration = 59 * time.Second
 
+// A UDP NAT timeout of at least 5 minutes is recommended in RFC 4787 Section 4.3.
+const defaultNatTimeout time.Duration = 5 * time.Minute
+
 func init() {
 	var prefix = "%{level:.1s}%{time:2006-01-02T15:04:05.000Z07:00} %{pid} %{shortfile}]"
 	if terminal.IsTerminal(int(os.Stderr.Fd())) {
@@ -212,7 +215,7 @@ func main() {
 	flag.StringVar(&flags.ConfigFile, "config", "", "Configuration filename")
 	flag.StringVar(&flags.MetricsAddr, "metrics", "", "Address for the Prometheus metrics")
 	flag.StringVar(&flags.IPCountryDB, "ip_country_db", "", "Path to the ip-to-country mmdb file")
-	flag.DurationVar(&flags.natTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
+	flag.DurationVar(&flags.natTimeout, "udptimeout", defaultNatTimeout, "UDP tunnel timeout")
 	flag.IntVar(&flags.replayHistory, "replay_history", 0, "Replay buffer size (# of handshakes)")
 	flag.BoolVar(&flags.Verbose, "verbose", false, "Enables verbose logging output")
 
