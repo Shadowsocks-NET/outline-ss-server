@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
@@ -155,24 +156,24 @@ func (s *udpService) Start() {
 
 			payload := buf[len(tgtAddr):]
 
-			targetConn, clientLocation := nm.Get(clientAddr.String())
-			if targetConn == nil {
+			entry := nm.Get(clientAddr.String())
+			if entry == nil {
 				clientLocation, locErr := s.m.GetLocation(clientAddr)
 				if locErr != nil {
 					logger.Warningf("Failed location lookup: %v", locErr)
 				}
 				debugUDPAddr(clientAddr, "Got location \"%s\"", clientLocation)
 
-				targetConn, err = net.ListenPacket("udp", "")
+				targetConn, err := net.ListenPacket("udp", "")
 				if err != nil {
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
-				nm.Add(clientAddr, s.clientConn, cipher, targetConn, clientLocation, keyID)
+				entry = nm.Add(clientAddr, s.clientConn, cipher, targetConn, clientLocation, keyID)
 			}
 
-			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
-			nm.Refresh(targetConn)
-			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
+			debugUDPAddr(clientAddr, "Proxy exit %v", entry.Conn.LocalAddr())
+			nm.Refresh(entry, tgtUDPAddr.Port)
+			proxyTargetBytes, err = entry.Conn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to target", err)
 			}
@@ -187,45 +188,60 @@ func (s *udpService) Stop() error {
 }
 
 type natentry struct {
-	conn net.PacketConn
+	Conn net.PacketConn
 	// We store the client location in the NAT map to avoid recomputing it
 	// for every outbound packet in a UDP-based connection.
 	clientLocation string
+	// Number of upstream packets sent on Conn.
+	count int64
+	// Number of DNS query packets sent on Conn.
+	countDNS int64
 }
 
 // Packet NAT table
 type natmap struct {
 	sync.RWMutex
-	keyConn map[string]natentry
+	keyConn map[string]*natentry
 	timeout time.Duration
 	metrics metrics.ShadowsocksMetrics
 }
 
 func newNATmap(timeout time.Duration, sm metrics.ShadowsocksMetrics) *natmap {
 	m := &natmap{metrics: sm}
-	m.keyConn = make(map[string]natentry)
+	m.keyConn = make(map[string]*natentry)
 	m.timeout = timeout
 	return m
 }
 
-func (m *natmap) Get(key string) (net.PacketConn, string) {
+func (m *natmap) Get(key string) *natentry {
 	m.RLock()
 	defer m.RUnlock()
-	entry := m.keyConn[key]
-	return entry.conn, entry.clientLocation
+	return m.keyConn[key]
 }
 
 // Refresh the NAT mapping.  This should be called on every write for
 // outbound-refresh behavior (as required by RFC 4787 Section 4.3).
-func (m *natmap) Refresh(targetConn net.PacketConn) {
-	targetConn.SetReadDeadline(time.Now().Add(m.timeout))
+func (m *natmap) Refresh(entry *natentry, dstPort int) {
+	count := atomic.AddInt64(&entry.count, 1)
+	timeout := m.timeout
+	if dstPort == 53 {
+		// This is a DNS query.
+		countDNS := atomic.AddInt64(&entry.countDNS, 1)
+		if countDNS == count {
+			// DNS-only socket.  Shorten timeout as required by RFC 5452 Section 10.
+			timeout = 17 * time.Second
+		}
+	}
+	entry.Conn.SetReadDeadline(time.Now().Add(timeout))
 }
 
-func (m *natmap) set(key string, pc net.PacketConn, clientLocation string) {
+func (m *natmap) set(key string, pc net.PacketConn, clientLocation string) *natentry {
 	m.Lock()
 	defer m.Unlock()
 
-	m.keyConn[key] = natentry{pc, clientLocation}
+	entry := &natentry{pc, clientLocation, 0, 0}
+	m.keyConn[key] = entry
+	return entry
 }
 
 func (m *natmap) del(key string) net.PacketConn {
@@ -235,31 +251,32 @@ func (m *natmap) del(key string) net.PacketConn {
 	entry, ok := m.keyConn[key]
 	if ok {
 		delete(m.keyConn, key)
-		return entry.conn
+		return entry.Conn
 	}
 	return nil
 }
 
-func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) {
-	m.set(clientAddr.String(), targetConn, clientLocation)
+func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) *natentry {
+	entry := m.set(clientAddr.String(), targetConn, clientLocation)
 
 	m.metrics.AddUDPNatEntry()
 	go func() {
-		timedCopy(clientAddr, clientConn, cipher, targetConn, clientLocation, keyID, m.metrics)
+		timedCopy(clientAddr, clientConn, cipher, entry, keyID, m.metrics)
 		m.metrics.RemoveUDPNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
 		}
 	}()
+	return entry
 }
 
 // Get the maximum length of the shadowsocks address header by parsing
 // and serializing an IPv6 address from the example range.
 var maxAddrLen int = len(socks.ParseAddr("[2001:db8::1]:12345"))
 
-// copy from target to client until read timeout
-func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn,
-	clientLocation, keyID string, sm metrics.ShadowsocksMetrics) {
+// copy from target (entry.Conn) to clientConn until read timeout
+func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, entry *natentry,
+	keyID string, sm metrics.ShadowsocksMetrics) {
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
 	// [padding?][salt][address][body][tag][extra]
 	// Padding is only used if the address is IPv4.
@@ -281,7 +298,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			// [padding?][salt][address][body][tag][unused]
 			// |--     bodyStart     --|[      readBuf    ]
 			readBuf := pkt[bodyStart:]
-			bodyLen, raddr, err = targetConn.ReadFrom(readBuf)
+			bodyLen, raddr, err = entry.Conn.ReadFrom(readBuf)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok {
 					if netErr.Timeout() {
@@ -317,6 +334,14 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			if err != nil {
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to client", err)
 			}
+
+			if atomic.LoadInt64(&entry.countDNS) == 1 &&
+				atomic.LoadInt64(&entry.count) == 1 {
+				// This connection has sent exactly one packet, a DNS query.
+				// The response has now been delivered, so the connection can be closed.
+				expired = true
+			}
+
 			return nil
 		}()
 		status := "OK"
@@ -324,6 +349,6 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 			status = connError.Status
 		}
-		sm.AddUDPPacketFromTarget(clientLocation, keyID, status, bodyLen, proxyClientBytes)
+		sm.AddUDPPacketFromTarget(entry.clientLocation, keyID, status, bodyLen, proxyClientBytes)
 	}
 }

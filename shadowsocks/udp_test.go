@@ -15,12 +15,223 @@
 package shadowsocks
 
 import (
+	"errors"
 	"net"
 	"testing"
+	"time"
 
 	logging "github.com/op/go-logging"
+	"github.com/shadowsocks/go-shadowsocks2/core"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
+
+const timeout = 5 * time.Minute
+
+var clientAddr = net.UDPAddr{IP: []byte{192, 0, 2, 1}, Port: 12345}
+var natCipher shadowaead.Cipher
+
+func init() {
+	coreCipher, _ := core.PickCipher(testCipher, nil, "test password")
+	natCipher = coreCipher.(shadowaead.Cipher)
+}
+
+type packet struct {
+	addr    net.Addr
+	payload []byte
+	err     error
+}
+
+type fakePacketConn struct {
+	net.PacketConn
+	send     chan packet
+	recv     chan packet
+	deadline time.Time
+}
+
+func makePacketConn() *fakePacketConn {
+	return &fakePacketConn{
+		send: make(chan packet),
+		recv: make(chan packet),
+	}
+}
+
+func (conn *fakePacketConn) SetReadDeadline(deadline time.Time) error {
+	conn.deadline = deadline
+	return nil
+}
+
+func (conn *fakePacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
+	conn.send <- packet{addr, payload, nil}
+	return len(payload), nil
+}
+
+func (conn *fakePacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
+	pkt, ok := <-conn.recv
+	if !ok {
+		return 0, nil, errors.New("Receive closed")
+	}
+	n := copy(buffer, pkt.payload)
+	if n < len(pkt.payload) {
+		return n, pkt.addr, errors.New("Buffer was too short")
+	}
+	return n, pkt.addr, pkt.err
+}
+
+func (conn *fakePacketConn) Close() error {
+	close(conn.send)
+	close(conn.recv)
+	return nil
+}
+
+func assertAlmostEqual(t *testing.T, a, b time.Time) {
+	delta := a.Sub(b)
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > 100*time.Millisecond {
+		t.Errorf("Times are not close: %v, %v", a, b)
+	}
+}
+
+func TestNATEmpty(t *testing.T) {
+	nat := newNATmap(timeout, &probeTestMetrics{})
+	if nat.Get("foo") != nil {
+		t.Error("Expected nil value from empty NAT map")
+	}
+}
+
+func TestNATGet(t *testing.T) {
+	nat := newNATmap(timeout, &probeTestMetrics{})
+	clientConn := makePacketConn()
+	targetConn := makePacketConn()
+	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
+	entry := nat.Get(clientAddr.String())
+	if entry == nil {
+		t.Fatal("Failed to find target conn")
+	}
+	if entry.Conn != targetConn {
+		t.Error("Mismatched connection returned")
+	}
+}
+
+func TestNATRefresh(t *testing.T) {
+	nat := newNATmap(timeout, &probeTestMetrics{})
+	clientConn := makePacketConn()
+	targetConn := makePacketConn()
+	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
+	entry := nat.Get(clientAddr.String())
+
+	// Simulate one generic packet being sent.
+	nat.Refresh(entry, 54321)
+	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(timeout))
+}
+
+func TestNATRefreshDNS(t *testing.T) {
+	nat := newNATmap(timeout, &probeTestMetrics{})
+	clientConn := makePacketConn()
+	targetConn := makePacketConn()
+	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
+	entry := nat.Get(clientAddr.String())
+
+	// Simulate one DNS query being sent.
+	nat.Refresh(entry, 53)
+	// DNS-only connections have a fixed timeout of 17 seconds.
+	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(17*time.Second))
+}
+
+func TestNATRefreshDNSMultiple(t *testing.T) {
+	nat := newNATmap(timeout, &probeTestMetrics{})
+	clientConn := makePacketConn()
+	targetConn := makePacketConn()
+	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
+	entry := nat.Get(clientAddr.String())
+
+	// Simulate three DNS queries being sent.
+	nat.Refresh(entry, 53)
+	nat.Refresh(entry, 53)
+	nat.Refresh(entry, 53)
+	// DNS-only connections have a fixed timeout of 17 seconds.
+	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(17*time.Second))
+}
+
+func TestNATRefreshMixed(t *testing.T) {
+	nat := newNATmap(timeout, &probeTestMetrics{})
+	clientConn := makePacketConn()
+	targetConn := makePacketConn()
+	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
+	entry := nat.Get(clientAddr.String())
+
+	// Simulate both non-DNS and DNS packets being sent.
+	nat.Refresh(entry, 54321)
+	nat.Refresh(entry, 53)
+	// Mixed DNS and non-DNS connections should have the user-specified timeout.
+	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(timeout))
+}
+
+func TestNATFastCloseForDNS(t *testing.T) {
+	nat := newNATmap(timeout, &probeTestMetrics{})
+	clientConn := makePacketConn()
+	targetConn := makePacketConn()
+	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
+	entry := nat.Get(clientAddr.String())
+
+	// Indicate that a DNS query has been sent.
+	nat.Refresh(entry, 53)
+	payload := []byte{1, 2, 3, 4, 5}
+	received := packet{addr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 53}, payload: payload}
+	before := time.Now()
+	targetConn.recv <- received
+	sent, ok := <-clientConn.send
+	if !ok {
+		t.Error("clientConn was closed")
+	}
+	if len(sent.payload) <= len(payload) {
+		t.Error("Packet is too short to be shadowsocks")
+	}
+	if sent.addr != &clientAddr {
+		t.Errorf("Address mismatch: %v != %v", sent.addr, clientAddr)
+	}
+	// Wait for targetConn to close.
+	if _, ok := <-targetConn.send; ok {
+		t.Error("targetConn should be closed due to fast-close behavior")
+	}
+	// targetConn should be closed immediately after receiving the response.
+	assertAlmostEqual(t, before, time.Now())
+}
+
+// Implements net.Error
+type fakeTimeoutError struct {
+	error
+}
+
+func (e *fakeTimeoutError) Timeout() bool {
+	return true
+}
+
+func (e *fakeTimeoutError) Temporary() bool {
+	return false
+}
+
+func TestNATTimeout(t *testing.T) {
+	nat := newNATmap(timeout, &probeTestMetrics{})
+	clientConn := makePacketConn()
+	targetConn := makePacketConn()
+	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
+	entry := nat.Get(clientAddr.String())
+
+	// Simulate a non-DNS initial packet.
+	nat.Refresh(entry, 54321)
+	// Simulate a read timeout.
+	received := packet{err: &fakeTimeoutError{}}
+	before := time.Now()
+	targetConn.recv <- received
+	// Wait for targetConn to close.
+	if _, ok := <-targetConn.send; ok {
+		t.Error("targetConn should be closed due to read timeout")
+	}
+	// targetConn should be closed as soon as the timeout error is received.
+	assertAlmostEqual(t, before, time.Now())
+}
 
 // Simulates receiving invalid UDP packets on a server with 100 ciphers.
 func BenchmarkUDPUnpackFail(b *testing.B) {
