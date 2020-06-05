@@ -120,7 +120,16 @@ func (sw *shadowsocksWriter) ReadFrom(r io.Reader) (int64, error) {
 	}
 }
 
-type shadowsocksReader struct {
+// ChunkReader is similar to io.Reader, except that it controls its own
+// buffer granularity.
+type ChunkReader interface {
+	// ReadChunk reads the next chunk and returns its payload.  The caller must
+	// complete its use of the returned buffer before the next call.
+	// The buffer is nil iff there is an error.  io.EOF indicates a close.
+	ReadChunk() ([]byte, error)
+}
+
+type chunkReader struct {
 	reader   io.Reader
 	ssCipher shadowaead.Cipher
 	// These are lazily initialized:
@@ -141,63 +150,70 @@ type Reader interface {
 // the shadowsocks protocol with the given shadowsocks cipher.
 func NewShadowsocksReader(reader io.Reader, ssCipher shadowaead.Cipher) Reader {
 	return &readConverter{
-		r: &shadowsocksReader{reader: reader, ssCipher: ssCipher},
+		cr: &chunkReader{reader: reader, ssCipher: ssCipher},
 	}
 }
 
 // init reads the salt from the inner Reader and sets up the AEAD object
-func (sr *shadowsocksReader) init() (err error) {
-	if sr.aead == nil {
+func (cr *chunkReader) init() (err error) {
+	if cr.aead == nil {
 		// For chacha20-poly1305, SaltSize is 32, NonceSize is 12 and Overhead is 16.
-		salt := make([]byte, sr.ssCipher.SaltSize())
-		if _, err := io.ReadFull(sr.reader, salt); err != nil {
+		salt := make([]byte, cr.ssCipher.SaltSize())
+		if _, err := io.ReadFull(cr.reader, salt); err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
 				err = fmt.Errorf("failed to read salt: %v", err)
 			}
 			return err
 		}
-		sr.aead, err = sr.ssCipher.Decrypter(salt)
+		cr.aead, err = cr.ssCipher.Decrypter(salt)
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
-		sr.counter = make([]byte, sr.aead.NonceSize())
-		sr.buf = make([]byte, payloadSizeMask+sr.aead.Overhead())
+		cr.counter = make([]byte, cr.aead.NonceSize())
+		cr.buf = make([]byte, payloadSizeMask+cr.aead.Overhead())
 	}
 	return nil
 }
 
-// readBlock reads and decrypts a single signed block of ciphertext.
-// The block must exactly match the size of `buf`, including overhead.
+// readMessage reads, decrypts, and verifies a single AEAD ciphertext.
+// The ciphertext and tag (i.e. "overhead") must exactly fill `buf`,
+// and the decrypted message will be placed in buf[:len(buf)-overhead].
 // Returns an error only if the block could not be read.
-func (sr *shadowsocksReader) readBlock(buf []byte) error {
-	_, err := io.ReadFull(sr.reader, buf)
+func (cr *chunkReader) readMessage(buf []byte) error {
+	_, err := io.ReadFull(cr.reader, buf)
 	if err != nil {
 		return err
 	}
-	_, err = sr.aead.Open(buf[:0], sr.counter, buf, nil)
-	increment(sr.counter)
+	_, err = cr.aead.Open(buf[:0], cr.counter, buf, nil)
+	increment(cr.counter)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt: %v", err)
 	}
 	return nil
 }
 
-// ReadChunk returns the next decrypted chunk.  The caller must
-// complete its use of the returned buffer before the next call.
-func (sr *shadowsocksReader) ReadChunk() ([]byte, error) {
-	if err := sr.init(); err != nil {
+func (cr *chunkReader) ReadChunk() ([]byte, error) {
+	if err := cr.init(); err != nil {
 		return nil, err
 	}
-	sizeBuf := sr.buf[:2+sr.aead.Overhead()]
-	if err := sr.readBlock(sizeBuf); err != nil {
+	// In Shadowsocks-AEAD, each chunk consists of two
+	// encrypted messages.  The first message contains the payload length,
+	// and the second message is the payload.
+	sizeBuf := cr.buf[:2+cr.aead.Overhead()]
+	if err := cr.readMessage(sizeBuf); err != nil {
 		if err != io.EOF && err != io.ErrUnexpectedEOF {
 			err = fmt.Errorf("failed to read payload size: %v", err)
 		}
 		return nil, err
 	}
 	size := int(binary.BigEndian.Uint16(sizeBuf) & payloadSizeMask)
-	payloadBuf := sr.buf[:size+sr.aead.Overhead()]
-	if err := sr.readBlock(payloadBuf); err != nil {
+	sizeWithTag := size + cr.aead.Overhead()
+	if cap(cr.buf) < sizeWithTag {
+		// This code is unreachable.
+		return nil, io.ErrShortBuffer
+	}
+	payloadBuf := cr.buf[:sizeWithTag]
+	if err := cr.readMessage(payloadBuf); err != nil {
 		if err == io.EOF { // EOF is not expected mid-chunk.
 			err = io.ErrUnexpectedEOF
 		}
@@ -206,10 +222,10 @@ func (sr *shadowsocksReader) ReadChunk() ([]byte, error) {
 	return payloadBuf[:size], nil
 }
 
-// readConverter adapts from shadowsocksReader, with source-controlled
+// readConverter adapts from ChunkReader, with source-controlled
 // chunk sizes, to Go-style IO.
 type readConverter struct {
-	r        *shadowsocksReader
+	cr       ChunkReader
 	leftover []byte
 }
 
@@ -246,7 +262,7 @@ func (c *readConverter) ensureLeftover() error {
 	if len(c.leftover) > 0 {
 		return nil
 	}
-	payload, err := c.r.ReadChunk()
+	payload, err := c.cr.ReadChunk()
 	if err != nil {
 		return err
 	}
