@@ -15,6 +15,7 @@
 package shadowsocks
 
 import (
+	"bytes"
 	"errors"
 	"net"
 	"testing"
@@ -28,6 +29,8 @@ import (
 const timeout = 5 * time.Minute
 
 var clientAddr = net.UDPAddr{IP: []byte{192, 0, 2, 1}, Port: 12345}
+var targetAddr = net.UDPAddr{IP: []byte{192, 0, 2, 2}, Port: 54321}
+var dnsAddr = net.UDPAddr{IP: []byte{192, 0, 2, 3}, Port: 53}
 var natCipher shadowaead.Cipher
 
 func init() {
@@ -50,7 +53,7 @@ type fakePacketConn struct {
 
 func makePacketConn() *fakePacketConn {
 	return &fakePacketConn{
-		send: make(chan packet),
+		send: make(chan packet, 1),
 		recv: make(chan packet),
 	}
 }
@@ -100,93 +103,104 @@ func TestNATEmpty(t *testing.T) {
 	}
 }
 
-func TestNATGet(t *testing.T) {
+func setup() (*fakePacketConn, *fakePacketConn, *natconn) {
 	nat := newNATmap(timeout, &probeTestMetrics{})
 	clientConn := makePacketConn()
 	targetConn := makePacketConn()
 	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
 	entry := nat.Get(clientAddr.String())
+	return clientConn, targetConn, entry
+}
+
+func TestNATGet(t *testing.T) {
+	_, targetConn, entry := setup()
 	if entry == nil {
 		t.Fatal("Failed to find target conn")
 	}
-	if entry.Conn != targetConn {
+	if entry.PacketConn != targetConn {
 		t.Error("Mismatched connection returned")
 	}
 }
 
-func TestNATRefresh(t *testing.T) {
-	nat := newNATmap(timeout, &probeTestMetrics{})
-	clientConn := makePacketConn()
-	targetConn := makePacketConn()
-	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
-	entry := nat.Get(clientAddr.String())
+func TestNATWrite(t *testing.T) {
+	_, targetConn, entry := setup()
 
-	// Simulate one generic packet being sent.
-	nat.Refresh(entry, 54321)
+	// Simulate one generic packet being sent
+	buf := []byte{1}
+	entry.WriteTo([]byte{1}, &targetAddr)
 	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(timeout))
+	sent := <-targetConn.send
+	if !bytes.Equal(sent.payload, buf) {
+		t.Errorf("Mismatched payload: %v != %v", sent.payload, buf)
+	}
+	if sent.addr != &targetAddr {
+		t.Errorf("Mismatched address: %v != %v", sent.addr, &targetAddr)
+	}
 }
 
-func TestNATRefreshDNS(t *testing.T) {
-	nat := newNATmap(timeout, &probeTestMetrics{})
-	clientConn := makePacketConn()
-	targetConn := makePacketConn()
-	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
-	entry := nat.Get(clientAddr.String())
+func TestNATWriteDNS(t *testing.T) {
+	_, targetConn, entry := setup()
 
 	// Simulate one DNS query being sent.
-	nat.Refresh(entry, 53)
+	buf := []byte{1}
+	entry.WriteTo(buf, &dnsAddr)
 	// DNS-only connections have a fixed timeout of 17 seconds.
 	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(17*time.Second))
+	sent := <-targetConn.send
+	if !bytes.Equal(sent.payload, buf) {
+		t.Errorf("Mismatched payload: %v != %v", sent.payload, buf)
+	}
+	if sent.addr != &dnsAddr {
+		t.Errorf("Mismatched address: %v != %v", sent.addr, &targetAddr)
+	}
 }
 
-func TestNATRefreshDNSMultiple(t *testing.T) {
-	nat := newNATmap(timeout, &probeTestMetrics{})
-	clientConn := makePacketConn()
-	targetConn := makePacketConn()
-	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
-	entry := nat.Get(clientAddr.String())
+func TestNATWriteDNSMultiple(t *testing.T) {
+	_, targetConn, entry := setup()
 
 	// Simulate three DNS queries being sent.
-	nat.Refresh(entry, 53)
-	nat.Refresh(entry, 53)
-	nat.Refresh(entry, 53)
+	buf := []byte{1}
+	entry.WriteTo(buf, &dnsAddr)
+	<-targetConn.send
+	entry.WriteTo(buf, &dnsAddr)
+	<-targetConn.send
+	entry.WriteTo(buf, &dnsAddr)
+	<-targetConn.send
 	// DNS-only connections have a fixed timeout of 17 seconds.
 	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(17*time.Second))
 }
 
-func TestNATRefreshMixed(t *testing.T) {
-	nat := newNATmap(timeout, &probeTestMetrics{})
-	clientConn := makePacketConn()
-	targetConn := makePacketConn()
-	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
-	entry := nat.Get(clientAddr.String())
+func TestNATWriteMixed(t *testing.T) {
+	_, targetConn, entry := setup()
 
 	// Simulate both non-DNS and DNS packets being sent.
-	nat.Refresh(entry, 54321)
-	nat.Refresh(entry, 53)
+	buf := []byte{1}
+	entry.WriteTo(buf, &targetAddr)
+	<-targetConn.send
+	entry.WriteTo(buf, &dnsAddr)
+	<-targetConn.send
 	// Mixed DNS and non-DNS connections should have the user-specified timeout.
 	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(timeout))
 }
 
 func TestNATFastCloseForDNS(t *testing.T) {
-	nat := newNATmap(timeout, &probeTestMetrics{})
-	clientConn := makePacketConn()
-	targetConn := makePacketConn()
-	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
-	entry := nat.Get(clientAddr.String())
+	clientConn, targetConn, entry := setup()
 
-	// Indicate that a DNS query has been sent.
-	nat.Refresh(entry, 53)
-	payload := []byte{1, 2, 3, 4, 5}
-	received := packet{addr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 53}, payload: payload}
+	// Send one DNS query.
+	query := []byte{1}
+	entry.WriteTo(query, &dnsAddr)
+	sent := <-targetConn.send
+	// Send the response.
+	response := []byte{1, 2, 3, 4, 5}
+	received := packet{addr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 53}, payload: response}
 	before := time.Now()
 	targetConn.recv <- received
 	sent, ok := <-clientConn.send
 	if !ok {
 		t.Error("clientConn was closed")
 	}
-	if len(sent.payload) <= len(payload) {
-		t.Error("Packet is too short to be shadowsocks")
+	if len(sent.payload) <= len(response) {
+		t.Error("Packet is too short to be shadowsocks-AEAD")
 	}
 	if sent.addr != &clientAddr {
 		t.Errorf("Address mismatch: %v != %v", sent.addr, clientAddr)
@@ -213,14 +227,11 @@ func (e *fakeTimeoutError) Temporary() bool {
 }
 
 func TestNATTimeout(t *testing.T) {
-	nat := newNATmap(timeout, &probeTestMetrics{})
-	clientConn := makePacketConn()
-	targetConn := makePacketConn()
-	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
-	entry := nat.Get(clientAddr.String())
+	_, targetConn, entry := setup()
 
 	// Simulate a non-DNS initial packet.
-	nat.Refresh(entry, 54321)
+	entry.WriteTo([]byte{1}, &targetAddr)
+	<-targetConn.send
 	// Simulate a read timeout.
 	received := packet{err: &fakeTimeoutError{}}
 	before := time.Now()
