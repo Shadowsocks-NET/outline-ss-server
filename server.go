@@ -136,6 +136,9 @@ func (s *ssServer) loadConfig(filename string) error {
 		if !ok {
 			return fmt.Errorf("Only AEAD ciphers are supported. Found %v", keyConfig.Cipher)
 		}
+		if err := shadowsocks.CheckCipher(aead); err != nil {
+			return fmt.Errorf("Cipher is not supported: %v", err)
+		}
 		cipherList.PushBack(&shadowsocks.CipherEntry{ID: keyConfig.ID, Cipher: aead})
 	}
 	for port := range s.ports {

@@ -56,7 +56,7 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 			b.Fatalf("AcceptTCP failed: %v", err)
 		}
 		b.StartTimer()
-		findAccessKey(clientConn, cipherList)
+		findAccessKey(clientConn, cipherList, nil)
 		b.StopTimer()
 	}
 }
@@ -141,7 +141,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		cipher := cipherEntries[cipherNumber].Cipher
 		go NewShadowsocksWriter(writer, cipher).Write(MakeTestPayload(50))
 		b.StartTimer()
-		_, _, _, err := findAccessKey(&c, cipherList)
+		_, _, _, err := findAccessKey(&c, cipherList, nil)
 		b.StopTimer()
 		if err != nil {
 			b.Error(err)
@@ -162,7 +162,7 @@ func (m *probeTestMetrics) AddTCPProbe(clientLocation, status, drainResult strin
 	m.probeData = append(m.probeData, data)
 	m.probeStatus = append(m.probeStatus, status)
 }
-func (m *probeTestMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data metrics.ProxyMetrics, timeToCipher, duration time.Duration) {
+func (m *probeTestMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data metrics.ProxyMetrics, duration time.Duration) {
 	m.closeStatus = append(m.closeStatus, status)
 }
 
@@ -172,6 +172,8 @@ func (m *probeTestMetrics) GetLocation(net.Addr) (string, error) {
 func (m *probeTestMetrics) SetNumAccessKeys(numKeys int, numPorts int) {
 }
 func (m *probeTestMetrics) AddOpenTCPConnection(clientLocation string) {
+}
+func (m *probeTestMetrics) AddTCPCipherSearch(timeToCipher time.Duration, foundKey bool) {
 }
 func (m *probeTestMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {
 }

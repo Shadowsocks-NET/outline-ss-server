@@ -16,11 +16,70 @@ package shadowsocks
 
 import (
 	"container/list"
+	"fmt"
 	"net"
 	"sync"
 
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
+
+// All ciphers must have a nonce size this big or smaller.
+const maxNonceSize = 12
+
+// Describes the size parameters of a cipher.
+type cipherSize struct {
+	salt, overhead int
+}
+
+// These are cipher size parameters supported by CipherList.
+// To support TCP trial decryption, these sizes must not include
+// too wide a range.  Otherwise, trial decryption for a large-size
+// cipher could block indefinitely, when the client has actually
+// sent a handshake for a short cipher.
+//
+// Ciphers do not need to have exactly the same size because a minimal
+// handshake (from a short cipher) includes at least one additional
+// AEAD tag, providing enough bytes for trial decryption with a
+// longer cipher.
+var supportedSizes = [...]cipherSize{
+	{32, 16}, // chacha20poly1305, AES-256-GCM
+	{24, 16}, // AES-192-GCM
+	{16, 16}, // AES-128-GCM
+}
+
+// Minimum number of bytes to read for trial decryption of all supported
+// ciphers.
+var tcpHeader int
+
+func init() {
+	for _, s := range supportedSizes {
+		t := s.salt + 2 + s.overhead
+		if t > tcpHeader {
+			tcpHeader = t
+		}
+	}
+}
+
+// CheckCipher checks whether the provided cipher is compatible with CipherList.
+func CheckCipher(cipher shadowaead.Cipher) error {
+	saltsize := cipher.SaltSize()
+	aead, err := cipher.Decrypter(make([]byte, saltsize))
+	if err != nil {
+		return err
+	}
+
+	if aead.NonceSize() > maxNonceSize {
+		return fmt.Errorf("Nonce size is too large: %d > %d", aead.NonceSize(), maxNonceSize)
+	}
+	size := cipherSize{saltsize, aead.Overhead()}
+
+	for _, s := range supportedSizes {
+		if s == size {
+			return nil
+		}
+	}
+	return fmt.Errorf("Unsupported cipher size: %v", size)
+}
 
 // CipherEntry holds a Cipher with an identifier.
 // The public fields are constant, but lastAddress is mutable under cipherList.mu.
