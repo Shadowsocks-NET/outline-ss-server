@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net"
 	"runtime/debug"
-	"sync/atomic"
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
@@ -186,49 +185,69 @@ func (s *udpService) Stop() error {
 	return s.clientConn.Close()
 }
 
-const (
-	modeFresh     = 0    // No packets have been sent.
-	modeSingleDNS = iota // One packet has been sent, a DNS query.
-	modeMultiDNS  = iota // Multiple packets have been sent, all DNS.
-	modeGeneral   = iota // Non-DNS packets have been sent.
-)
+func isDNS(addr net.Addr) bool {
+	_, port, _ := net.SplitHostPort(addr.String())
+	return port == "53"
+}
 
 type natconn struct {
 	net.PacketConn
 	// We store the client location in the NAT map to avoid recomputing it
-	// for every outbound packet in a UDP-based connection.
+	// for every downstream packet in a UDP-based connection.
 	clientLocation string
-	// NAT timeout to apply for non-DNS connections.
+	// NAT timeout to apply for non-DNS packets.
 	defaultTimeout time.Duration
-	// Indicates whether DNS optimizations apply.
-	mode int32
+	// Current read deadline of PacketConn.  Used to avoid decreasing the
+	// deadline.  Initially zero.
+	readDeadline time.Time
+	// If the connection has only sent one DNS query, it will close
+	// if it receives a DNS response.
+	fastClose sync.Once
 }
 
-func (c *natconn) WriteTo(buf []byte, dst net.Addr) (int, error) {
-	_, port, _ := net.SplitHostPort(dst.String())
-
-	// Update mode.
-	mode := c.mode
-	if port == "53" {
-		if mode == modeFresh {
-			mode = modeSingleDNS
-		} else if mode == modeSingleDNS {
-			mode = modeMultiDNS
-		}
-	} else {
-		mode = modeGeneral
+func (c *natconn) onWrite(addr net.Addr) {
+	// Fast close is only allowed if there has been exactly one write,
+	// and it was a DNS query.
+	isDNS := isDNS(addr)
+	isFirstWrite := c.readDeadline.IsZero()
+	if !isDNS || !isFirstWrite {
+		// Disable fast close.  (Idempotent.)
+		c.fastClose.Do(func() {})
 	}
-	atomic.StoreInt32(&c.mode, mode)
 
-	// Update deadline.
 	timeout := c.defaultTimeout
-	if mode != modeGeneral {
+	if isDNS {
 		// Shorten timeout as required by RFC 5452 Section 10.
 		timeout = 17 * time.Second
 	}
-	c.PacketConn.SetReadDeadline(time.Now().Add(timeout))
 
+	newDeadline := time.Now().Add(timeout)
+	if newDeadline.After(c.readDeadline) {
+		c.readDeadline = newDeadline
+		c.SetReadDeadline(newDeadline)
+	}
+}
+
+func (c *natconn) onRead(addr net.Addr) {
+	c.fastClose.Do(func() {
+		if isDNS(addr) {
+			// The next ReadFrom() should time out immediately.
+			c.SetReadDeadline(time.Now())
+		}
+	})
+}
+
+func (c *natconn) WriteTo(buf []byte, dst net.Addr) (int, error) {
+	c.onWrite(dst)
 	return c.PacketConn.WriteTo(buf, dst)
+}
+
+func (c *natconn) ReadFrom(buf []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(buf)
+	if err == nil {
+		c.onRead(addr)
+	}
+	return n, addr, err
 }
 
 // Packet NAT table
@@ -253,10 +272,15 @@ func (m *natmap) Get(key string) *natconn {
 }
 
 func (m *natmap) set(key string, pc net.PacketConn, clientLocation string) *natconn {
+	entry := &natconn{
+		PacketConn:     pc,
+		clientLocation: clientLocation,
+		defaultTimeout: m.timeout,
+	}
+
 	m.Lock()
 	defer m.Unlock()
 
-	entry := &natconn{pc, clientLocation, m.timeout, modeFresh}
 	m.keyConn[key] = entry
 	return entry
 }
@@ -291,7 +315,7 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 // and serializing an IPv6 address from the example range.
 var maxAddrLen int = len(socks.ParseAddr("[2001:db8::1]:12345"))
 
-// copy from target (entry.Conn) to clientConn until read timeout
+// copy from target to client until read timeout
 func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn *natconn,
 	keyID string, sm metrics.ShadowsocksMetrics) {
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
@@ -351,16 +375,6 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			if err != nil {
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to client", err)
 			}
-
-			if atomic.LoadInt32(&targetConn.mode) == modeSingleDNS {
-				_, port, _ := net.SplitHostPort(raddr.String())
-				if port == "53" {
-					// This connection has only been used for DNS.
-					// The DNS response has now been delivered, so the connection can be closed.
-					expired = true
-				}
-			}
-
 			return nil
 		}()
 		status := "OK"

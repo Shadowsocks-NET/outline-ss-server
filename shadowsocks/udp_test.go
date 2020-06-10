@@ -88,10 +88,8 @@ func (conn *fakePacketConn) Close() error {
 
 func assertAlmostEqual(t *testing.T, a, b time.Time) {
 	delta := a.Sub(b)
-	if delta < 0 {
-		delta = -delta
-	}
-	if delta > 100*time.Millisecond {
+	limit := 100 * time.Millisecond
+	if delta > limit || -delta > limit {
 		t.Errorf("Times are not close: %v, %v", a, b)
 	}
 }
@@ -183,7 +181,7 @@ func TestNATWriteMixed(t *testing.T) {
 	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(timeout))
 }
 
-func TestNATFastCloseForDNS(t *testing.T) {
+func TestNATFastClose(t *testing.T) {
 	clientConn, targetConn, entry := setup()
 
 	// Send one DNS query.
@@ -192,8 +190,7 @@ func TestNATFastCloseForDNS(t *testing.T) {
 	sent := <-targetConn.send
 	// Send the response.
 	response := []byte{1, 2, 3, 4, 5}
-	received := packet{addr: &net.UDPAddr{IP: net.ParseIP("8.8.8.8"), Port: 53}, payload: response}
-	before := time.Now()
+	received := packet{addr: &dnsAddr, payload: response}
 	targetConn.recv <- received
 	sent, ok := <-clientConn.send
 	if !ok {
@@ -205,12 +202,55 @@ func TestNATFastCloseForDNS(t *testing.T) {
 	if sent.addr != &clientAddr {
 		t.Errorf("Address mismatch: %v != %v", sent.addr, clientAddr)
 	}
-	// Wait for targetConn to close.
-	if _, ok := <-targetConn.send; ok {
-		t.Error("targetConn should be closed due to fast-close behavior")
+
+	// targetConn should be scheduled to close immediately.
+	assertAlmostEqual(t, targetConn.deadline, time.Now())
+}
+
+func TestNATNoFastClose_NotDNS(t *testing.T) {
+	clientConn, targetConn, entry := setup()
+
+	// Send one non-DNS packet.
+	query := []byte{1}
+	entry.WriteTo(query, &targetAddr)
+	sent := <-targetConn.send
+	// Send the response.
+	response := []byte{1, 2, 3, 4, 5}
+	received := packet{addr: &targetAddr, payload: response}
+	targetConn.recv <- received
+	sent, ok := <-clientConn.send
+	if !ok {
+		t.Error("clientConn was closed")
 	}
-	// targetConn should be closed immediately after receiving the response.
-	assertAlmostEqual(t, before, time.Now())
+	if len(sent.payload) <= len(response) {
+		t.Error("Packet is too short to be shadowsocks-AEAD")
+	}
+	if sent.addr != &clientAddr {
+		t.Errorf("Address mismatch: %v != %v", sent.addr, clientAddr)
+	}
+	// targetConn should be scheduled to close after the full timeout.
+	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(timeout))
+}
+
+func TestNATNoFastClose_MultipleDNS(t *testing.T) {
+	clientConn, targetConn, entry := setup()
+
+	// Send two DNS packets.
+	query1 := []byte{1}
+	entry.WriteTo(query1, &dnsAddr)
+	<-targetConn.send
+	query2 := []byte{2}
+	entry.WriteTo(query2, &dnsAddr)
+	<-targetConn.send
+
+	// Send a response.
+	response := []byte{1, 2, 3, 4, 5}
+	received := packet{addr: &dnsAddr, payload: response}
+	targetConn.recv <- received
+	<-clientConn.send
+
+	// targetConn should be scheduled to close after the DNS timeout.
+	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(17*time.Second))
 }
 
 // Implements net.Error
