@@ -155,7 +155,7 @@ func (s *udpService) Start() {
 
 			payload := buf[len(tgtAddr):]
 
-			targetConn, clientLocation := nm.Get(clientAddr.String())
+			targetConn := nm.Get(clientAddr.String())
 			if targetConn == nil {
 				clientLocation, locErr := s.m.GetLocation(clientAddr)
 				if locErr != nil {
@@ -163,15 +163,14 @@ func (s *udpService) Start() {
 				}
 				debugUDPAddr(clientAddr, "Got location \"%s\"", clientLocation)
 
-				targetConn, err = net.ListenPacket("udp", "")
+				udpConn, err := net.ListenPacket("udp", "")
 				if err != nil {
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
-				nm.Add(clientAddr, s.clientConn, cipher, targetConn, clientLocation, keyID)
+				targetConn = nm.Add(clientAddr, s.clientConn, cipher, udpConn, clientLocation, keyID)
 			}
 
 			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
-			nm.Refresh(targetConn)
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to target", err)
@@ -186,46 +185,104 @@ func (s *udpService) Stop() error {
 	return s.clientConn.Close()
 }
 
-type natentry struct {
-	conn net.PacketConn
+func isDNS(addr net.Addr) bool {
+	_, port, _ := net.SplitHostPort(addr.String())
+	return port == "53"
+}
+
+type natconn struct {
+	net.PacketConn
 	// We store the client location in the NAT map to avoid recomputing it
-	// for every outbound packet in a UDP-based connection.
+	// for every downstream packet in a UDP-based connection.
 	clientLocation string
+	// NAT timeout to apply for non-DNS packets.
+	defaultTimeout time.Duration
+	// Current read deadline of PacketConn.  Used to avoid decreasing the
+	// deadline.  Initially zero.
+	readDeadline time.Time
+	// If the connection has only sent one DNS query, it will close
+	// if it receives a DNS response.
+	fastClose sync.Once
+}
+
+func (c *natconn) onWrite(addr net.Addr) {
+	// Fast close is only allowed if there has been exactly one write,
+	// and it was a DNS query.
+	isDNS := isDNS(addr)
+	isFirstWrite := c.readDeadline.IsZero()
+	if !isDNS || !isFirstWrite {
+		// Disable fast close.  (Idempotent.)
+		c.fastClose.Do(func() {})
+	}
+
+	timeout := c.defaultTimeout
+	if isDNS {
+		// Shorten timeout as required by RFC 5452 Section 10.
+		timeout = 17 * time.Second
+	}
+
+	newDeadline := time.Now().Add(timeout)
+	if newDeadline.After(c.readDeadline) {
+		c.readDeadline = newDeadline
+		c.SetReadDeadline(newDeadline)
+	}
+}
+
+func (c *natconn) onRead(addr net.Addr) {
+	c.fastClose.Do(func() {
+		if isDNS(addr) {
+			// The next ReadFrom() should time out immediately.
+			c.SetReadDeadline(time.Now())
+		}
+	})
+}
+
+func (c *natconn) WriteTo(buf []byte, dst net.Addr) (int, error) {
+	c.onWrite(dst)
+	return c.PacketConn.WriteTo(buf, dst)
+}
+
+func (c *natconn) ReadFrom(buf []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(buf)
+	if err == nil {
+		c.onRead(addr)
+	}
+	return n, addr, err
 }
 
 // Packet NAT table
 type natmap struct {
 	sync.RWMutex
-	keyConn map[string]natentry
+	keyConn map[string]*natconn
 	timeout time.Duration
 	metrics metrics.ShadowsocksMetrics
 }
 
 func newNATmap(timeout time.Duration, sm metrics.ShadowsocksMetrics) *natmap {
 	m := &natmap{metrics: sm}
-	m.keyConn = make(map[string]natentry)
+	m.keyConn = make(map[string]*natconn)
 	m.timeout = timeout
 	return m
 }
 
-func (m *natmap) Get(key string) (net.PacketConn, string) {
+func (m *natmap) Get(key string) *natconn {
 	m.RLock()
 	defer m.RUnlock()
-	entry := m.keyConn[key]
-	return entry.conn, entry.clientLocation
+	return m.keyConn[key]
 }
 
-// Refresh the NAT mapping.  This should be called on every write for
-// outbound-refresh behavior (as required by RFC 4787 Section 4.3).
-func (m *natmap) Refresh(targetConn net.PacketConn) {
-	targetConn.SetReadDeadline(time.Now().Add(m.timeout))
-}
+func (m *natmap) set(key string, pc net.PacketConn, clientLocation string) *natconn {
+	entry := &natconn{
+		PacketConn:     pc,
+		clientLocation: clientLocation,
+		defaultTimeout: m.timeout,
+	}
 
-func (m *natmap) set(key string, pc net.PacketConn, clientLocation string) {
 	m.Lock()
 	defer m.Unlock()
 
-	m.keyConn[key] = natentry{pc, clientLocation}
+	m.keyConn[key] = entry
+	return entry
 }
 
 func (m *natmap) del(key string) net.PacketConn {
@@ -235,22 +292,23 @@ func (m *natmap) del(key string) net.PacketConn {
 	entry, ok := m.keyConn[key]
 	if ok {
 		delete(m.keyConn, key)
-		return entry.conn
+		return entry
 	}
 	return nil
 }
 
-func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) {
-	m.set(clientAddr.String(), targetConn, clientLocation)
+func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) *natconn {
+	entry := m.set(clientAddr.String(), targetConn, clientLocation)
 
 	m.metrics.AddUDPNatEntry()
 	go func() {
-		timedCopy(clientAddr, clientConn, cipher, targetConn, clientLocation, keyID, m.metrics)
+		timedCopy(clientAddr, clientConn, cipher, entry, keyID, m.metrics)
 		m.metrics.RemoveUDPNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
 		}
 	}()
+	return entry
 }
 
 // Get the maximum length of the shadowsocks address header by parsing
@@ -258,8 +316,8 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 var maxAddrLen int = len(socks.ParseAddr("[2001:db8::1]:12345"))
 
 // copy from target to client until read timeout
-func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn,
-	clientLocation, keyID string, sm metrics.ShadowsocksMetrics) {
+func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn *natconn,
+	keyID string, sm metrics.ShadowsocksMetrics) {
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
 	// [padding?][salt][address][body][tag][extra]
 	// Padding is only used if the address is IPv4.
@@ -324,6 +382,6 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 			status = connError.Status
 		}
-		sm.AddUDPPacketFromTarget(clientLocation, keyID, status, bodyLen, proxyClientBytes)
+		sm.AddUDPPacketFromTarget(targetConn.clientLocation, keyID, status, bodyLen, proxyClientBytes)
 	}
 }
