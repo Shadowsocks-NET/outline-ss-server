@@ -17,6 +17,7 @@ package shadowsocks
 import (
 	"container/list"
 	"fmt"
+	"math"
 	"net"
 	"sync"
 
@@ -25,61 +26,6 @@ import (
 
 // All ciphers must have a nonce size this big or smaller.
 const maxNonceSize = 12
-
-// Describes the size parameters of a cipher.
-type cipherSize struct {
-	salt, overhead int
-}
-
-// These are cipher size parameters supported by CipherList.
-// To support TCP trial decryption, these sizes must not include
-// too wide a range.  Otherwise, trial decryption for a large-size
-// cipher could block indefinitely, when the client has actually
-// sent a handshake for a short cipher.
-//
-// Ciphers do not need to have exactly the same size because a minimal
-// handshake (from a short cipher) includes at least one additional
-// AEAD tag, providing enough bytes for trial decryption with a
-// longer cipher.
-var supportedSizes = [...]cipherSize{
-	{32, 16}, // chacha20poly1305, AES-256-GCM
-	{24, 16}, // AES-192-GCM
-	{16, 16}, // AES-128-GCM
-}
-
-// Minimum number of bytes to read for trial decryption of all supported
-// ciphers.
-var tcpHeader int
-
-func init() {
-	for _, s := range supportedSizes {
-		t := s.salt + 2 + s.overhead
-		if t > tcpHeader {
-			tcpHeader = t
-		}
-	}
-}
-
-// CheckCipher checks whether the provided cipher is compatible with CipherList.
-func CheckCipher(cipher shadowaead.Cipher) error {
-	saltsize := cipher.SaltSize()
-	aead, err := cipher.Decrypter(make([]byte, saltsize))
-	if err != nil {
-		return err
-	}
-
-	if aead.NonceSize() > maxNonceSize {
-		return fmt.Errorf("Nonce size is too large: %d > %d", aead.NonceSize(), maxNonceSize)
-	}
-	size := cipherSize{saltsize, aead.Overhead()}
-
-	for _, s := range supportedSizes {
-		if s == size {
-			return nil
-		}
-	}
-	return fmt.Errorf("Unsupported cipher size: %v", size)
-}
 
 // CipherEntry holds a Cipher with an identifier.
 // The public fields are constant, but lastAddress is mutable under cipherList.mu.
@@ -92,18 +38,21 @@ type CipherEntry struct {
 // CipherList is a thread-safe collection of CipherEntry elements that allows for
 // snapshotting and moving to front.
 type CipherList interface {
-	SnapshotForClientIP(clientIP net.IP) []*list.Element
+	// Returns a snapshot of the cipher list optimized for this client IP,
+	// and also the number of bytes needed for TCP trial decryption.
+	SnapshotForClientIP(clientIP net.IP) (int, []*list.Element)
 	MarkUsedByClientIP(e *list.Element, clientIP net.IP)
 	// Update replaces the current contents of the CipherList with `contents`,
 	// which is a List of *CipherEntry.  Update takes ownership of `contents`,
 	// which must not be read or written after this call.
-	Update(contents *list.List)
+	Update(contents *list.List) error
 }
 
 type cipherList struct {
 	CipherList
-	list *list.List
-	mu   sync.RWMutex
+	list         *list.List
+	mu           sync.RWMutex
+	tcpTrialSize int
 }
 
 // NewCipherList creates an empty CipherList
@@ -116,7 +65,7 @@ func matchesIP(e *list.Element, clientIP net.IP) bool {
 	return clientIP != nil && clientIP.Equal(c.lastClientIP)
 }
 
-func (cl *cipherList) SnapshotForClientIP(clientIP net.IP) []*list.Element {
+func (cl *cipherList) SnapshotForClientIP(clientIP net.IP) (int, []*list.Element) {
 	cl.mu.RLock()
 	defer cl.mu.RUnlock()
 	cipherArray := make([]*list.Element, cl.list.Len())
@@ -135,7 +84,7 @@ func (cl *cipherList) SnapshotForClientIP(clientIP net.IP) []*list.Element {
 			i++
 		}
 	}
-	return cipherArray
+	return cl.tcpTrialSize, cipherArray
 }
 
 func (cl *cipherList) MarkUsedByClientIP(e *list.Element, clientIP net.IP) {
@@ -147,8 +96,53 @@ func (cl *cipherList) MarkUsedByClientIP(e *list.Element, clientIP net.IP) {
 	c.lastClientIP = clientIP
 }
 
-func (cl *cipherList) Update(src *list.List) {
+func tcpHeaderBounds(cipher shadowaead.Cipher) (requires, provides int, err error) {
+	saltSize := cipher.SaltSize()
+
+	aead, err := cipher.Decrypter(make([]byte, saltSize))
+	if err != nil {
+		return
+	}
+
+	if aead.NonceSize() > maxNonceSize {
+		err = fmt.Errorf("Cipher has oversize nonce: %v", cipher)
+		return
+	}
+	overhead := aead.Overhead()
+
+	// We need at least this many bytes to assess whether a TCP stream corresponds
+	// to this cipher.
+	requires = saltSize + 2 + overhead
+	// Any TCP stream for this cipher will deliver at least this many bytes before
+	// requiring the proxy to act.
+	provides = requires + overhead
+	return
+}
+
+func (cl *cipherList) Update(src *list.List) error {
+	maxRequired := 0
+	minProvided := int(math.MaxInt32) // Very large initial value
+	for e := src.Front(); e != nil; e = e.Next() {
+		cipher := e.Value.(*CipherEntry).Cipher
+		requires, provides, err := tcpHeaderBounds(cipher)
+		if err != nil {
+			return err
+		}
+
+		if requires > maxRequired {
+			maxRequired = requires
+		}
+		if provides < minProvided {
+			minProvided = provides
+		}
+	}
+	if maxRequired > minProvided {
+		return fmt.Errorf("List contains incompatible ciphers: %d > %d", maxRequired, minProvided)
+	}
+
 	cl.mu.Lock()
 	cl.list = src
+	cl.tcpTrialSize = maxRequired
 	cl.mu.Unlock()
+	return nil
 }

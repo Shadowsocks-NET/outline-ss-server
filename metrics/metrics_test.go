@@ -19,8 +19,7 @@ func TestMethodsDontPanic(t *testing.T) {
 	}
 	ssMetrics.SetNumAccessKeys(20, 2)
 	ssMetrics.AddOpenTCPConnection("US")
-	ssMetrics.AddTCPCipherSearch(50*time.Microsecond, true)
-	ssMetrics.AddClosedTCPConnection("US", "1", "OK", proxyMetrics, 100*time.Millisecond)
+	ssMetrics.AddClosedTCPConnection("US", "1", "OK", proxyMetrics, 10*time.Millisecond, 100*time.Millisecond)
 	ssMetrics.AddTCPProbe("US", "ERR_CIPHER", "eof", 443, proxyMetrics)
 	ssMetrics.AddUDPPacketFromClient("US", "2", "OK", 10, 20, 10*time.Millisecond)
 	ssMetrics.AddUDPPacketFromTarget("US", "3", "OK", 10, 20)
@@ -64,10 +63,11 @@ func BenchmarkCloseTCP(b *testing.B) {
 	accessKey := "key 1"
 	status := "OK"
 	data := ProxyMetrics{}
+	timeToCipher := time.Microsecond
 	duration := time.Minute
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ssMetrics.AddClosedTCPConnection(clientLocation, accessKey, status, data, duration)
+		ssMetrics.AddClosedTCPConnection(clientLocation, accessKey, status, data, timeToCipher, duration)
 	}
 }
 
@@ -115,13 +115,5 @@ func BenchmarkNAT(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ssMetrics.AddUDPNatEntry()
 		ssMetrics.RemoveUDPNatEntry()
-	}
-}
-
-func BenchmarkTCPCipherSearch(b *testing.B) {
-	ssMetrics := NewPrometheusShadowsocksMetrics(nil, prometheus.NewRegistry())
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ssMetrics.AddTCPCipherSearch(50*time.Microsecond, true)
 	}
 }

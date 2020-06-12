@@ -136,9 +136,6 @@ func (s *ssServer) loadConfig(filename string) error {
 		if !ok {
 			return fmt.Errorf("Only AEAD ciphers are supported. Found %v", keyConfig.Cipher)
 		}
-		if err := shadowsocks.CheckCipher(aead); err != nil {
-			return fmt.Errorf("Cipher is not supported: %v", err)
-		}
 		cipherList.PushBack(&shadowsocks.CipherEntry{ID: keyConfig.ID, Cipher: aead})
 	}
 	for port := range s.ports {
@@ -156,7 +153,9 @@ func (s *ssServer) loadConfig(filename string) error {
 		}
 	}
 	for portNum, cipherList := range portCiphers {
-		s.ports[portNum].cipherList.Update(cipherList)
+		if err := s.ports[portNum].cipherList.Update(cipherList); err != nil {
+			return err
+		}
 	}
 	logger.Infof("Loaded %v access keys", len(config.Keys))
 	s.m.SetNumAccessKeys(len(config.Keys), len(portCiphers))

@@ -55,7 +55,8 @@ func debugUDPAddr(addr net.Addr, template string, val interface{}) {
 func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
-	for ci, entry := range cipherList.SnapshotForClientIP(clientIP) {
+	_, snapshot := cipherList.SnapshotForClientIP(clientIP)
+	for ci, entry := range snapshot {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		buf, err := shadowaead.Unpack(dst, src, cipher)
 		if err != nil {

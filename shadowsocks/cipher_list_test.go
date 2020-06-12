@@ -15,6 +15,7 @@
 package shadowsocks
 
 import (
+	"container/list"
 	"crypto/cipher"
 	"testing"
 
@@ -49,77 +50,40 @@ func (c *fakeCipher) Decrypter(b []byte) (cipher.AEAD, error) {
 }
 
 func TestIncompatibleCiphers(t *testing.T) {
-	smallSalt := &fakeCipher{saltsize: 8, decrypter: &fakeAEAD{overhead: 16, nonceSize: 12}}
-	oddSalt := &fakeCipher{saltsize: 23, decrypter: &fakeAEAD{overhead: 16, nonceSize: 12}}
-	bigSalt := &fakeCipher{saltsize: 64, decrypter: &fakeAEAD{overhead: 16, nonceSize: 12}}
-	smallOverhead := &fakeCipher{saltsize: 8, decrypter: &fakeAEAD{overhead: 8, nonceSize: 12}}
-	bigOverhead := &fakeCipher{saltsize: 8, decrypter: &fakeAEAD{overhead: 8, nonceSize: 12}}
-	bigNonce := &fakeCipher{saltsize: 32, decrypter: &fakeAEAD{overhead: 16, nonceSize: 13}}
-
-	ciphers := [...]shadowaead.Cipher{
-		smallSalt, oddSalt, bigSalt,
-		smallOverhead, bigOverhead,
-		bigNonce,
+	l := list.New()
+	l.PushBack(&CipherEntry{
+		ID:     "short",
+		Cipher: &fakeCipher{saltsize: 5, decrypter: &fakeAEAD{overhead: 3}}})
+	l.PushBack(&CipherEntry{ID: "long", Cipher: &fakeCipher{saltsize: 50, decrypter: &fakeAEAD{overhead: 30}}})
+	cipherList := NewCipherList()
+	err := cipherList.Update(l)
+	if err == nil {
+		t.Error("Expected Update to fail due to incompatible ciphers")
 	}
-	for _, c := range ciphers {
-		if err := CheckCipher(c); err == nil {
-			t.Errorf("Expected error when checking cipher: %v", c)
-		}
+}
+
+func TestMaxNonceSize(t *testing.T) {
+	l := list.New()
+	l.PushBack(&CipherEntry{
+		ID:     "oversize nonce",
+		Cipher: &fakeCipher{saltsize: 5, decrypter: &fakeAEAD{overhead: 3, nonceSize: 13}}})
+	l.PushBack(&CipherEntry{ID: "long", Cipher: &fakeCipher{saltsize: 50, decrypter: &fakeAEAD{overhead: 30}}})
+	cipherList := NewCipherList()
+	err := cipherList.Update(l)
+	if err == nil {
+		t.Error("Expected Update to fail due to oversize nonce")
 	}
 }
 
 func TestCompatibleCiphers(t *testing.T) {
-	smallSalt := &fakeCipher{saltsize: 16, decrypter: &fakeAEAD{overhead: 16, nonceSize: 12}}
-	bigSalt := &fakeCipher{saltsize: 32, decrypter: &fakeAEAD{overhead: 16, nonceSize: 12}}
-	smallNonce := &fakeCipher{saltsize: 16, decrypter: &fakeAEAD{overhead: 16, nonceSize: 10}}
-
-	ciphers := [...]shadowaead.Cipher{smallSalt, bigSalt, smallNonce}
-	for _, c := range ciphers {
-		if err := CheckCipher(c); err != nil {
-			t.Error(err)
-		}
-	}
-}
-
-func TestRealCiphers(t *testing.T) {
-	chacha, err := shadowaead.Chacha20Poly1305(make([]byte, 32))
+	chacha20, _ := shadowaead.Chacha20Poly1305(make([]byte, 32))
+	aes128, _ := shadowaead.AESGCM(make([]byte, 16))
+	l := list.New()
+	l.PushBack(&CipherEntry{ID: "aes128", Cipher: aes128})
+	l.PushBack(&CipherEntry{ID: "chacha20", Cipher: chacha20})
+	cipherList := NewCipherList()
+	err := cipherList.Update(l)
 	if err != nil {
 		t.Error(err)
-	}
-	aes256, err := shadowaead.AESGCM(make([]byte, 32))
-	if err != nil {
-		t.Error(err)
-	}
-	aes192, err := shadowaead.AESGCM(make([]byte, 24))
-	if err != nil {
-		t.Error(err)
-	}
-	aes128, err := shadowaead.AESGCM(make([]byte, 16))
-	if err != nil {
-		t.Error(err)
-	}
-
-	ciphers := [...]shadowaead.Cipher{
-		chacha, aes256, aes192, aes128,
-	}
-	for _, c := range ciphers {
-		if err := CheckCipher(c); err != nil {
-			t.Error(err)
-		}
-	}
-}
-
-func TestTCPHeader(t *testing.T) {
-	for _, s := range supportedSizes {
-		required := s.salt + 2 + s.overhead
-		if required > tcpHeader {
-			t.Error("Cipher requires too many bytes")
-		}
-
-		// Minimum length initial delivery is a complete zero-length chunk
-		provided := required + s.overhead
-		if provided < tcpHeader {
-			t.Error("Cipher doesn't provide enough bytes")
-		}
 	}
 }

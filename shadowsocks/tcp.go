@@ -54,41 +54,41 @@ func debugTCP(cipherID, template string, val interface{}) {
 	}
 }
 
-func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList, m metrics.ShadowsocksMetrics) (string, onet.DuplexConn, []byte, error) {
+func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, onet.DuplexConn, []byte, time.Duration, error) {
 	clientIP := remoteIP(clientConn)
-	ciphers := cipherList.SnapshotForClientIP(clientIP)
-	firstBytes := make([]byte, tcpHeader)
+	// We snapshot the list because it may be modified while we use it.
+	tcpTrialSize, ciphers := cipherList.SnapshotForClientIP(clientIP)
+	firstBytes := make([]byte, tcpTrialSize)
 	if n, err := io.ReadFull(clientConn, firstBytes); err != nil {
-		return "", clientConn, nil, fmt.Errorf("Reading header failed after %d bytes: %v", n, err)
+		return "", clientConn, nil, 0, fmt.Errorf("Reading header failed after %d bytes: %v", n, err)
 	}
 
 	findStartTime := time.Now()
-	entry := findEntry(firstBytes, ciphers)
+	entry, elt := findEntry(firstBytes, ciphers)
 	timeToCipher := time.Now().Sub(findStartTime)
-	if m != nil {
-		m.AddTCPCipherSearch(timeToCipher, entry != nil)
-	}
 	if entry == nil {
-		return "", clientConn, nil, fmt.Errorf("Could not find valid TCP cipher")
+		// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
+		return "", clientConn, nil, timeToCipher, fmt.Errorf("Could not find valid TCP cipher")
 	}
 
 	// Move the active cipher to the front, so that the search is quicker next time.
-	cipherList.MarkUsedByClientIP(entry, clientIP)
-	id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
+	cipherList.MarkUsedByClientIP(elt, clientIP)
+	id, cipher := entry.ID, entry.Cipher
 	ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(firstBytes), clientConn), cipher)
 	ssw := NewShadowsocksWriter(clientConn, cipher)
 	salt := firstBytes[:cipher.SaltSize()]
-	return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), salt, nil
+	return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), salt, timeToCipher, nil
 }
 
-// Implements a trial decryption search.
-func findEntry(firstBytes []byte, ciphers []*list.Element) *list.Element {
+// Implements a trial decryption search.  This assumes that all ciphers are AEAD.
+func findEntry(firstBytes []byte, ciphers []*list.Element) (*CipherEntry, *list.Element) {
 	// Constant of zeroes to use as the start chunk count.
 	zeroCountBuf := [maxNonceSize]byte{}
 	// To hold the decrypted chunk length.
 	chunkLenBuf := [2]byte{}
-	for ci, entry := range ciphers {
-		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
+	for ci, elt := range ciphers {
+		entry := elt.Value.(*CipherEntry)
+		id, cipher := entry.ID, entry.Cipher
 		saltsize := cipher.SaltSize()
 		salt := firstBytes[:saltsize]
 		aead, err := cipher.Decrypter(salt)
@@ -105,9 +105,9 @@ func findEntry(firstBytes []byte, ciphers []*list.Element) *list.Element {
 		}
 		debugTCP(id, "Found cipher at index %d", ci)
 		// Move the active cipher to the front, so that the search is quicker next time.
-		return entry
+		return entry, elt
 	}
-	return nil
+	return nil, nil
 }
 
 type tcpService struct {
@@ -199,6 +199,7 @@ func (s *tcpService) Start() {
 			clientConn.SetReadDeadline(connStart.Add(s.readTimeout))
 			keyID := ""
 			var proxyMetrics metrics.ProxyMetrics
+			var timeToCipher time.Duration
 			clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
 			defer func() {
 				connDuration := time.Now().Sub(connStart)
@@ -207,12 +208,12 @@ func (s *tcpService) Start() {
 					logger.Debugf("TCP Error: %v: %v", connError.Message, connError.Cause)
 					status = connError.Status
 				}
-				s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, connDuration)
+				s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, timeToCipher, connDuration)
 				clientConn.Close() // Closing after the metrics are added aids integration testing.
 				logger.Debugf("Done with status %v, duration %v", status, connDuration)
 			}()
 
-			keyID, clientConn, salt, err := findAccessKey(clientConn, s.ciphers, s.m)
+			keyID, clientConn, salt, timeToCipher, err := findAccessKey(clientConn, s.ciphers)
 
 			if err != nil {
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)

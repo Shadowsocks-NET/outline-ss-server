@@ -56,7 +56,7 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 			b.Fatalf("AcceptTCP failed: %v", err)
 		}
 		b.StartTimer()
-		findAccessKey(clientConn, cipherList, nil)
+		findAccessKey(clientConn, cipherList)
 		b.StopTimer()
 	}
 }
@@ -130,7 +130,8 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		b.Fatal(err)
 	}
 	cipherEntries := [numCiphers]*CipherEntry{}
-	for cipherNumber, element := range cipherList.SnapshotForClientIP(nil) {
+	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	for cipherNumber, element := range snapshot {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
 	}
 	for n := 0; n < b.N; n++ {
@@ -141,7 +142,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		cipher := cipherEntries[cipherNumber].Cipher
 		go NewShadowsocksWriter(writer, cipher).Write(MakeTestPayload(50))
 		b.StartTimer()
-		_, _, _, err := findAccessKey(&c, cipherList, nil)
+		_, _, _, _, err := findAccessKey(&c, cipherList)
 		b.StopTimer()
 		if err != nil {
 			b.Error(err)
@@ -162,7 +163,7 @@ func (m *probeTestMetrics) AddTCPProbe(clientLocation, status, drainResult strin
 	m.probeData = append(m.probeData, data)
 	m.probeStatus = append(m.probeStatus, status)
 }
-func (m *probeTestMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data metrics.ProxyMetrics, duration time.Duration) {
+func (m *probeTestMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data metrics.ProxyMetrics, timeToCipher, duration time.Duration) {
 	m.closeStatus = append(m.closeStatus, status)
 }
 
@@ -172,8 +173,6 @@ func (m *probeTestMetrics) GetLocation(net.Addr) (string, error) {
 func (m *probeTestMetrics) SetNumAccessKeys(numKeys int, numPorts int) {
 }
 func (m *probeTestMetrics) AddOpenTCPConnection(clientLocation string) {
-}
-func (m *probeTestMetrics) AddTCPCipherSearch(timeToCipher time.Duration, foundKey bool) {
 }
 func (m *probeTestMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {
 }
@@ -197,7 +196,8 @@ func TestReplayDefense(t *testing.T) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	s := NewTCPService(listener, cipherList, &replayCache, testMetrics, testTimeout)
-	cipherEntry := cipherList.SnapshotForClientIP(nil)[0].Value.(*CipherEntry)
+	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
 	go NewShadowsocksWriter(writer, cipher).Write([]byte{0})

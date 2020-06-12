@@ -35,8 +35,7 @@ type ShadowsocksMetrics interface {
 
 	// TCP metrics
 	AddOpenTCPConnection(clientLocation string)
-	AddTCPCipherSearch(timeToCipher time.Duration, foundKey bool)
-	AddClosedTCPConnection(clientLocation, accessKey, status string, data ProxyMetrics, duration time.Duration)
+	AddClosedTCPConnection(clientLocation, accessKey, status string, data ProxyMetrics, timeToCipher, duration time.Duration)
 	AddTCPProbe(clientLocation, status, drainResult string, port int, data ProxyMetrics)
 
 	// UDP metrics
@@ -95,7 +94,14 @@ func newShadowsocksMetrics(ipCountryDB *geoip2.Reader) *shadowsocksMetrics {
 				Subsystem: "tcp",
 				Name:      "connection_duration_ms",
 				Help:      "TCP connection duration distributions.",
-				Buckets:   []float64{1, 10, 100, 1e3, 1e4, 1e5, 1e6},
+				Buckets: []float64{
+					100,
+					float64(time.Second.Milliseconds()),
+					float64(time.Minute.Milliseconds()),
+					float64(time.Hour.Milliseconds()),
+					float64(24 * time.Hour.Milliseconds()),     // Day
+					float64(7 * 24 * time.Hour.Milliseconds()), // Week
+				},
 			}, []string{"status"}),
 		dataBytes: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -114,7 +120,7 @@ func newShadowsocksMetrics(ipCountryDB *geoip2.Reader) *shadowsocksMetrics {
 				Namespace: "shadowsocks",
 				Name:      "time_to_cipher_ms",
 				Help:      "Time needed to find the cipher",
-				Buckets:   []float64{1e-3, 1e-2, 1e-1, 1, 10, 100, 1e3},
+				Buckets:   []float64{0.1, 1, 10, 100, 1000},
 			}, []string{"proto", "found_key"}),
 		udpAddedNatEntries: prometheus.NewCounter(
 			prometheus.CounterOpts{
@@ -192,13 +198,15 @@ func (m *shadowsocksMetrics) AddOpenTCPConnection(clientLocation string) {
 	m.tcpOpenConnections.WithLabelValues(clientLocation).Inc()
 }
 
-func (m *shadowsocksMetrics) AddTCPCipherSearch(timeToCipher time.Duration, foundKey bool) {
-	m.timeToCipherMs.WithLabelValues("tcp", fmt.Sprintf("%t", foundKey)).Observe(timeToCipher.Seconds() * 1000)
+// Converts accessKey to "true" or "false"
+func isFound(accessKey string) string {
+	return fmt.Sprintf("%t", accessKey != "")
 }
 
-func (m *shadowsocksMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data ProxyMetrics, duration time.Duration) {
+func (m *shadowsocksMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data ProxyMetrics, timeToCipher, duration time.Duration) {
 	m.tcpClosedConnections.WithLabelValues(clientLocation, status, accessKey).Inc()
 	m.tcpConnectionDurationMs.WithLabelValues(status).Observe(duration.Seconds() * 1000)
+	m.timeToCipherMs.WithLabelValues("tcp", isFound(accessKey)).Observe(timeToCipher.Seconds() * 1000)
 	m.dataBytes.WithLabelValues("c>p", "tcp", clientLocation, status, accessKey).Add(float64(data.ClientProxy))
 	m.dataBytes.WithLabelValues("p>t", "tcp", clientLocation, status, accessKey).Add(float64(data.ProxyTarget))
 	m.dataBytes.WithLabelValues("p<t", "tcp", clientLocation, status, accessKey).Add(float64(data.TargetProxy))
@@ -210,8 +218,7 @@ func (m *shadowsocksMetrics) AddTCPProbe(clientLocation, status, drainResult str
 }
 
 func (m *shadowsocksMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {
-	foundKey := accessKey != ""
-	m.timeToCipherMs.WithLabelValues("udp", fmt.Sprintf("%t", foundKey)).Observe(timeToCipher.Seconds() * 1000)
+	m.timeToCipherMs.WithLabelValues("udp", isFound(accessKey)).Observe(timeToCipher.Seconds() * 1000)
 	m.dataBytes.WithLabelValues("c>p", "udp", clientLocation, status, accessKey).Add(float64(clientProxyBytes))
 	m.dataBytes.WithLabelValues("p>t", "udp", clientLocation, status, accessKey).Add(float64(proxyTargetBytes))
 }
