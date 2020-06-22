@@ -153,7 +153,9 @@ func (s *ssServer) loadConfig(filename string) error {
 		}
 	}
 	for portNum, cipherList := range portCiphers {
-		s.ports[portNum].cipherList.Update(cipherList)
+		if err := s.ports[portNum].cipherList.Update(cipherList); err != nil {
+			return err
+		}
 	}
 	logger.Infof("Loaded %v access keys", len(config.Keys))
 	s.m.SetNumAccessKeys(len(config.Keys), len(portCiphers))

@@ -314,7 +314,8 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 	testBuf := make([]byte, udpBufSize)
 	packets := [numCiphers][]byte{}
 	ips := [numCiphers]net.IP{}
-	for i, element := range cipherList.SnapshotForClientIP(nil) {
+	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	for i, element := range snapshot {
 		packets[i] = make([]byte, 0, udpBufSize)
 		plaintext := MakeTestPayload(50)
 		packets[i], err = shadowaead.Pack(make([]byte, udpBufSize), plaintext, element.Value.(*CipherEntry).Cipher)
@@ -346,7 +347,8 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	}
 	testBuf := make([]byte, udpBufSize)
 	plaintext := MakeTestPayload(50)
-	cipher := cipherList.SnapshotForClientIP(nil)[0].Value.(*CipherEntry).Cipher
+	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	cipher := snapshot[0].Value.(*CipherEntry).Cipher
 	packet, err := shadowaead.Pack(make([]byte, udpBufSize), plaintext, cipher)
 
 	const numIPs = 100 // Must be <256

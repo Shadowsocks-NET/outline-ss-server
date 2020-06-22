@@ -130,7 +130,8 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		b.Fatal(err)
 	}
 	cipherEntries := [numCiphers]*CipherEntry{}
-	for cipherNumber, element := range cipherList.SnapshotForClientIP(nil) {
+	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	for cipherNumber, element := range snapshot {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
 	}
 	for n := 0; n < b.N; n++ {
@@ -141,7 +142,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		cipher := cipherEntries[cipherNumber].Cipher
 		go NewShadowsocksWriter(writer, cipher).Write(MakeTestPayload(50))
 		b.StartTimer()
-		_, _, _, err := findAccessKey(&c, cipherList)
+		_, _, _, _, err := findAccessKey(&c, cipherList)
 		b.StopTimer()
 		if err != nil {
 			b.Error(err)
@@ -195,7 +196,8 @@ func TestReplayDefense(t *testing.T) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	s := NewTCPService(listener, cipherList, &replayCache, testMetrics, testTimeout)
-	cipherEntry := cipherList.SnapshotForClientIP(nil)[0].Value.(*CipherEntry)
+	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
 	go NewShadowsocksWriter(writer, cipher).Write([]byte{0})
