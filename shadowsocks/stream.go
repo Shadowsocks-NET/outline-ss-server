@@ -111,7 +111,9 @@ func (sw *shadowsocksWriter) ReadFrom(r io.Reader) (int64, error) {
 	// Normally we ignore the salt at the beginning of sw.buf.
 	start := saltSize
 	if isZero(sw.counter) {
-		// For the first message, include the salt.
+		// For the first message, include the salt.  Compared to writing the salt
+		// separately, this saves one packet during TCP slow-start and potentially
+		// avoids having a distinctive size for the first packet.
 		start = 0
 	}
 
