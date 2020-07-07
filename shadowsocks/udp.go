@@ -119,7 +119,9 @@ func (s *udpService) Start() {
 					logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 					status = connError.Status
 				}
-				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
+				if s.isRunning {
+					s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
+				}
 			}()
 			clientProxyBytes, clientAddr, err := s.clientConn.ReadFrom(cipherBuf)
 			if err != nil {
@@ -170,6 +172,7 @@ func (s *udpService) Start() {
 				}
 				targetConn = nm.Add(clientAddr, s.clientConn, cipher, udpConn, clientLocation, keyID)
 			}
+			clientLocation = targetConn.clientLocation
 
 			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
