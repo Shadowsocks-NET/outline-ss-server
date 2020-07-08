@@ -109,9 +109,18 @@ func (s *udpService) Start() {
 					debug.PrintStack()
 				}
 			}()
+
+			// Attempt to read an upstream packet.
+			clientProxyBytes, clientAddr, err := s.clientConn.ReadFrom(cipherBuf)
+			if !s.isRunning {
+				return nil // Clean shutdown, ignore the packet or error.
+			}
+
+			// An upstream packet should have been read.  Set up the metrics reporting
+			// for this forwarding event.
 			clientLocation := ""
 			keyID := ""
-			var clientProxyBytes, proxyTargetBytes int
+			var proxyTargetBytes int
 			var timeToCipher time.Duration
 			defer func() {
 				status := "OK"
@@ -121,11 +130,8 @@ func (s *udpService) Start() {
 				}
 				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
 			}()
-			clientProxyBytes, clientAddr, err := s.clientConn.ReadFrom(cipherBuf)
+
 			if err != nil {
-				if !s.isRunning {
-					return nil
-				}
 				return onet.NewConnectionError("ERR_READ", "Failed to read from client", err)
 			}
 			if logger.IsEnabledFor(logging.DEBUG) {
@@ -170,6 +176,7 @@ func (s *udpService) Start() {
 				}
 				targetConn = nm.Add(clientAddr, s.clientConn, cipher, udpConn, clientLocation, keyID)
 			}
+			clientLocation = targetConn.clientLocation
 
 			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature

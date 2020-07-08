@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	logging "github.com/op/go-logging"
 )
@@ -144,6 +145,36 @@ func TestTCPEcho(t *testing.T) {
 	echoListener.Close()
 }
 
+// Metrics about one UDP packet.
+type udpRecord struct {
+	location, accessKey, status string
+	in, out                     int
+}
+
+// Fake metrics implementation for UDP
+type fakeUDPMetrics struct {
+	metrics.ShadowsocksMetrics
+	fakeLocation string
+	up, down     []udpRecord
+	natAdded     int
+}
+
+func (m *fakeUDPMetrics) GetLocation(addr net.Addr) (string, error) {
+	return m.fakeLocation, nil
+}
+func (m *fakeUDPMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {
+	m.up = append(m.up, udpRecord{clientLocation, accessKey, status, clientProxyBytes, proxyTargetBytes})
+}
+func (m *fakeUDPMetrics) AddUDPPacketFromTarget(clientLocation, accessKey, status string, targetProxyBytes, proxyClientBytes int) {
+	m.down = append(m.down, udpRecord{clientLocation, accessKey, status, targetProxyBytes, proxyClientBytes})
+}
+func (m *fakeUDPMetrics) AddUDPNatEntry() {
+	m.natAdded++
+}
+func (m *fakeUDPMetrics) RemoveUDPNatEntry() {
+	// Not tested because it requires waiting for a long timeout.
+}
+
 func TestUDPEcho(t *testing.T) {
 	echoConn := startUDPEchoServer(t)
 
@@ -156,7 +187,7 @@ func TestUDPEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testMetrics := &probeTestMetrics{}
+	testMetrics := &fakeUDPMetrics{fakeLocation: "QQ"}
 	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
 	proxy.(*udpService).checkAllowedIP = allowAll
 	go proxy.Start()
@@ -207,6 +238,38 @@ func TestUDPEcho(t *testing.T) {
 	conn.Close()
 	proxy.Stop()
 	echoConn.Close()
+
+	// Verify that the expected metrics were reported.
+	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	keyID := snapshot[0].Value.(*CipherEntry).ID
+
+	if testMetrics.natAdded != 1 {
+		t.Errorf("Wrong NAT add count: %d", testMetrics.natAdded)
+	}
+	if len(testMetrics.up) != 1 {
+		t.Errorf("Wrong number of packets sent: %v", testMetrics.up)
+	} else {
+		record := testMetrics.up[0]
+		if record.location != "QQ" ||
+			record.accessKey != keyID ||
+			record.status != "OK" ||
+			record.in <= record.out ||
+			record.out != N {
+			t.Errorf("Bad upstream metrics: %v", record)
+		}
+	}
+	if len(testMetrics.down) != 1 {
+		t.Errorf("Wrong number of packets received: %v", testMetrics.down)
+	} else {
+		record := testMetrics.down[0]
+		if record.location != "QQ" ||
+			record.accessKey != keyID ||
+			record.status != "OK" ||
+			record.in != N ||
+			record.out <= record.in {
+			t.Errorf("Bad upstream metrics: %v", record)
+		}
+	}
 }
 
 func BenchmarkTCPThroughput(b *testing.B) {
