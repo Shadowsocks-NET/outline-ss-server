@@ -38,6 +38,28 @@ func TestShadowsocksClient_DialTCP(t *testing.T) {
 	expectEchoPayload(conn, MakeTestPayload(1024), make([]byte, 1024), t)
 }
 
+func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
+	proxyAddr := startShadowsocksTCPEchoProxy(testTargetAddr, t)
+	proxyHost, proxyPort, err := splitHostPortNumber(proxyAddr.String())
+	if err != nil {
+		t.Fatalf("Failed to parse proxy address: %v", err)
+	}
+	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	if err != nil {
+		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
+	}
+	conn, err := d.DialTCP(nil, testTargetAddr)
+	if err != nil {
+		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
+	}
+
+	// Wait for more than 20 milliseconds to ensure that the target
+	// address is sent.
+	time.Sleep(40 * time.Millisecond)
+	// Force the echo server to verify the target address.
+	conn.Close()
+}
+
 func TestShadowsocksClient_ListenUDP(t *testing.T) {
 	proxyAddr := startShadowsocksUDPEchoServer(testTargetAddr, t)
 	proxyHost, proxyPort, err := splitHostPortNumber(proxyAddr.String())

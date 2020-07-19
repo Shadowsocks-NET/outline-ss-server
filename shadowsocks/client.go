@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"time"
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	"github.com/shadowsocks/go-shadowsocks2/core"
@@ -46,6 +47,18 @@ type ssClient struct {
 	cipher    shadowaead.Cipher
 }
 
+// This code contains an optimization to send the initial client payload along with
+// the Shadowsocks handshake.  This saves one packet during connection, and also
+// reduces the distinctiveness of the connection pattern.
+//
+// Normally, the initial payload will be sent as soon as the socket is connected,
+// except for delays due to inter-process communication.  However, some protocols
+// expect the server to send data first, in which case there is no client payload.
+// We therefore use a short delay, longer than any reasonable IPC but similar to
+// typical network latency.  (In an Android emulator, the 90th percentile delay
+// was ~1 ms.)  If no client payload is received by this time, we connect without it.
+const helloWait = 20 * time.Millisecond
+
 func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string) (onet.DuplexConn, error) {
 	socksTargetAddr := socks.ParseAddr(raddr)
 	if socksTargetAddr == nil {
@@ -57,11 +70,14 @@ func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string) (onet.DuplexConn, e
 		return nil, err
 	}
 	ssw := NewShadowsocksWriter(proxyConn, c.cipher)
-	_, err = ssw.Write(socksTargetAddr)
+	_, err = ssw.LazyWrite(socksTargetAddr)
 	if err != nil {
 		proxyConn.Close()
 		return nil, errors.New("Failed to write target address")
 	}
+	time.AfterFunc(helloWait, func() {
+		ssw.Flush()
+	})
 	ssr := NewShadowsocksReader(proxyConn, c.cipher)
 	return onet.WrapConn(proxyConn, ssr, ssw), nil
 }
