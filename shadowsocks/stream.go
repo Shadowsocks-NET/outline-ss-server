@@ -182,18 +182,18 @@ func (sw *shadowsocksWriter) ReadFrom(r io.Reader) (int64, error) {
 		pending := sw.pending
 
 		sw.mu.Unlock()
-		// It's not safe to read into payloadBuf, which may be
-		// modified on the flush thread.
-		// Any size is acceptable here, but this is the largest value
-		// for which a single call to enqueue() is sufficient.
-		readBuf := make([]byte, len(payloadBuf)-pending)
+		saltsize := sw.ssCipher.SaltSize()
+		overhead := sw.aead.Overhead()
+		// The first pending+overhead bytes of payloadBuf are potentially
+		// in use, and may be modified on the flush thread.  Data after
+		// that is safe to use on this thread.
+		readBuf := sw.buf[saltsize+2+overhead+pending+overhead:]
 		var plaintextSize int
 		plaintextSize, err = r.Read(readBuf)
 		written = int64(plaintextSize)
 		sw.mu.Lock()
 
 		sw.enqueue(readBuf[:plaintextSize])
-		readBuf = nil // Release memory before blocking I/O.
 		if flushErr := sw.flush(); flushErr != nil {
 			err = flushErr
 		}

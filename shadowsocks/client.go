@@ -54,10 +54,10 @@ type ssClient struct {
 // Normally, the initial payload will be sent as soon as the socket is connected,
 // except for delays due to inter-process communication.  However, some protocols
 // expect the server to send data first, in which case there is no client payload.
-// We therefore use a short delay, longer than any reasonable IPC but similar to
+// We therefore use a short delay, longer than any reasonable IPC but shorter than
 // typical network latency.  (In an Android emulator, the 90th percentile delay
 // was ~1 ms.)  If no client payload is received by this time, we connect without it.
-const helloWait = 20 * time.Millisecond
+const helloWait = 10 * time.Millisecond
 
 func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string) (onet.DuplexConn, error) {
 	socksTargetAddr := socks.ParseAddr(raddr)
