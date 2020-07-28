@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -171,5 +174,242 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if output.String() != expected {
 		t.Fatalf("Expected output '%v'. Got '%v'", expected, output.String())
+	}
+}
+
+func TestLazyWriteFlush(t *testing.T) {
+	cipher := newTestCipher(t)
+	buf := new(bytes.Buffer)
+	writer := NewShadowsocksWriter(buf, cipher)
+	header := []byte{1, 2, 3, 4}
+	n, err := writer.LazyWrite(header)
+	if n != len(header) {
+		t.Errorf("Wrong write size: %d", n)
+	}
+	if err != nil {
+		t.Errorf("LazyWrite failed: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("LazyWrite isn't lazy: %v", buf.Bytes())
+	}
+	if err = writer.Flush(); err != nil {
+		t.Errorf("Flush failed: %v", err)
+	}
+	len1 := buf.Len()
+	if len1 <= len(header) {
+		t.Errorf("Not enough bytes flushed: %d", len1)
+	}
+
+	// Check that normal writes now work
+	body := []byte{5, 6, 7}
+	n, err = writer.Write(body)
+	if n != len(body) {
+		t.Errorf("Wrong write size: %d", n)
+	}
+	if err != nil {
+		t.Errorf("Write failed: %v", err)
+	}
+	if buf.Len() == len1 {
+		t.Errorf("No write observed")
+	}
+
+	// Verify content arrives in two blocks
+	reader := NewShadowsocksReader(buf, cipher)
+	decrypted := make([]byte, len(header)+len(body))
+	n, err = reader.Read(decrypted)
+	if n != len(header) {
+		t.Errorf("Wrong number of bytes out: %d", n)
+	}
+	if err != nil {
+		t.Errorf("Read failed: %v", err)
+	}
+	if !bytes.Equal(decrypted[:n], header) {
+		t.Errorf("Wrong final content: %v", decrypted)
+	}
+	n, err = reader.Read(decrypted[n:])
+	if n != len(body) {
+		t.Errorf("Wrong number of bytes out: %d", n)
+	}
+	if err != nil {
+		t.Errorf("Read failed: %v", err)
+	}
+	if !bytes.Equal(decrypted[len(header):], body) {
+		t.Errorf("Wrong final content: %v", decrypted)
+	}
+}
+
+func TestLazyWriteConcat(t *testing.T) {
+	cipher := newTestCipher(t)
+	buf := new(bytes.Buffer)
+	writer := NewShadowsocksWriter(buf, cipher)
+	header := []byte{1, 2, 3, 4}
+	n, err := writer.LazyWrite(header)
+	if n != len(header) {
+		t.Errorf("Wrong write size: %d", n)
+	}
+	if err != nil {
+		t.Errorf("LazyWrite failed: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("LazyWrite isn't lazy: %v", buf.Bytes())
+	}
+
+	// Write additional data and flush the header.
+	body := []byte{5, 6, 7}
+	n, err = writer.Write(body)
+	if n != len(body) {
+		t.Errorf("Wrong write size: %d", n)
+	}
+	if err != nil {
+		t.Errorf("Write failed: %v", err)
+	}
+	len1 := buf.Len()
+	if len1 <= len(body)+len(header) {
+		t.Errorf("Not enough bytes flushed: %d", len1)
+	}
+
+	// Flush after write should have no effect
+	if err = writer.Flush(); err != nil {
+		t.Errorf("Flush failed: %v", err)
+	}
+	if buf.Len() != len1 {
+		t.Errorf("Flush should have no effect")
+	}
+
+	// Verify content arrives in one block
+	reader := NewShadowsocksReader(buf, cipher)
+	decrypted := make([]byte, len(body)+len(header))
+	n, err = reader.Read(decrypted)
+	if n != len(decrypted) {
+		t.Errorf("Wrong number of bytes out: %d", n)
+	}
+	if err != nil {
+		t.Errorf("Read failed: %v", err)
+	}
+	if !bytes.Equal(decrypted[:len(header)], header) ||
+		!bytes.Equal(decrypted[len(header):], body) {
+		t.Errorf("Wrong final content: %v", decrypted)
+	}
+}
+
+func TestLazyWriteOversize(t *testing.T) {
+	cipher := newTestCipher(t)
+	buf := new(bytes.Buffer)
+	writer := NewShadowsocksWriter(buf, cipher)
+	N := 25000 // More than one block, less than two.
+	data := make([]byte, N)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	n, err := writer.LazyWrite(data)
+	if n != len(data) {
+		t.Errorf("Wrong write size: %d", n)
+	}
+	if err != nil {
+		t.Errorf("LazyWrite failed: %v", err)
+	}
+	if buf.Len() >= N {
+		t.Errorf("Too much data in first block: %d", buf.Len())
+	}
+	if err = writer.Flush(); err != nil {
+		t.Errorf("Flush failed: %v", err)
+	}
+	if buf.Len() <= N {
+		t.Errorf("Not enough data written after flush: %d", buf.Len())
+	}
+
+	// Verify content
+	reader := NewShadowsocksReader(buf, cipher)
+	decrypted, err := ioutil.ReadAll(reader)
+	if len(decrypted) != N {
+		t.Errorf("Wrong number of bytes out: %d", len(decrypted))
+	}
+	if err != nil {
+		t.Errorf("Read failed: %v", err)
+	}
+	if !bytes.Equal(decrypted, data) {
+		t.Errorf("Wrong final content: %v", decrypted)
+	}
+}
+
+func TestLazyWriteConcurrentFlush(t *testing.T) {
+	cipher := newTestCipher(t)
+	buf := new(bytes.Buffer)
+	writer := NewShadowsocksWriter(buf, cipher)
+	header := []byte{1, 2, 3, 4}
+	n, err := writer.LazyWrite(header)
+	if n != len(header) {
+		t.Errorf("Wrong write size: %d", n)
+	}
+	if err != nil {
+		t.Errorf("LazyWrite failed: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("LazyWrite isn't lazy: %v", buf.Bytes())
+	}
+
+	body := []byte{5, 6, 7}
+	r, w := io.Pipe()
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		n, err := writer.ReadFrom(r)
+		if n != int64(len(body)) {
+			t.Errorf("ReadFrom: Wrong read size %d", n)
+		}
+		if err != nil {
+			t.Errorf("ReadFrom: %v", err)
+		}
+		wg.Done()
+	}()
+
+	// Wait for ReadFrom to start and get blocked.
+	time.Sleep(20 * time.Millisecond)
+
+	// Flush while ReadFrom is blocked.
+	if err := writer.Flush(); err != nil {
+		t.Errorf("Flush error: %v", err)
+	}
+	len1 := buf.Len()
+	if len1 == 0 {
+		t.Errorf("No bytes flushed")
+	}
+
+	// Check that normal writes now work
+	n, err = w.Write(body)
+	if n != len(body) {
+		t.Errorf("Wrong write size: %d", n)
+	}
+	if err != nil {
+		t.Errorf("Write failed: %v", err)
+	}
+	w.Close()
+	wg.Wait()
+	if buf.Len() == len1 {
+		t.Errorf("No write observed")
+	}
+
+	// Verify content arrives in two blocks
+	reader := NewShadowsocksReader(buf, cipher)
+	decrypted := make([]byte, len(header)+len(body))
+	n, err = reader.Read(decrypted)
+	if n != len(header) {
+		t.Errorf("Wrong number of bytes out: %d", n)
+	}
+	if err != nil {
+		t.Errorf("Read failed: %v", err)
+	}
+	if !bytes.Equal(decrypted[:len(header)], header) {
+		t.Errorf("Wrong final content: %v", decrypted)
+	}
+	n, err = reader.Read(decrypted[len(header):])
+	if n != len(body) {
+		t.Errorf("Wrong number of bytes out: %d", n)
+	}
+	if err != nil {
+		t.Errorf("Read failed: %v", err)
+	}
+	if !bytes.Equal(decrypted[len(header):], body) {
+		t.Errorf("Wrong final content: %v", decrypted)
 	}
 }

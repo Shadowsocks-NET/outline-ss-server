@@ -38,6 +38,73 @@ func TestShadowsocksClient_DialTCP(t *testing.T) {
 	expectEchoPayload(conn, MakeTestPayload(1024), make([]byte, 1024), t)
 }
 
+func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
+	proxyAddr := startShadowsocksTCPEchoProxy(testTargetAddr, t)
+	proxyHost, proxyPort, err := splitHostPortNumber(proxyAddr.String())
+	if err != nil {
+		t.Fatalf("Failed to parse proxy address: %v", err)
+	}
+	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	if err != nil {
+		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
+	}
+	conn, err := d.DialTCP(nil, testTargetAddr)
+	if err != nil {
+		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
+	}
+
+	// Wait for more than 10 milliseconds to ensure that the target
+	// address is sent.
+	time.Sleep(20 * time.Millisecond)
+	// Force the echo server to verify the target address.
+	conn.Close()
+}
+
+func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
+	// Set up a listener that verifies no data is sent.
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenTCP failed: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Error(err)
+		}
+		buf := make([]byte, 64)
+		n, err := conn.Read(buf)
+		if n > 0 || err != io.EOF {
+			t.Errorf("Expected EOF, got %v, %v", buf[:n], err)
+		}
+		listener.Close()
+		close(done)
+	}()
+
+	proxyHost, proxyPort, err := splitHostPortNumber(listener.Addr().String())
+	if err != nil {
+		t.Fatalf("Failed to parse proxy address: %v", err)
+	}
+	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	if err != nil {
+		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
+	}
+
+	conn, err := d.DialTCP(nil, testTargetAddr)
+	if err != nil {
+		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
+	}
+
+	// Wait for less than 10 milliseconds to ensure that the target
+	// address is not sent.
+	time.Sleep(1 * time.Millisecond)
+	// Close the connection before the target address is sent.
+	conn.Close()
+	// Wait for the listener to verify the close.
+	<-done
+}
+
 func TestShadowsocksClient_ListenUDP(t *testing.T) {
 	proxyAddr := startShadowsocksUDPEchoServer(testTargetAddr, t)
 	proxyHost, proxyPort, err := splitHostPortNumber(proxyAddr.String())
