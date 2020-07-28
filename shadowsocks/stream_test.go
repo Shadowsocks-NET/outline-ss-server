@@ -183,7 +183,7 @@ func TestLazyWriteFlush(t *testing.T) {
 	writer := NewShadowsocksWriter(buf, cipher)
 	header := []byte{1, 2, 3, 4}
 	n, err := writer.LazyWrite(header)
-	if n != 4 {
+	if n != len(header) {
 		t.Errorf("Wrong write size: %d", n)
 	}
 	if err != nil {
@@ -196,14 +196,14 @@ func TestLazyWriteFlush(t *testing.T) {
 		t.Errorf("Flush failed: %v", err)
 	}
 	len1 := buf.Len()
-	if len1 == 0 {
-		t.Errorf("No bytes flushed")
+	if len1 <= len(header) {
+		t.Errorf("Not enough bytes flushed: %d", len1)
 	}
 
 	// Check that normal writes now work
-	body := []byte{5, 6, 7, 8}
+	body := []byte{5, 6, 7}
 	n, err = writer.Write(body)
-	if n != 4 {
+	if n != len(body) {
 		t.Errorf("Wrong write size: %d", n)
 	}
 	if err != nil {
@@ -215,25 +215,25 @@ func TestLazyWriteFlush(t *testing.T) {
 
 	// Verify content arrives in two blocks
 	reader := NewShadowsocksReader(buf, cipher)
-	decrypted := make([]byte, 8)
+	decrypted := make([]byte, len(header)+len(body))
 	n, err = reader.Read(decrypted)
-	if n != 4 {
+	if n != len(header) {
 		t.Errorf("Wrong number of bytes out: %d", n)
 	}
 	if err != nil {
 		t.Errorf("Read failed: %v", err)
 	}
-	if !bytes.Equal(decrypted[:4], header) {
+	if !bytes.Equal(decrypted[:n], header) {
 		t.Errorf("Wrong final content: %v", decrypted)
 	}
-	n, err = reader.Read(decrypted[4:])
-	if n != 4 {
+	n, err = reader.Read(decrypted[n:])
+	if n != len(body) {
 		t.Errorf("Wrong number of bytes out: %d", n)
 	}
 	if err != nil {
 		t.Errorf("Read failed: %v", err)
 	}
-	if !bytes.Equal(decrypted[4:], body) {
+	if !bytes.Equal(decrypted[len(header):], body) {
 		t.Errorf("Wrong final content: %v", decrypted)
 	}
 }
@@ -244,7 +244,7 @@ func TestLazyWriteConcat(t *testing.T) {
 	writer := NewShadowsocksWriter(buf, cipher)
 	header := []byte{1, 2, 3, 4}
 	n, err := writer.LazyWrite(header)
-	if n != 4 {
+	if n != len(header) {
 		t.Errorf("Wrong write size: %d", n)
 	}
 	if err != nil {
@@ -255,17 +255,17 @@ func TestLazyWriteConcat(t *testing.T) {
 	}
 
 	// Write additional data and flush the header.
-	body := []byte{5, 6, 7, 8}
+	body := []byte{5, 6, 7}
 	n, err = writer.Write(body)
-	if n != 4 {
+	if n != len(body) {
 		t.Errorf("Wrong write size: %d", n)
 	}
 	if err != nil {
 		t.Errorf("Write failed: %v", err)
 	}
 	len1 := buf.Len()
-	if len1 == 0 {
-		t.Errorf("Buffer is still empty")
+	if len1 <= len(body)+len(header) {
+		t.Errorf("Not enough bytes flushed: %d", len1)
 	}
 
 	// Flush after write should have no effect
@@ -278,16 +278,16 @@ func TestLazyWriteConcat(t *testing.T) {
 
 	// Verify content arrives in one block
 	reader := NewShadowsocksReader(buf, cipher)
-	decrypted := make([]byte, 8)
+	decrypted := make([]byte, len(body)+len(header))
 	n, err = reader.Read(decrypted)
-	if n != 8 {
+	if n != len(decrypted) {
 		t.Errorf("Wrong number of bytes out: %d", n)
 	}
 	if err != nil {
 		t.Errorf("Read failed: %v", err)
 	}
-	if !bytes.Equal(decrypted[:4], header) ||
-		!bytes.Equal(decrypted[4:], body) {
+	if !bytes.Equal(decrypted[:len(header)], header) ||
+		!bytes.Equal(decrypted[len(header):], body) {
 		t.Errorf("Wrong final content: %v", decrypted)
 	}
 }
@@ -338,7 +338,7 @@ func TestLazyWriteConcurrentFlush(t *testing.T) {
 	writer := NewShadowsocksWriter(buf, cipher)
 	header := []byte{1, 2, 3, 4}
 	n, err := writer.LazyWrite(header)
-	if n != 4 {
+	if n != len(header) {
 		t.Errorf("Wrong write size: %d", n)
 	}
 	if err != nil {
@@ -348,12 +348,13 @@ func TestLazyWriteConcurrentFlush(t *testing.T) {
 		t.Errorf("LazyWrite isn't lazy: %v", buf.Bytes())
 	}
 
+	body := []byte{5, 6, 7}
 	r, w := io.Pipe()
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
 		n, err := writer.ReadFrom(r)
-		if n != 4 {
+		if n != int64(len(body)) {
 			t.Errorf("ReadFrom: Wrong read size %d", n)
 		}
 		if err != nil {
@@ -375,9 +376,8 @@ func TestLazyWriteConcurrentFlush(t *testing.T) {
 	}
 
 	// Check that normal writes now work
-	body := []byte{5, 6, 7, 8}
 	n, err = w.Write(body)
-	if n != 4 {
+	if n != len(body) {
 		t.Errorf("Wrong write size: %d", n)
 	}
 	if err != nil {
@@ -391,25 +391,25 @@ func TestLazyWriteConcurrentFlush(t *testing.T) {
 
 	// Verify content arrives in two blocks
 	reader := NewShadowsocksReader(buf, cipher)
-	decrypted := make([]byte, 8)
+	decrypted := make([]byte, len(header)+len(body))
 	n, err = reader.Read(decrypted)
-	if n != 4 {
+	if n != len(header) {
 		t.Errorf("Wrong number of bytes out: %d", n)
 	}
 	if err != nil {
 		t.Errorf("Read failed: %v", err)
 	}
-	if !bytes.Equal(decrypted[:4], header) {
+	if !bytes.Equal(decrypted[:len(header)], header) {
 		t.Errorf("Wrong final content: %v", decrypted)
 	}
-	n, err = reader.Read(decrypted[4:])
-	if n != 4 {
+	n, err = reader.Read(decrypted[len(header):])
+	if n != len(body) {
 		t.Errorf("Wrong number of bytes out: %d", n)
 	}
 	if err != nil {
 		t.Errorf("Read failed: %v", err)
 	}
-	if !bytes.Equal(decrypted[4:], body) {
+	if !bytes.Equal(decrypted[len(header):], body) {
 		t.Errorf("Wrong final content: %v", decrypted)
 	}
 }

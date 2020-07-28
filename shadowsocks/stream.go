@@ -42,7 +42,7 @@ type Writer interface {
 	// is filled.
 	LazyWrite(p []byte) (int, error)
 	// Flush sends the pending data, if any.  This method is
-	// thread-safe, but must not be the first method called.
+	// thread-safe.
 	Flush() error
 }
 
