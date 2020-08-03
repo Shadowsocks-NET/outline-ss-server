@@ -28,39 +28,51 @@ import (
 	logging "github.com/op/go-logging"
 )
 
+func init() {
+	logging.SetLevel(logging.INFO, "")
+}
+
 func allowAll(ip net.IP) *onet.ConnectionError {
 	// Allow access to localhost so that we can run integration tests with
 	// an actual destination server.
 	return nil
 }
 
-func startTCPEchoServer(t testing.TB) *net.TCPListener {
+func startTCPEchoServer(t testing.TB) (*net.TCPListener, *sync.WaitGroup) {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
+	var running sync.WaitGroup
+	running.Add(1)
 	go func() {
+		defer running.Done()
 		for {
 			clientConn, err := listener.AcceptTCP()
 			if err != nil {
 				t.Logf("AcceptTCP failed: %v", err)
 				return
 			}
+			running.Add(1)
 			go func() {
+				defer running.Done()
 				io.Copy(clientConn, clientConn)
 				clientConn.Close()
 			}()
 		}
 	}()
-	return listener
+	return listener, &running
 }
 
-func startUDPEchoServer(t testing.TB) *net.UDPConn {
+func startUDPEchoServer(t testing.TB) (*net.UDPConn, *sync.WaitGroup) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("Proxy ListenUDP failed: %v", err)
 	}
+	var running sync.WaitGroup
+	running.Add(1)
 	go func() {
+		defer running.Done()
 		defer conn.Close()
 		buf := make([]byte, udpBufSize)
 		for {
@@ -75,11 +87,11 @@ func startUDPEchoServer(t testing.TB) *net.UDPConn {
 			}
 		}
 	}()
-	return conn
+	return conn, &running
 }
 
 func TestTCPEcho(t *testing.T) {
-	echoListener := startTCPEchoServer(t)
+	echoListener, echoRunning := startTCPEchoServer(t)
 
 	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -93,9 +105,7 @@ func TestTCPEcho(t *testing.T) {
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout)
-	proxy.(*tcpService).checkAllowedIP = allowAll
-	go proxy.Start()
+	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout, allowAll)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
 	if err != nil {
@@ -141,8 +151,9 @@ func TestTCPEcho(t *testing.T) {
 	}
 
 	conn.Close()
-	proxy.Stop()
+	proxy.Close()
 	echoListener.Close()
+	echoRunning.Wait()
 }
 
 // Metrics about one UDP packet.
@@ -176,7 +187,7 @@ func (m *fakeUDPMetrics) RemoveUDPNatEntry() {
 }
 
 func TestUDPEcho(t *testing.T) {
-	echoConn := startUDPEchoServer(t)
+	echoConn, echoRunning := startUDPEchoServer(t)
 
 	proxyConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -188,9 +199,7 @@ func TestUDPEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	testMetrics := &fakeUDPMetrics{fakeLocation: "QQ"}
-	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
-	proxy.(*udpService).checkAllowedIP = allowAll
-	go proxy.Start()
+	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics, allowAll)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
 	if err != nil {
@@ -236,9 +245,11 @@ func TestUDPEcho(t *testing.T) {
 	}
 
 	conn.Close()
-	proxy.Stop()
+	proxy.Close()
 	echoConn.Close()
 
+	echoRunning.Wait()
+	proxy.Wait()
 	// Verify that the expected metrics were reported.
 	_, snapshot := cipherList.SnapshotForClientIP(nil)
 	keyID := snapshot[0].Value.(*CipherEntry).ID
@@ -273,7 +284,7 @@ func TestUDPEcho(t *testing.T) {
 }
 
 func BenchmarkTCPThroughput(b *testing.B) {
-	echoListener := startTCPEchoServer(b)
+	echoListener, echoRunning := startTCPEchoServer(b)
 
 	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -286,9 +297,7 @@ func BenchmarkTCPThroughput(b *testing.B) {
 	}
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	proxy := NewTCPService(proxyListener, cipherList, nil, testMetrics, testTimeout)
-	proxy.(*tcpService).checkAllowedIP = allowAll
-	go proxy.Start()
+	proxy := NewTCPService(proxyListener, cipherList, nil, testMetrics, testTimeout, allowAll)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
 	if err != nil {
@@ -313,10 +322,13 @@ func BenchmarkTCPThroughput(b *testing.B) {
 
 	start := time.Now()
 	b.ResetTimer()
+	var running sync.WaitGroup
+	running.Add(1)
 	go func() {
 		for i := 0; i < b.N; i++ {
 			conn.Write(up)
 		}
+		running.Done()
 	}()
 
 	for i := 0; i < b.N; i++ {
@@ -329,20 +341,20 @@ func BenchmarkTCPThroughput(b *testing.B) {
 	b.ReportMetric(megabits/elapsed.Seconds(), "mbps")
 
 	conn.Close()
-	proxy.Stop()
+	proxy.Close()
 	echoListener.Close()
+	running.Wait()
+	echoRunning.Wait()
 }
 
 func BenchmarkTCPMultiplexing(b *testing.B) {
-	logging.SetLevel(logging.CRITICAL, "")
-
-	echoListener := startTCPEchoServer(b)
+	echoListener, echoRunning := startTCPEchoServer(b)
 
 	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
-	const numKeys = 100
+	const numKeys = 50
 	secrets := MakeTestSecrets(numKeys)
 	cipherList, err := MakeTestCiphers(secrets)
 	if err != nil {
@@ -351,9 +363,7 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 	replayCache := NewReplayCache(MaxCapacity)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout)
-	proxy.(*tcpService).checkAllowedIP = allowAll
-	go proxy.Start()
+	proxy := NewTCPService(proxyListener, cipherList, &replayCache, testMetrics, testTimeout, allowAll)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
 	if err != nil {
@@ -386,32 +396,36 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 			for i := 0; i < k; i++ {
 				conn, err := client.DialTCP(nil, echoListener.Addr().String())
 				if err != nil {
-					b.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
+					b.Errorf("ShadowsocksClient.DialTCP failed: %v", err)
 				}
 
 				const N = 1000
 				buf := make([]byte, N)
 				n, err := conn.Write(buf)
 				if n != N {
-					b.Fatalf("Tried to upload %d bytes, but only sent %d", N, n)
+					b.Errorf("Tried to upload %d bytes, but only sent %d", N, n)
 				}
 				n, err = conn.Read(buf)
 				if n != N {
-					b.Fatalf("Tried to download %d bytes, but only received %d", N, n)
+					b.Errorf("Tried to download %d bytes, but only received %d: %v", N, n, err)
 				}
-				conn.Close()
+				conn.CloseWrite()
+				n, err = conn.Read(buf)
+				if n != 0 || err != io.EOF {
+					b.Errorf("Expected clean close but got %d bytes: %v", n, err)
+				}
 			}
 		}()
 	}
 	wg.Wait()
 
-	proxy.Stop()
+	proxy.Close()
 	echoListener.Close()
+	echoRunning.Wait()
 }
 
 func BenchmarkUDPEcho(b *testing.B) {
-	logging.SetLevel(logging.CRITICAL, "")
-	echoConn := startUDPEchoServer(b)
+	echoConn, echoRunning := startUDPEchoServer(b)
 
 	proxyConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -423,9 +437,7 @@ func BenchmarkUDPEcho(b *testing.B) {
 		b.Fatal(err)
 	}
 	testMetrics := &probeTestMetrics{}
-	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
-	proxy.(*udpService).checkAllowedIP = allowAll
-	go proxy.Start()
+	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics, allowAll)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
 	if err != nil {
@@ -454,13 +466,13 @@ func BenchmarkUDPEcho(b *testing.B) {
 	b.StopTimer()
 
 	conn.Close()
-	proxy.Stop()
+	proxy.Close()
 	echoConn.Close()
+	echoRunning.Wait()
 }
 
 func BenchmarkUDPManyKeys(b *testing.B) {
-	logging.SetLevel(logging.CRITICAL, "")
-	echoConn := startUDPEchoServer(b)
+	echoConn, echoRunning := startUDPEchoServer(b)
 
 	proxyConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -473,9 +485,7 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 		b.Fatal(err)
 	}
 	testMetrics := &probeTestMetrics{}
-	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics)
-	proxy.(*udpService).checkAllowedIP = allowAll
-	go proxy.Start()
+	proxy := NewUDPService(proxyConn, time.Hour, cipherList, testMetrics, allowAll)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
 	if err != nil {
@@ -503,6 +513,7 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 		conn.Close()
 	}
 	b.StopTimer()
-	proxy.Stop()
+	proxy.Close()
 	echoConn.Close()
+	echoRunning.Wait()
 }

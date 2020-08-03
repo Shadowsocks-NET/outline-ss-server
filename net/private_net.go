@@ -45,6 +45,9 @@ func IsPrivateAddress(ip net.IP) bool {
 	return false
 }
 
+// IPPolicy is a type alias for checking if an IP is allowed.
+type IPPolicy = func(net.IP) *ConnectionError
+
 // RequirePublicIP returns an error if the destination IP is not a
 // standard public IP.
 func RequirePublicIP(ip net.IP) *ConnectionError {

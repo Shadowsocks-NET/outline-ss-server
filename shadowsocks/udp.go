@@ -17,6 +17,7 @@ package shadowsocks
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"runtime/debug"
 	"time"
@@ -72,36 +73,43 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 }
 
 type udpService struct {
-	clientConn     net.PacketConn
-	natTimeout     time.Duration
-	ciphers        CipherList
-	m              metrics.ShadowsocksMetrics
-	isRunning      bool
-	checkAllowedIP func(net.IP) *onet.ConnectionError
+	clientConn net.PacketConn
+	running    sync.WaitGroup
 }
 
 // NewUDPService creates a UDPService
-func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: cipherList, m: m, checkAllowedIP: onet.RequirePublicIP}
+func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics, ipPolicy onet.IPPolicy) UDPService {
+	if ipPolicy == nil {
+		ipPolicy = onet.RequirePublicIP
+	}
+	s := &udpService{
+		clientConn: clientConn,
+	}
+	nm := newNATmap(natTimeout, m, &s.running)
+	s.running.Add(1)
+	go s.start(cipherList, m, nm, ipPolicy)
+	return s
 }
 
-// UDPService is a UDP shadowsocks service that can be started and stopped.
+// UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
-	Start()
-	Stop() error
+	io.Closer
+	// Wait blocks until Close has been called and all resources have been cleaned up.
+	Wait()
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
 // We take the ciphers as a pointer because it gets replaced on config updates.
-func (s *udpService) Start() {
+func (s *udpService) start(ciphers CipherList, m metrics.ShadowsocksMetrics, nm *natmap, checkAllowedIP onet.IPPolicy) {
+	defer s.running.Done()
 	defer s.clientConn.Close()
+	defer nm.Close()
 
-	nm := newNATmap(s.natTimeout, s.m)
 	cipherBuf := make([]byte, udpBufSize)
 	textBuf := make([]byte, udpBufSize)
 
-	s.isRunning = true
-	for s.isRunning {
+	closeRequested := false
+	for !closeRequested {
 		func() (connError *onet.ConnectionError) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -112,7 +120,9 @@ func (s *udpService) Start() {
 
 			// Attempt to read an upstream packet.
 			clientProxyBytes, clientAddr, err := s.clientConn.ReadFrom(cipherBuf)
-			if !s.isRunning {
+			neterr, ok := err.(net.Error)
+			if ok && neterr.Timeout() {
+				closeRequested = true
 				return nil // Clean shutdown, ignore the packet or error.
 			}
 
@@ -128,7 +138,7 @@ func (s *udpService) Start() {
 					logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 					status = connError.Status
 				}
-				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
+				m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
 			}()
 
 			if err != nil {
@@ -140,7 +150,7 @@ func (s *udpService) Start() {
 			}
 			unpackStart := time.Now()
 			ip := clientAddr.(*net.UDPAddr).IP
-			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], s.ciphers)
+			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], ciphers)
 			timeToCipher = time.Now().Sub(unpackStart)
 
 			if err != nil {
@@ -156,7 +166,7 @@ func (s *udpService) Start() {
 			if err != nil {
 				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
 			}
-			if err := s.checkAllowedIP(tgtUDPAddr.IP); err != nil {
+			if err := checkAllowedIP(tgtUDPAddr.IP); err != nil {
 				return err
 			}
 
@@ -164,7 +174,7 @@ func (s *udpService) Start() {
 
 			targetConn := nm.Get(clientAddr.String())
 			if targetConn == nil {
-				clientLocation, locErr := s.m.GetLocation(clientAddr)
+				clientLocation, locErr := m.GetLocation(clientAddr)
 				if locErr != nil {
 					logger.Warningf("Failed location lookup: %v", locErr)
 				}
@@ -188,9 +198,12 @@ func (s *udpService) Start() {
 	}
 }
 
-func (s *udpService) Stop() error {
-	s.isRunning = false
-	return s.clientConn.Close()
+func (s *udpService) Close() error {
+	return s.clientConn.SetReadDeadline(time.Now())
+}
+
+func (s *udpService) Wait() {
+	s.running.Wait()
 }
 
 func isDNS(addr net.Addr) bool {
@@ -264,10 +277,11 @@ type natmap struct {
 	keyConn map[string]*natconn
 	timeout time.Duration
 	metrics metrics.ShadowsocksMetrics
+	running *sync.WaitGroup
 }
 
-func newNATmap(timeout time.Duration, sm metrics.ShadowsocksMetrics) *natmap {
-	m := &natmap{metrics: sm}
+func newNATmap(timeout time.Duration, sm metrics.ShadowsocksMetrics, running *sync.WaitGroup) *natmap {
+	m := &natmap{metrics: sm, running: running}
 	m.keyConn = make(map[string]*natconn)
 	m.timeout = timeout
 	return m
@@ -309,14 +323,30 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 	entry := m.set(clientAddr.String(), targetConn, clientLocation)
 
 	m.metrics.AddUDPNatEntry()
+	m.running.Add(1)
 	go func() {
 		timedCopy(clientAddr, clientConn, cipher, entry, keyID, m.metrics)
 		m.metrics.RemoveUDPNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
 		}
+		m.running.Done()
 	}()
 	return entry
+}
+
+func (m *natmap) Close() error {
+	m.Lock()
+	defer m.Unlock()
+
+	var err error
+	now := time.Now()
+	for _, pc := range m.keyConn {
+		if e := pc.SetReadDeadline(now); e != nil {
+			err = e
+		}
+	}
+	return err
 }
 
 // Get the maximum length of the shadowsocks address header by parsing
@@ -336,7 +366,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 	bodyStart := saltSize + maxAddrLen
 
 	expired := false
-	for !expired {
+	for {
 		var bodyLen, proxyClientBytes int
 		connError := func() (connError *onet.ConnectionError) {
 			var (
@@ -389,6 +419,9 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 		if connError != nil {
 			logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 			status = connError.Status
+		}
+		if expired {
+			break
 		}
 		sm.AddUDPPacketFromTarget(targetConn.clientLocation, keyID, status, bodyLen, proxyClientBytes)
 	}

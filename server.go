@@ -84,11 +84,9 @@ func (s *ssServer) startPort(portNum int) error {
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &ssPort{cipherList: shadowsocks.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
-	port.tcpService = shadowsocks.NewTCPService(listener, port.cipherList, &s.replayCache, s.m, tcpReadTimeout)
-	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, port.cipherList, s.m)
+	port.tcpService = shadowsocks.NewTCPService(listener, port.cipherList, &s.replayCache, s.m, tcpReadTimeout, nil)
+	port.udpService = shadowsocks.NewUDPService(packetConn, s.natTimeout, port.cipherList, s.m, nil)
 	s.ports[portNum] = port
-	go port.udpService.Start()
-	go port.tcpService.Start()
 	return nil
 }
 
@@ -97,8 +95,8 @@ func (s *ssServer) removePort(portNum int) error {
 	if !ok {
 		return fmt.Errorf("Port %v doesn't exist", portNum)
 	}
-	tcpErr := port.tcpService.Stop()
-	udpErr := port.udpService.Stop()
+	tcpErr := port.tcpService.Close()
+	udpErr := port.udpService.Close()
 	delete(s.ports, portNum)
 	if tcpErr != nil {
 		return fmt.Errorf("Failed to close listener on %v: %v", portNum, tcpErr)
