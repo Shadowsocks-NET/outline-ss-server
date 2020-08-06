@@ -186,6 +186,8 @@ func (s *tcpService) Serve(listener *net.TCPListener) error {
 	s.running.Add(1)
 	s.mu.Unlock()
 
+	port := listener.Addr().(*net.TCPAddr).Port
+
 	defer s.running.Done()
 	for {
 		var clientConn onet.DuplexConn
@@ -239,11 +241,11 @@ func (s *tcpService) Serve(listener *net.TCPListener) error {
 			if err != nil {
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
 				const status = "ERR_CIPHER"
-				s.absorbProbe(listener, clientConn, clientLocation, status, &proxyMetrics)
+				s.absorbProbe(port, clientConn, clientLocation, status, &proxyMetrics)
 				return onet.NewConnectionError(status, "Failed to find a valid cipher", err)
 			} else if !s.replayCache.Add(keyID, salt) { // Only check the cache if findAccessKey succeeded.
 				const status = "ERR_REPLAY"
-				s.absorbProbe(listener, clientConn, clientLocation, status, &proxyMetrics)
+				s.absorbProbe(port, clientConn, clientLocation, status, &proxyMetrics)
 				logger.Debugf("Replay: %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
 				return onet.NewConnectionError(status, "Replay detected", nil)
 			}
@@ -257,10 +259,9 @@ func (s *tcpService) Serve(listener *net.TCPListener) error {
 
 // Keep the connection open until we hit the authentication deadline to protect against probing attacks
 // `proxyMetrics` is a pointer because its value is being mutated by `clientConn`.
-func (s *tcpService) absorbProbe(listener *net.TCPListener, clientConn io.ReadCloser, clientLocation, status string, proxyMetrics *metrics.ProxyMetrics) {
+func (s *tcpService) absorbProbe(port int, clientConn io.ReadCloser, clientLocation, status string, proxyMetrics *metrics.ProxyMetrics) {
 	_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
 	drainResult := drainErrToString(drainErr)
-	port := listener.Addr().(*net.TCPAddr).Port
 	logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
 	s.m.AddTCPProbe(clientLocation, status, drainResult, port, *proxyMetrics)
 }

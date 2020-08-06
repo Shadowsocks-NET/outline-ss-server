@@ -29,6 +29,7 @@ jobs:
             curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
             dep ensure
         fi
+        # Download GeoIP test data from MaxMind
         git submodule update --init
 
     - name: Build
