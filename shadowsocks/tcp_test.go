@@ -200,7 +200,7 @@ func TestReplayDefense(t *testing.T) {
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	s := NewTCPService(listener, cipherList, &replayCache, testMetrics, testTimeout, nil)
+	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
 	_, snapshot := cipherList.SnapshotForClientIP(nil)
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
@@ -223,6 +223,8 @@ func TestReplayDefense(t *testing.T) {
 		return conn
 	}
 
+	go s.Serve(listener)
+
 	// First run.
 	conn1 := run()
 	if len(testMetrics.probeData) != 0 {
@@ -243,8 +245,7 @@ func TestReplayDefense(t *testing.T) {
 	conn2.Read(make([]byte, 1))
 
 	conn1.Close()
-	s.Close()
-	s.Wait()
+	s.GracefulStop()
 
 	if len(testMetrics.probeData) == 1 {
 		data := testMetrics.probeData[0]
@@ -288,7 +289,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 		t.Fatal(err)
 	}
 	testMetrics := &probeTestMetrics{}
-	s := NewTCPService(listener, cipherList, nil, testMetrics, testTimeout, nil)
+	s := NewTCPService(cipherList, nil, testMetrics, testTimeout)
 
 	testPayload := MakeTestPayload(payloadSize)
 	done := make(chan bool)
@@ -315,9 +316,9 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 		}
 	}()
 
+	go s.Serve(listener)
 	<-done
-	s.Close()
-	s.Wait()
+	s.GracefulStop()
 
 	if len(testMetrics.probeData) == 1 {
 		data := testMetrics.probeData[0]
@@ -342,5 +343,57 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 		}
 	} else {
 		t.Error("Bad handshake should have reported an error status")
+	}
+}
+
+func TestTCPMultiserve(t *testing.T) {
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayCache := NewReplayCache(5)
+	testMetrics := &probeTestMetrics{}
+	const testTimeout = 200 * time.Millisecond
+	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
+
+	var running sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		if err != nil {
+			t.Fatalf("ListenTCP failed: %v", err)
+		}
+		running.Add(1)
+		go func() {
+			if err := s.Serve(listener); err != nil {
+				t.Error(err)
+			}
+			running.Done()
+		}()
+	}
+	if err := s.Stop(); err != nil {
+		t.Error(err)
+	}
+	running.Wait()
+}
+
+func TestTCPEarlyStop(t *testing.T) {
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayCache := NewReplayCache(5)
+	testMetrics := &probeTestMetrics{}
+	const testTimeout = 200 * time.Millisecond
+	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
+
+	if err := s.Stop(); err != nil {
+		t.Error(err)
+	}
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenTCP failed: %v", err)
+	}
+	if err := s.Serve(listener); err != nil {
+		t.Error(err)
 	}
 }

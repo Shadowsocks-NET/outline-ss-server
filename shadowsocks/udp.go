@@ -17,7 +17,6 @@ package shadowsocks
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"runtime/debug"
 	"time"
@@ -73,43 +72,52 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 }
 
 type udpService struct {
-	clientConn net.PacketConn
-	running    sync.WaitGroup
+	mu             sync.RWMutex // Protects .listeners and .stopped
+	listeners      []net.PacketConn
+	stopped        bool
+	natTimeout     time.Duration
+	ciphers        CipherList
+	m              metrics.ShadowsocksMetrics
+	running        sync.WaitGroup
+	checkAllowedIP func(net.IP) *onet.ConnectionError
 }
 
 // NewUDPService creates a UDPService
-func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics, ipPolicy onet.IPPolicy) UDPService {
-	if ipPolicy == nil {
-		ipPolicy = onet.RequirePublicIP
-	}
-	s := &udpService{
-		clientConn: clientConn,
-	}
-	nm := newNATmap(natTimeout, m, &s.running)
-	s.running.Add(1)
-	go s.start(cipherList, m, nm, ipPolicy)
-	return s
+func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
+	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, checkAllowedIP: onet.RequirePublicIP}
 }
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
-	io.Closer
-	// Wait blocks until Close has been called and all resources have been cleaned up.
-	Wait()
+	// Serve adopts the listener, and will not return until it is closed by Stop().
+	Serve(listener net.PacketConn)
+	// Stop closes the listener and prevents further forwarding of packets.
+	Stop() error
+	// GracefulStop calls Stop(), and then blocks until all resources have been cleaned up.
+	GracefulStop() error
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
 // We take the ciphers as a pointer because it gets replaced on config updates.
-func (s *udpService) start(ciphers CipherList, m metrics.ShadowsocksMetrics, nm *natmap, checkAllowedIP onet.IPPolicy) {
+func (s *udpService) Serve(clientConn net.PacketConn) {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		clientConn.Close()
+		return
+	}
+	s.listeners = append(s.listeners, clientConn)
+	s.running.Add(1)
+	s.mu.Unlock()
 	defer s.running.Done()
-	defer s.clientConn.Close()
-	defer nm.Close()
 
+	nm := newNATmap(s.natTimeout, s.m, &s.running)
+	defer nm.Close()
 	cipherBuf := make([]byte, udpBufSize)
 	textBuf := make([]byte, udpBufSize)
 
-	closeRequested := false
-	for !closeRequested {
+	stopped := false
+	for !stopped {
 		func() (connError *onet.ConnectionError) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -119,11 +127,14 @@ func (s *udpService) start(ciphers CipherList, m metrics.ShadowsocksMetrics, nm 
 			}()
 
 			// Attempt to read an upstream packet.
-			clientProxyBytes, clientAddr, err := s.clientConn.ReadFrom(cipherBuf)
-			neterr, ok := err.(net.Error)
-			if ok && neterr.Timeout() {
-				closeRequested = true
-				return nil // Clean shutdown, ignore the packet or error.
+			clientProxyBytes, clientAddr, err := clientConn.ReadFrom(cipherBuf)
+			if err != nil {
+				s.mu.RLock()
+				stopped = s.stopped
+				s.mu.RUnlock()
+				if stopped {
+					return nil
+				}
 			}
 
 			// An upstream packet should have been read.  Set up the metrics reporting
@@ -138,7 +149,7 @@ func (s *udpService) start(ciphers CipherList, m metrics.ShadowsocksMetrics, nm 
 					logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 					status = connError.Status
 				}
-				m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
+				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
 			}()
 
 			if err != nil {
@@ -150,7 +161,7 @@ func (s *udpService) start(ciphers CipherList, m metrics.ShadowsocksMetrics, nm 
 			}
 			unpackStart := time.Now()
 			ip := clientAddr.(*net.UDPAddr).IP
-			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], ciphers)
+			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], s.ciphers)
 			timeToCipher = time.Now().Sub(unpackStart)
 
 			if err != nil {
@@ -166,7 +177,7 @@ func (s *udpService) start(ciphers CipherList, m metrics.ShadowsocksMetrics, nm 
 			if err != nil {
 				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
 			}
-			if err := checkAllowedIP(tgtUDPAddr.IP); err != nil {
+			if err := s.checkAllowedIP(tgtUDPAddr.IP); err != nil {
 				return err
 			}
 
@@ -174,7 +185,7 @@ func (s *udpService) start(ciphers CipherList, m metrics.ShadowsocksMetrics, nm 
 
 			targetConn := nm.Get(clientAddr.String())
 			if targetConn == nil {
-				clientLocation, locErr := m.GetLocation(clientAddr)
+				clientLocation, locErr := s.m.GetLocation(clientAddr)
 				if locErr != nil {
 					logger.Warningf("Failed location lookup: %v", locErr)
 				}
@@ -184,7 +195,7 @@ func (s *udpService) start(ciphers CipherList, m metrics.ShadowsocksMetrics, nm 
 				if err != nil {
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
-				targetConn = nm.Add(clientAddr, s.clientConn, cipher, udpConn, clientLocation, keyID)
+				targetConn = nm.Add(clientAddr, clientConn, cipher, udpConn, clientLocation, keyID)
 			}
 			clientLocation = targetConn.clientLocation
 
@@ -198,12 +209,24 @@ func (s *udpService) start(ciphers CipherList, m metrics.ShadowsocksMetrics, nm 
 	}
 }
 
-func (s *udpService) Close() error {
-	return s.clientConn.SetReadDeadline(time.Now())
+func (s *udpService) Stop() error {
+	s.mu.Lock()
+	var err error
+	for _, l := range s.listeners {
+		if e := l.Close(); e != nil {
+			err = e
+		}
+	}
+	s.stopped = true
+	s.listeners = nil
+	s.mu.Unlock()
+	return err
 }
 
-func (s *udpService) Wait() {
+func (s *udpService) GracefulStop() error {
+	err := s.Stop()
 	s.running.Wait()
+	return err
 }
 
 func isDNS(addr net.Addr) bool {
