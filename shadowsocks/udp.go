@@ -72,8 +72,8 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 }
 
 type udpService struct {
-	mu             sync.RWMutex // Protects .listeners and .stopped
-	listeners      []net.PacketConn
+	mu             sync.RWMutex // Protects .clientConn and .stopped
+	clientConn     net.PacketConn
 	stopped        bool
 	natTimeout     time.Duration
 	ciphers        CipherList
@@ -89,9 +89,9 @@ func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.Sh
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
-	// Serve adopts the listener, and will not return until it is closed by Stop().
-	Serve(listener net.PacketConn)
-	// Stop closes the listener and prevents further forwarding of packets.
+	// Serve adopts the clientConn, and will not return until it is closed by Stop().
+	Serve(clientConn net.PacketConn) error
+	// Stop closes the clientConn and prevents further forwarding of packets.
 	Stop() error
 	// GracefulStop calls Stop(), and then blocks until all resources have been cleaned up.
 	GracefulStop() error
@@ -99,14 +99,18 @@ type UDPService interface {
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
 // We take the ciphers as a pointer because it gets replaced on config updates.
-func (s *udpService) Serve(clientConn net.PacketConn) {
+func (s *udpService) Serve(clientConn net.PacketConn) error {
 	s.mu.Lock()
-	if s.stopped {
+	if s.clientConn != nil {
 		s.mu.Unlock()
 		clientConn.Close()
-		return
+		return errors.New("Serve can only be called once")
 	}
-	s.listeners = append(s.listeners, clientConn)
+	if s.stopped {
+		s.mu.Unlock()
+		return clientConn.Close()
+	}
+	s.clientConn = clientConn
 	s.running.Add(1)
 	s.mu.Unlock()
 	defer s.running.Done()
@@ -207,20 +211,17 @@ func (s *udpService) Serve(clientConn net.PacketConn) {
 			return nil
 		}()
 	}
+	return nil
 }
 
 func (s *udpService) Stop() error {
 	s.mu.Lock()
-	var err error
-	for _, l := range s.listeners {
-		if e := l.Close(); e != nil {
-			err = e
-		}
-	}
+	defer s.mu.Unlock()
 	s.stopped = true
-	s.listeners = nil
-	s.mu.Unlock()
-	return err
+	if s.clientConn == nil {
+		return nil
+	}
+	return s.clientConn.Close()
 }
 
 func (s *udpService) GracefulStop() error {

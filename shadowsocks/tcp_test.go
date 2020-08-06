@@ -346,7 +346,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 	}
 }
 
-func TestTCPMultiserve(t *testing.T) {
+func TestTCPDoubleServe(t *testing.T) {
 	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
@@ -356,24 +356,29 @@ func TestTCPMultiserve(t *testing.T) {
 	const testTimeout = 200 * time.Millisecond
 	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
 
-	var running sync.WaitGroup
-	for i := 0; i < 5; i++ {
+	c := make(chan error)
+	for i := 0; i < 2; i++ {
 		listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 		if err != nil {
 			t.Fatalf("ListenTCP failed: %v", err)
 		}
-		running.Add(1)
 		go func() {
-			if err := s.Serve(listener); err != nil {
-				t.Error(err)
+			err := s.Serve(listener)
+			if err != nil {
+				c <- err
+				close(c)
 			}
-			running.Done()
 		}()
 	}
+
+	err = <-c
+	if err == nil {
+		t.Error("Expected an error from one of the two Serve calls")
+	}
+
 	if err := s.Stop(); err != nil {
 		t.Error(err)
 	}
-	running.Wait()
 }
 
 func TestTCPEarlyStop(t *testing.T) {

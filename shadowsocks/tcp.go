@@ -17,6 +17,7 @@ package shadowsocks
 import (
 	"bytes"
 	"container/list"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -113,7 +114,7 @@ func findEntry(firstBytes []byte, ciphers []*list.Element) (*CipherEntry, *list.
 
 type tcpService struct {
 	mu          sync.RWMutex // Protects .listeners and .stopped
-	listeners   []*net.TCPListener
+	listener    *net.TCPListener
 	stopped     bool
 	ciphers     CipherList
 	m           metrics.ShadowsocksMetrics
@@ -178,11 +179,16 @@ func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetr
 
 func (s *tcpService) Serve(listener *net.TCPListener) error {
 	s.mu.Lock()
+	if s.listener != nil {
+		s.mu.Unlock()
+		listener.Close()
+		return errors.New("Serve can only be called once")
+	}
 	if s.stopped {
 		s.mu.Unlock()
 		return listener.Close()
 	}
-	s.listeners = append(s.listeners, listener)
+	s.listener = listener
 	s.running.Add(1)
 	s.mu.Unlock()
 
@@ -280,16 +286,12 @@ func drainErrToString(drainErr error) string {
 
 func (s *tcpService) Stop() error {
 	s.mu.Lock()
-	var err error
-	for _, l := range s.listeners {
-		if e := l.Close(); e != nil {
-			err = e
-		}
-	}
+	defer s.mu.Unlock()
 	s.stopped = true
-	s.listeners = nil
-	s.mu.Unlock()
-	return err
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Close()
 }
 
 func (s *tcpService) GracefulStop() error {

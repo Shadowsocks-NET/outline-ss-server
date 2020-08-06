@@ -367,7 +367,7 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	}
 }
 
-func TestUDPMultiserve(t *testing.T) {
+func TestUDPDoubleServe(t *testing.T) {
 	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
@@ -376,22 +376,29 @@ func TestUDPMultiserve(t *testing.T) {
 	const testTimeout = 200 * time.Millisecond
 	s := NewUDPService(testTimeout, cipherList, testMetrics)
 
-	var running sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	c := make(chan error)
+	for i := 0; i < 2; i++ {
+		clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 		if err != nil {
 			t.Fatalf("ListenUDP failed: %v", err)
 		}
-		running.Add(1)
 		go func() {
-			s.Serve(listener)
-			running.Done()
+			err := s.Serve(clientConn)
+			if err != nil {
+				c <- err
+				close(c)
+			}
 		}()
 	}
+
+	err = <-c
+	if err == nil {
+		t.Error("Expected an error from one of the two Serve calls")
+	}
+
 	if err := s.Stop(); err != nil {
 		t.Error(err)
 	}
-	running.Wait()
 }
 
 func TestUDPEarlyStop(t *testing.T) {
@@ -406,9 +413,11 @@ func TestUDPEarlyStop(t *testing.T) {
 	if err := s.Stop(); err != nil {
 		t.Error(err)
 	}
-	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("ListenUDP failed: %v", err)
 	}
-	s.Serve(listener)
+	if err := s.Serve(clientConn); err != nil {
+		t.Error(err)
+	}
 }
