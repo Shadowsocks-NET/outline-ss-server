@@ -72,36 +72,56 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 }
 
 type udpService struct {
+	mu             sync.RWMutex // Protects .clientConn and .stopped
 	clientConn     net.PacketConn
+	stopped        bool
 	natTimeout     time.Duration
 	ciphers        CipherList
 	m              metrics.ShadowsocksMetrics
-	isRunning      bool
+	running        sync.WaitGroup
 	checkAllowedIP func(net.IP) *onet.ConnectionError
 }
 
 // NewUDPService creates a UDPService
-func NewUDPService(clientConn net.PacketConn, natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{clientConn: clientConn, natTimeout: natTimeout, ciphers: cipherList, m: m, checkAllowedIP: onet.RequirePublicIP}
+func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
+	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, checkAllowedIP: onet.RequirePublicIP}
 }
 
-// UDPService is a UDP shadowsocks service that can be started and stopped.
+// UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
-	Start()
+	// Serve adopts the clientConn, and will not return until it is closed by Stop().
+	Serve(clientConn net.PacketConn) error
+	// Stop closes the clientConn and prevents further forwarding of packets.
 	Stop() error
+	// GracefulStop calls Stop(), and then blocks until all resources have been cleaned up.
+	GracefulStop() error
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
 // We take the ciphers as a pointer because it gets replaced on config updates.
-func (s *udpService) Start() {
-	defer s.clientConn.Close()
+func (s *udpService) Serve(clientConn net.PacketConn) error {
+	s.mu.Lock()
+	if s.clientConn != nil {
+		s.mu.Unlock()
+		clientConn.Close()
+		return errors.New("Serve can only be called once")
+	}
+	if s.stopped {
+		s.mu.Unlock()
+		return clientConn.Close()
+	}
+	s.clientConn = clientConn
+	s.running.Add(1)
+	s.mu.Unlock()
+	defer s.running.Done()
 
-	nm := newNATmap(s.natTimeout, s.m)
+	nm := newNATmap(s.natTimeout, s.m, &s.running)
+	defer nm.Close()
 	cipherBuf := make([]byte, udpBufSize)
 	textBuf := make([]byte, udpBufSize)
 
-	s.isRunning = true
-	for s.isRunning {
+	stopped := false
+	for !stopped {
 		func() (connError *onet.ConnectionError) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -111,9 +131,14 @@ func (s *udpService) Start() {
 			}()
 
 			// Attempt to read an upstream packet.
-			clientProxyBytes, clientAddr, err := s.clientConn.ReadFrom(cipherBuf)
-			if !s.isRunning {
-				return nil // Clean shutdown, ignore the packet or error.
+			clientProxyBytes, clientAddr, err := clientConn.ReadFrom(cipherBuf)
+			if err != nil {
+				s.mu.RLock()
+				stopped = s.stopped
+				s.mu.RUnlock()
+				if stopped {
+					return nil
+				}
 			}
 
 			// An upstream packet should have been read.  Set up the metrics reporting
@@ -174,7 +199,7 @@ func (s *udpService) Start() {
 				if err != nil {
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
-				targetConn = nm.Add(clientAddr, s.clientConn, cipher, udpConn, clientLocation, keyID)
+				targetConn = nm.Add(clientAddr, clientConn, cipher, udpConn, clientLocation, keyID)
 			}
 			clientLocation = targetConn.clientLocation
 
@@ -186,11 +211,23 @@ func (s *udpService) Start() {
 			return nil
 		}()
 	}
+	return nil
 }
 
 func (s *udpService) Stop() error {
-	s.isRunning = false
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopped = true
+	if s.clientConn == nil {
+		return nil
+	}
 	return s.clientConn.Close()
+}
+
+func (s *udpService) GracefulStop() error {
+	err := s.Stop()
+	s.running.Wait()
+	return err
 }
 
 func isDNS(addr net.Addr) bool {
@@ -264,10 +301,11 @@ type natmap struct {
 	keyConn map[string]*natconn
 	timeout time.Duration
 	metrics metrics.ShadowsocksMetrics
+	running *sync.WaitGroup
 }
 
-func newNATmap(timeout time.Duration, sm metrics.ShadowsocksMetrics) *natmap {
-	m := &natmap{metrics: sm}
+func newNATmap(timeout time.Duration, sm metrics.ShadowsocksMetrics, running *sync.WaitGroup) *natmap {
+	m := &natmap{metrics: sm, running: running}
 	m.keyConn = make(map[string]*natconn)
 	m.timeout = timeout
 	return m
@@ -309,14 +347,30 @@ func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shad
 	entry := m.set(clientAddr.String(), targetConn, clientLocation)
 
 	m.metrics.AddUDPNatEntry()
+	m.running.Add(1)
 	go func() {
 		timedCopy(clientAddr, clientConn, cipher, entry, keyID, m.metrics)
 		m.metrics.RemoveUDPNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
 		}
+		m.running.Done()
 	}()
 	return entry
+}
+
+func (m *natmap) Close() error {
+	m.Lock()
+	defer m.Unlock()
+
+	var err error
+	now := time.Now()
+	for _, pc := range m.keyConn {
+		if e := pc.SetReadDeadline(now); e != nil {
+			err = e
+		}
+	}
+	return err
 }
 
 // Get the maximum length of the shadowsocks address header by parsing
@@ -336,7 +390,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 	bodyStart := saltSize + maxAddrLen
 
 	expired := false
-	for !expired {
+	for {
 		var bodyLen, proxyClientBytes int
 		connError := func() (connError *onet.ConnectionError) {
 			var (
@@ -389,6 +443,9 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 		if connError != nil {
 			logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 			status = connError.Status
+		}
+		if expired {
+			break
 		}
 		sm.AddUDPPacketFromTarget(targetConn.clientLocation, keyID, status, bodyLen, proxyClientBytes)
 	}

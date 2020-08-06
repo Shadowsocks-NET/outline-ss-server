@@ -17,10 +17,12 @@ package shadowsocks
 import (
 	"bytes"
 	"container/list"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
@@ -111,10 +113,12 @@ func findEntry(firstBytes []byte, ciphers []*list.Element) (*CipherEntry, *list.
 }
 
 type tcpService struct {
+	mu          sync.RWMutex // Protects .listeners and .stopped
 	listener    *net.TCPListener
+	stopped     bool
 	ciphers     CipherList
 	m           metrics.ShadowsocksMetrics
-	isRunning   bool
+	running     sync.WaitGroup
 	readTimeout time.Duration
 	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
 	replayCache    *ReplayCache
@@ -122,9 +126,9 @@ type tcpService struct {
 }
 
 // NewTCPService creates a TCPService
-func NewTCPService(listener *net.TCPListener, ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
+// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
+func NewTCPService(ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
 	return &tcpService{
-		listener:       listener,
 		ciphers:        ciphers,
 		m:              m,
 		readTimeout:    timeout,
@@ -135,12 +139,16 @@ func NewTCPService(listener *net.TCPListener, ciphers CipherList, replayCache *R
 
 // TCPService is a Shadowsocks TCP service that can be started and stopped.
 type TCPService interface {
-	Start()
+	// Serve adopts the listener, which will be closed before Serve returns.  Serve returns an error unless Stop() was called.
+	Serve(listener *net.TCPListener) error
+	// Stop closes the listener but does not interfere with existing connections.
 	Stop() error
+	// GracefulStop calls Stop(), and then blocks until all resources have been cleaned up.
+	GracefulStop() error
 }
 
 // proxyConnection will route the clientConn according to the address read from the connection.
-func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkAllowedIP func(net.IP) *onet.ConnectionError) *onet.ConnectionError {
+func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkAllowedIP onet.IPPolicy) *onet.ConnectionError {
 	tgtAddr, err := socks.ReadAddr(clientConn)
 	if err != nil {
 		return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
@@ -169,19 +177,40 @@ func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetr
 	return nil
 }
 
-func (s *tcpService) Start() {
-	s.isRunning = true
-	for s.isRunning {
+func (s *tcpService) Serve(listener *net.TCPListener) error {
+	s.mu.Lock()
+	if s.listener != nil {
+		s.mu.Unlock()
+		listener.Close()
+		return errors.New("Serve can only be called once")
+	}
+	if s.stopped {
+		s.mu.Unlock()
+		return listener.Close()
+	}
+	s.listener = listener
+	s.running.Add(1)
+	s.mu.Unlock()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	defer s.running.Done()
+	for {
 		var clientConn onet.DuplexConn
-		clientConn, err := s.listener.AcceptTCP()
+		clientConn, err := listener.AcceptTCP()
 		if err != nil {
-			if !s.isRunning {
-				return
+			s.mu.RLock()
+			stopped := s.stopped
+			s.mu.RUnlock()
+			if stopped {
+				return nil
 			}
-			logger.Errorf("Failed to accept: %v", err)
+			return fmt.Errorf("Accept failed: %v", err)
 		}
 
+		s.running.Add(1)
 		go func() (connError *onet.ConnectionError) {
+			defer s.running.Done()
 			clientLocation, err := s.m.GetLocation(clientConn.RemoteAddr())
 			if err != nil {
 				logger.Warningf("Failed location lookup: %v", err)
@@ -218,11 +247,11 @@ func (s *tcpService) Start() {
 			if err != nil {
 				logger.Debugf("Failed to find a valid cipher after reading %v bytes: %v", proxyMetrics.ClientProxy, err)
 				const status = "ERR_CIPHER"
-				s.absorbProbe(clientConn, clientLocation, status, &proxyMetrics)
+				s.absorbProbe(port, clientConn, clientLocation, status, &proxyMetrics)
 				return onet.NewConnectionError(status, "Failed to find a valid cipher", err)
 			} else if !s.replayCache.Add(keyID, salt) { // Only check the cache if findAccessKey succeeded.
 				const status = "ERR_REPLAY"
-				s.absorbProbe(clientConn, clientLocation, status, &proxyMetrics)
+				s.absorbProbe(port, clientConn, clientLocation, status, &proxyMetrics)
 				logger.Debugf("Replay: %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
 				return onet.NewConnectionError(status, "Replay detected", nil)
 			}
@@ -236,10 +265,9 @@ func (s *tcpService) Start() {
 
 // Keep the connection open until we hit the authentication deadline to protect against probing attacks
 // `proxyMetrics` is a pointer because its value is being mutated by `clientConn`.
-func (s *tcpService) absorbProbe(clientConn io.ReadCloser, clientLocation, status string, proxyMetrics *metrics.ProxyMetrics) {
+func (s *tcpService) absorbProbe(port int, clientConn io.ReadCloser, clientLocation, status string, proxyMetrics *metrics.ProxyMetrics) {
 	_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
 	drainResult := drainErrToString(drainErr)
-	port := s.listener.Addr().(*net.TCPAddr).Port
 	logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
 	s.m.AddTCPProbe(clientLocation, status, drainResult, port, *proxyMetrics)
 }
@@ -257,6 +285,17 @@ func drainErrToString(drainErr error) string {
 }
 
 func (s *tcpService) Stop() error {
-	s.isRunning = false
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopped = true
+	if s.listener == nil {
+		return nil
+	}
 	return s.listener.Close()
+}
+
+func (s *tcpService) GracefulStop() error {
+	err := s.Stop()
+	s.running.Wait()
+	return err
 }

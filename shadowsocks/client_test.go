@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,8 +21,8 @@ const (
 )
 
 func TestShadowsocksClient_DialTCP(t *testing.T) {
-	proxyAddr := startShadowsocksTCPEchoProxy(testTargetAddr, t)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxyAddr.String())
+	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, t)
+	proxyHost, proxyPort, err := splitHostPortNumber(proxy.Addr().String())
 	if err != nil {
 		t.Fatalf("Failed to parse proxy address: %v", err)
 	}
@@ -33,14 +34,17 @@ func TestShadowsocksClient_DialTCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
-	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
 	expectEchoPayload(conn, MakeTestPayload(1024), make([]byte, 1024), t)
+	conn.Close()
+
+	proxy.Close()
+	running.Wait()
 }
 
 func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
-	proxyAddr := startShadowsocksTCPEchoProxy(testTargetAddr, t)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxyAddr.String())
+	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, t)
+	proxyHost, proxyPort, err := splitHostPortNumber(proxy.Addr().String())
 	if err != nil {
 		t.Fatalf("Failed to parse proxy address: %v", err)
 	}
@@ -58,6 +62,9 @@ func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	// Force the echo server to verify the target address.
 	conn.Close()
+
+	proxy.Close()
+	running.Wait()
 }
 
 func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
@@ -106,8 +113,8 @@ func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
 }
 
 func TestShadowsocksClient_ListenUDP(t *testing.T) {
-	proxyAddr := startShadowsocksUDPEchoServer(testTargetAddr, t)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxyAddr.String())
+	proxy, running := startShadowsocksUDPEchoServer(testTargetAddr, t)
+	proxyHost, proxyPort, err := splitHostPortNumber(proxy.LocalAddr().String())
 	if err != nil {
 		t.Fatalf("Failed to parse proxy address: %v", err)
 	}
@@ -123,14 +130,17 @@ func TestShadowsocksClient_ListenUDP(t *testing.T) {
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
 	pcrw := &packetConnReadWriter{PacketConn: conn, targetAddr: NewAddr(testTargetAddr, "udp")}
 	expectEchoPayload(pcrw, MakeTestPayload(1024), make([]byte, 1024), t)
+
+	proxy.Close()
+	running.Wait()
 }
 
 func BenchmarkShadowsocksClient_DialTCP(b *testing.B) {
 	b.StopTimer()
 	b.ResetTimer()
 
-	proxyAddr := startShadowsocksTCPEchoProxy(testTargetAddr, b)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxyAddr.String())
+	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, b)
+	proxyHost, proxyPort, err := splitHostPortNumber(proxy.Addr().String())
 	if err != nil {
 		b.Fatalf("Failed to parse proxy address: %v", err)
 	}
@@ -142,7 +152,6 @@ func BenchmarkShadowsocksClient_DialTCP(b *testing.B) {
 	if err != nil {
 		b.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
-	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
 	buf := make([]byte, 1024)
 	for n := 0; n < b.N; n++ {
@@ -151,14 +160,18 @@ func BenchmarkShadowsocksClient_DialTCP(b *testing.B) {
 		expectEchoPayload(conn, payload, buf, b)
 		b.StopTimer()
 	}
+
+	conn.Close()
+	proxy.Close()
+	running.Wait()
 }
 
 func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 	b.StopTimer()
 	b.ResetTimer()
 
-	proxyAddr := startShadowsocksUDPEchoServer(testTargetAddr, b)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxyAddr.String())
+	proxy, running := startShadowsocksUDPEchoServer(testTargetAddr, b)
+	proxyHost, proxyPort, err := splitHostPortNumber(proxy.LocalAddr().String())
 	if err != nil {
 		b.Fatalf("Failed to parse proxy address: %v", err)
 	}
@@ -180,9 +193,12 @@ func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 		expectEchoPayload(pcrw, payload, buf, b)
 		b.StopTimer()
 	}
+
+	proxy.Close()
+	running.Wait()
 }
 
-func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) net.Addr {
+func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Listener, *sync.WaitGroup) {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
@@ -192,14 +208,20 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) net.Addr
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)
 	}
+	var running sync.WaitGroup
+	running.Add(1)
 	go func() {
+		defer running.Done()
 		defer listener.Close()
 		for {
 			clientConn, err := listener.AcceptTCP()
 			if err != nil {
-				t.Fatalf("AcceptTCP failed: %v", err)
+				t.Logf("AcceptTCP failed: %v", err)
+				return
 			}
+			running.Add(1)
 			go func() {
+				defer running.Done()
 				defer clientConn.Close()
 				ssr := NewShadowsocksReader(clientConn, cipher)
 				ssw := NewShadowsocksWriter(clientConn, cipher)
@@ -216,10 +238,10 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) net.Addr
 			}()
 		}
 	}()
-	return listener.Addr()
+	return listener, &running
 }
 
-func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) net.Addr {
+func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Conn, *sync.WaitGroup) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		t.Fatalf("Proxy ListenUDP failed: %v", err)
@@ -231,12 +253,16 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) net.Add
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)
 	}
+	var running sync.WaitGroup
+	running.Add(1)
 	go func() {
+		defer running.Done()
 		defer conn.Close()
 		for {
 			n, clientAddr, err := conn.ReadFromUDP(cipherBuf)
 			if err != nil {
-				t.Fatalf("Failed to read from UDP conn: %v", err)
+				t.Logf("Failed to read from UDP conn: %v", err)
+				return
 			}
 			buf, err := shadowaead.Unpack(clientBuf, cipherBuf[:n], cipher)
 			if err != nil {
@@ -260,7 +286,7 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) net.Add
 			}
 		}
 	}()
-	return conn.LocalAddr()
+	return conn, &running
 }
 
 // io.ReadWriter adapter for net.PacketConn. Used to share code between UDP and TCP tests.

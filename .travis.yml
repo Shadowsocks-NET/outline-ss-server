@@ -4,3 +4,6 @@ language: go
 go:
 - "1.14"
 - "stable"
+
+script:
+ - go test -v -race -bench=. ./... -benchtime=100ms

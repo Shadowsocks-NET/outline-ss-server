@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,14 +96,14 @@ func assertAlmostEqual(t *testing.T, a, b time.Time) {
 }
 
 func TestNATEmpty(t *testing.T) {
-	nat := newNATmap(timeout, &probeTestMetrics{})
+	nat := newNATmap(timeout, &probeTestMetrics{}, &sync.WaitGroup{})
 	if nat.Get("foo") != nil {
 		t.Error("Expected nil value from empty NAT map")
 	}
 }
 
 func setup() (*fakePacketConn, *fakePacketConn, *natconn) {
-	nat := newNATmap(timeout, &probeTestMetrics{})
+	nat := newNATmap(timeout, &probeTestMetrics{}, &sync.WaitGroup{})
 	clientConn := makePacketConn()
 	targetConn := makePacketConn()
 	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
@@ -363,5 +364,60 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 		if err != nil {
 			b.Error(err)
 		}
+	}
+}
+
+func TestUDPDoubleServe(t *testing.T) {
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testMetrics := &probeTestMetrics{}
+	const testTimeout = 200 * time.Millisecond
+	s := NewUDPService(testTimeout, cipherList, testMetrics)
+
+	c := make(chan error)
+	for i := 0; i < 2; i++ {
+		clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		if err != nil {
+			t.Fatalf("ListenUDP failed: %v", err)
+		}
+		go func() {
+			err := s.Serve(clientConn)
+			if err != nil {
+				c <- err
+				close(c)
+			}
+		}()
+	}
+
+	err = <-c
+	if err == nil {
+		t.Error("Expected an error from one of the two Serve calls")
+	}
+
+	if err := s.Stop(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestUDPEarlyStop(t *testing.T) {
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	testMetrics := &probeTestMetrics{}
+	const testTimeout = 200 * time.Millisecond
+	s := NewUDPService(testTimeout, cipherList, testMetrics)
+
+	if err := s.Stop(); err != nil {
+		t.Error(err)
+	}
+	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP failed: %v", err)
+	}
+	if err := s.Serve(clientConn); err != nil {
+		t.Error(err)
 	}
 }
