@@ -42,6 +42,9 @@ import (
 
 var logger *logging.Logger
 
+// Set by goreleaser default ldflags. See https://goreleaser.com/customization/build/
+var version = "dev"
+
 // 59 seconds is most common timeout for servers that do not respond to invalid requests
 const tcpReadTimeout time.Duration = 59 * time.Second
 
@@ -213,6 +216,7 @@ func main() {
 		natTimeout    time.Duration
 		replayHistory int
 		Verbose       bool
+		Version       bool
 	}
 	flag.StringVar(&flags.ConfigFile, "config", "", "Configuration filename")
 	flag.StringVar(&flags.MetricsAddr, "metrics", "", "Address for the Prometheus metrics")
@@ -220,6 +224,7 @@ func main() {
 	flag.DurationVar(&flags.natTimeout, "udptimeout", defaultNatTimeout, "UDP tunnel timeout")
 	flag.IntVar(&flags.replayHistory, "replay_history", 0, "Replay buffer size (# of handshakes)")
 	flag.BoolVar(&flags.Verbose, "verbose", false, "Enables verbose logging output")
+	flag.BoolVar(&flags.Version, "version", false, "The version of the server")
 
 	flag.Parse()
 
@@ -227,6 +232,11 @@ func main() {
 		logging.SetLevel(logging.DEBUG, "")
 	} else {
 		logging.SetLevel(logging.INFO, "")
+	}
+
+	if flags.Version {
+		fmt.Println(version)
+		return
 	}
 
 	if flags.ConfigFile == "" {
@@ -253,6 +263,7 @@ func main() {
 		defer ipCountryDB.Close()
 	}
 	m := metrics.NewPrometheusShadowsocksMetrics(ipCountryDB, prometheus.DefaultRegisterer)
+	m.SetBuildInfo(version)
 	err = runSSServer(flags.ConfigFile, flags.natTimeout, m, flags.replayHistory)
 	if err != nil {
 		logger.Fatal(err)

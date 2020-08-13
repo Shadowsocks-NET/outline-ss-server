@@ -29,6 +29,8 @@ import (
 
 // ShadowsocksMetrics registers metrics for the Shadowsocks service.
 type ShadowsocksMetrics interface {
+	SetBuildInfo(version string)
+
 	GetLocation(net.Addr) (string, error)
 
 	SetNumAccessKeys(numKeys int, numPorts int)
@@ -48,6 +50,7 @@ type ShadowsocksMetrics interface {
 type shadowsocksMetrics struct {
 	ipCountryDB *geoip2.Reader
 
+	buildInfo      *prometheus.GaugeVec
 	accessKeys     prometheus.Gauge
 	ports          prometheus.Gauge
 	dataBytes      *prometheus.CounterVec
@@ -66,6 +69,11 @@ type shadowsocksMetrics struct {
 func newShadowsocksMetrics(ipCountryDB *geoip2.Reader) *shadowsocksMetrics {
 	return &shadowsocksMetrics{
 		ipCountryDB: ipCountryDB,
+		buildInfo: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "shadowsocks",
+			Name:      "build_info",
+			Help:      "Information on the outline-ss-server build",
+		}, []string{"version"}),
 		accessKeys: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: "shadowsocks",
 			Name:      "keys",
@@ -146,7 +154,7 @@ func newShadowsocksMetrics(ipCountryDB *geoip2.Reader) *shadowsocksMetrics {
 func NewPrometheusShadowsocksMetrics(ipCountryDB *geoip2.Reader, registerer prometheus.Registerer) ShadowsocksMetrics {
 	m := newShadowsocksMetrics(ipCountryDB)
 	// TODO: Is it possible to pass where to register the collectors?
-	registerer.MustRegister(m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpProbes, m.tcpClosedConnections, m.tcpConnectionDurationMs,
+	registerer.MustRegister(m.buildInfo, m.accessKeys, m.ports, m.tcpOpenConnections, m.tcpProbes, m.tcpClosedConnections, m.tcpConnectionDurationMs,
 		m.dataBytes, m.timeToCipherMs, m.udpAddedNatEntries, m.udpRemovedNatEntries)
 	return m
 }
@@ -157,6 +165,10 @@ const (
 	localLocation    = "XL"
 	unknownLocation  = "ZZ"
 )
+
+func (m *shadowsocksMetrics) SetBuildInfo(version string) {
+	m.buildInfo.WithLabelValues(version).Set(1)
+}
 
 func (m *shadowsocksMetrics) GetLocation(addr net.Addr) (string, error) {
 	if m.ipCountryDB == nil {
