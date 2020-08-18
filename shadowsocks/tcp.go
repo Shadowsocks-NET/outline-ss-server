@@ -265,7 +265,8 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 		clientConn.SetReadDeadline(time.Time{})
 
 		ssr := NewShadowsocksReader(clientReader, cipher)
-		ssw := NewShadowsocksWriter(clientConn, cipher, &recordingSaltGenerator{saltGenerator: RandomSaltGenerator, replayCache: s.replayCache, keyID: keyID})
+		ssw := NewShadowsocksWriter(clientConn, cipher)
+		ssw.SetSaltGenerator(&recordingSaltGenerator{saltGenerator: RandomSaltGenerator, replayCache: s.replayCache, keyID: keyID})
 		clientConn = onet.WrapConn(clientConn, ssr, ssw)
 		return proxyConnection(clientConn, &proxyMetrics, s.checkAllowedIP)
 	}()
