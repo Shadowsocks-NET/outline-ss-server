@@ -29,6 +29,7 @@ import (
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	logging "github.com/op/go-logging"
 
+	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -56,13 +57,27 @@ func debugTCP(cipherID, template string, val interface{}) {
 	}
 }
 
-func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, onet.DuplexConn, []byte, time.Duration, error) {
-	clientIP := remoteIP(clientConn)
+type recordingSaltGenerator struct {
+	saltGenerator SaltGenerator
+	replayCache   *ReplayCache
+	keyID         string
+}
+
+func (sg *recordingSaltGenerator) GetSalt(salt []byte) error {
+	err := sg.saltGenerator.GetSalt(salt)
+	if err != nil {
+		return err
+	}
+	_ = sg.replayCache.Add(sg.keyID, salt)
+	return nil
+}
+
+func findAccessKey(clientReader io.Reader, clientIP net.IP, cipherList CipherList) (string, shadowaead.Cipher, io.Reader, []byte, time.Duration, error) {
 	// We snapshot the list because it may be modified while we use it.
 	tcpTrialSize, ciphers := cipherList.SnapshotForClientIP(clientIP)
 	firstBytes := make([]byte, tcpTrialSize)
-	if n, err := io.ReadFull(clientConn, firstBytes); err != nil {
-		return "", clientConn, nil, 0, fmt.Errorf("Reading header failed after %d bytes: %v", n, err)
+	if n, err := io.ReadFull(clientReader, firstBytes); err != nil {
+		return "", nil, clientReader, nil, 0, fmt.Errorf("Reading header failed after %d bytes: %v", n, err)
 	}
 
 	findStartTime := time.Now()
@@ -70,16 +85,14 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 	timeToCipher := time.Now().Sub(findStartTime)
 	if entry == nil {
 		// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-		return "", clientConn, nil, timeToCipher, fmt.Errorf("Could not find valid TCP cipher")
+		return "", nil, clientReader, nil, timeToCipher, fmt.Errorf("Could not find valid TCP cipher")
 	}
 
 	// Move the active cipher to the front, so that the search is quicker next time.
 	cipherList.MarkUsedByClientIP(elt, clientIP)
 	id, cipher := entry.ID, entry.Cipher
-	ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(firstBytes), clientConn), cipher)
-	ssw := NewShadowsocksWriter(clientConn, cipher)
 	salt := firstBytes[:cipher.SaltSize()]
-	return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), salt, timeToCipher, nil
+	return id, cipher, io.MultiReader(bytes.NewReader(firstBytes), clientReader), salt, timeToCipher, nil
 }
 
 // Implements a trial decryption search.  This assumes that all ciphers are AEAD.
@@ -234,7 +247,7 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 	clientConn.SetReadDeadline(connStart.Add(s.readTimeout))
 	var proxyMetrics metrics.ProxyMetrics
 	clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
-	keyID, clientConn, salt, timeToCipher, keyErr := findAccessKey(clientConn, s.ciphers)
+	keyID, cipher, clientReader, salt, timeToCipher, keyErr := findAccessKey(clientConn, remoteIP(clientConn), s.ciphers)
 
 	connError := func() *onet.ConnectionError {
 		if keyErr != nil {
@@ -250,6 +263,10 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 		}
 		// Clear the authentication deadline
 		clientConn.SetReadDeadline(time.Time{})
+
+		ssr := NewShadowsocksReader(clientReader, cipher)
+		ssw := NewShadowsocksWriter(clientConn, cipher, &recordingSaltGenerator{saltGenerator: RandomSaltGenerator, replayCache: s.replayCache, keyID: keyID})
+		clientConn = onet.WrapConn(clientConn, ssr, ssw)
 		return proxyConnection(clientConn, &proxyMetrics, s.checkAllowedIP)
 	}()
 

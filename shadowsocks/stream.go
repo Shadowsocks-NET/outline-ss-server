@@ -29,6 +29,24 @@ import (
 // payloadSizeMask is the maximum size of payload in bytes.
 const payloadSizeMask = 0x3FFF // 16*1024 - 1
 
+// SaltGenerator generates unique salts to use in Shadowsocks connections.
+type SaltGenerator interface {
+	// Writes a new salt into the input slice
+	GetSalt(salt []byte) error
+}
+
+// randomSaltGenerator generates a new random salt.
+type randomSaltGenerator struct{}
+
+// GetSalt outputs a random salt.
+func (*randomSaltGenerator) GetSalt(salt []byte) error {
+	_, err := io.ReadFull(rand.Reader, salt)
+	return err
+}
+
+// RandomSaltGenerator is a SaltGenerator that generates a new random salt.
+var RandomSaltGenerator SaltGenerator = &randomSaltGenerator{}
+
 // Writer is an io.Writer that also implements io.ReaderFrom to
 // allow for piping the data without extra allocations and copies.
 // The LazyWrite and Flush methods allow a header to be
@@ -52,9 +70,10 @@ type shadowsocksWriter struct {
 	// else while needFlush could be true.
 	mu sync.Mutex
 	// Indicates that a concurrent flush is currently allowed.
-	needFlush bool
-	writer    io.Writer
-	ssCipher  shadowaead.Cipher
+	needFlush     bool
+	writer        io.Writer
+	ssCipher      shadowaead.Cipher
+	saltGenerator SaltGenerator
 	// Wrapper for input that arrives as a slice.
 	byteWrapper bytes.Reader
 	// Number of plaintext bytes that are currently buffered.
@@ -68,8 +87,11 @@ type shadowsocksWriter struct {
 
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksWriter(writer io.Writer, ssCipher shadowaead.Cipher) Writer {
-	return &shadowsocksWriter{writer: writer, ssCipher: ssCipher}
+func NewShadowsocksWriter(writer io.Writer, ssCipher shadowaead.Cipher, saltGenerator SaltGenerator) Writer {
+	if saltGenerator == nil {
+		saltGenerator = RandomSaltGenerator
+	}
+	return &shadowsocksWriter{writer: writer, ssCipher: ssCipher, saltGenerator: saltGenerator}
 }
 
 // init generates a random salt, sets up the AEAD object and writes
@@ -77,7 +99,7 @@ func NewShadowsocksWriter(writer io.Writer, ssCipher shadowaead.Cipher) Writer {
 func (sw *shadowsocksWriter) init() (err error) {
 	if sw.aead == nil {
 		salt := make([]byte, sw.ssCipher.SaltSize())
-		if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		if err := sw.saltGenerator.GetSalt(salt); err != nil {
 			return fmt.Errorf("failed to generate salt: %v", err)
 		}
 		sw.aead, err = sw.ssCipher.Encrypter(salt)

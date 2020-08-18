@@ -224,7 +224,7 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Lis
 				defer running.Done()
 				defer clientConn.Close()
 				ssr := NewShadowsocksReader(clientConn, cipher)
-				ssw := NewShadowsocksWriter(clientConn, cipher)
+				ssw := NewShadowsocksWriter(clientConn, cipher, RandomSaltGenerator)
 				ssClientConn := onet.WrapConn(clientConn, ssr, ssw)
 
 				tgtAddr, err := socks.ReadAddr(ssClientConn)

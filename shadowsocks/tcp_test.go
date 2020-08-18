@@ -59,8 +59,9 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 		if err != nil {
 			b.Fatalf("AcceptTCP failed: %v", err)
 		}
+		clientIP := clientConn.RemoteAddr().(*net.TCPAddr).IP
 		b.StartTimer()
-		findAccessKey(clientConn, cipherList)
+		findAccessKey(clientConn, clientIP, cipherList)
 		b.StopTimer()
 	}
 }
@@ -139,12 +140,13 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		cipherNumber := byte(n % numCiphers)
 		reader, writer := io.Pipe()
-		addr := &net.TCPAddr{IP: net.IPv4(192, 0, 2, cipherNumber), Port: 54321}
+		clientIP := net.IPv4(192, 0, 2, cipherNumber)
+		addr := &net.TCPAddr{IP: clientIP, Port: 54321}
 		c := conn{clientAddr: addr, reader: reader, writer: writer}
 		cipher := cipherEntries[cipherNumber].Cipher
-		go NewShadowsocksWriter(writer, cipher).Write(MakeTestPayload(50))
+		go NewShadowsocksWriter(writer, cipher, RandomSaltGenerator).Write(MakeTestPayload(50))
 		b.StartTimer()
-		_, _, _, _, err := findAccessKey(&c, cipherList)
+		_, _, _, _, _, err := findAccessKey(&c, clientIP, cipherList)
 		b.StopTimer()
 		if err != nil {
 			b.Error(err)
@@ -205,7 +207,7 @@ func TestReplayDefense(t *testing.T) {
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
-	go NewShadowsocksWriter(writer, cipher).Write([]byte{0})
+	go NewShadowsocksWriter(writer, cipher, RandomSaltGenerator).Write([]byte{0})
 	preamble := make([]byte, 32+2+16)
 	if _, err := io.ReadFull(reader, preamble); err != nil {
 		t.Fatal(err)
