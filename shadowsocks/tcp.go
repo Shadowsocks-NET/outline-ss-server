@@ -57,21 +57,6 @@ func debugTCP(cipherID, template string, val interface{}) {
 	}
 }
 
-type recordingSaltGenerator struct {
-	saltGenerator SaltGenerator
-	replayCache   *ReplayCache
-	keyID         string
-}
-
-func (sg *recordingSaltGenerator) GetSalt(salt []byte) error {
-	err := sg.saltGenerator.GetSalt(salt)
-	if err != nil {
-		return err
-	}
-	_ = sg.replayCache.Add(sg.keyID, salt)
-	return nil
-}
-
 func findAccessKey(clientReader io.Reader, clientIP net.IP, cipherList CipherList) (string, shadowaead.Cipher, io.Reader, []byte, time.Duration, error) {
 	// We snapshot the list because it may be modified while we use it.
 	tcpTrialSize, ciphers := cipherList.SnapshotForClientIP(clientIP)
@@ -255,18 +240,33 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 			const status = "ERR_CIPHER"
 			s.absorbProbe(listenerPort, clientConn, clientLocation, status, &proxyMetrics)
 			return onet.NewConnectionError(status, "Failed to find a valid cipher", keyErr)
-		} else if !s.replayCache.Add(keyID, salt) { // Only check the cache if findAccessKey succeeded.
+		}
+
+		saltGenerator, err := NewServerSaltGenerator(cipher)
+		if err != nil {
+			return onet.NewConnectionError("ERR_SALTGEN", "Failed to construct salt generator", err)
+		}
+
+		isMarked := saltGenerator.IsMarked(salt)
+		// Only check the cache if findAccessKey succeeded and the salt is unmarked.
+		if isMarked || !s.replayCache.Add(keyID, salt) {
 			const status = "ERR_REPLAY"
 			s.absorbProbe(listenerPort, clientConn, clientLocation, status, &proxyMetrics)
-			logger.Debugf("Replay: %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
-			return onet.NewConnectionError(status, "Replay detected", nil)
+			var msg string
+			if isMarked {
+				msg = "Server replay detected"
+			} else {
+				msg = "Client replay detected"
+			}
+			logger.Debugf(msg+": %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
+			return onet.NewConnectionError(status, msg, nil)
 		}
 		// Clear the authentication deadline
 		clientConn.SetReadDeadline(time.Time{})
 
 		ssr := NewShadowsocksReader(clientReader, cipher)
 		ssw := NewShadowsocksWriter(clientConn, cipher)
-		ssw.SetSaltGenerator(&recordingSaltGenerator{saltGenerator: RandomSaltGenerator, replayCache: s.replayCache, keyID: keyID})
+		ssw.SetSaltGenerator(saltGenerator)
 		clientConn = onet.WrapConn(clientConn, ssr, ssw)
 		return proxyConnection(clientConn, &proxyMetrics, s.checkAllowedIP)
 	}()

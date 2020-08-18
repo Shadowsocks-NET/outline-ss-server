@@ -152,11 +152,6 @@ func TestTCPEcho(t *testing.T) {
 		t.Fatal("Echo mismatch")
 	}
 
-	// Check for client and server salts.
-	if len(replayCache.active) != 2 {
-		t.Fatalf("Replay cache has wrong number of salts: %d", len(replayCache.active))
-	}
-
 	conn.Close()
 	proxy.Stop()
 	echoListener.Close()
