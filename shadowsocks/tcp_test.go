@@ -146,7 +146,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		cipher := cipherEntries[cipherNumber].Cipher
 		go NewShadowsocksWriter(writer, cipher).Write(MakeTestPayload(50))
 		b.StartTimer()
-		_, _, _, _, _, err := findAccessKey(&c, clientIP, cipherList)
+		_, _, _, _, err := findAccessKey(&c, clientIP, cipherList)
 		b.StopTimer()
 		if err != nil {
 			b.Error(err)

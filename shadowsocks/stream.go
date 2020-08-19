@@ -17,7 +17,6 @@ package shadowsocks
 import (
 	"bytes"
 	"crypto/cipher"
-	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -28,84 +27,6 @@ import (
 
 // payloadSizeMask is the maximum size of payload in bytes.
 const payloadSizeMask = 0x3FFF // 16*1024 - 1
-
-// SaltGenerator generates unique salts to use in Shadowsocks connections.
-type SaltGenerator interface {
-	// Returns a new salt
-	GetSalt() ([]byte, error)
-}
-
-// randomSaltGenerator generates a new random salt.
-type randomSaltGenerator struct {
-	saltSize int
-}
-
-// ServerSaltGenerator generates unique salts that are secretly marked.
-type ServerSaltGenerator struct {
-	saltSize  int
-	encrypter cipher.AEAD
-}
-
-// GetSalt outputs a random salt.
-func (sg randomSaltGenerator) GetSalt() ([]byte, error) {
-	salt := make([]byte, sg.saltSize)
-	_, err := io.ReadFull(rand.Reader, salt)
-	return salt, err
-}
-
-// Number of bytes of salt to use as a marker.
-const markLen = 4
-
-// Constant to identify this marking scheme.
-var serverIndication = []byte("outline-salt-mark")
-
-func NewServerSaltGenerator(cipher shadowaead.Cipher) (ServerSaltGenerator, error) {
-	saltSize := cipher.SaltSize()
-	zerosalt := make([]byte, saltSize)
-	encrypter, err := cipher.Encrypter(zerosalt)
-	if err != nil {
-		return ServerSaltGenerator{}, err
-	}
-	return ServerSaltGenerator{saltSize, encrypter}, nil
-}
-
-func (sg ServerSaltGenerator) splitSalt(salt []byte) (prefix, mark []byte) {
-	prefixLen := sg.saltSize - markLen
-	prefix = salt[:prefixLen]
-	mark = salt[prefixLen:]
-	return
-}
-
-// getTag takes in a salt prefix and writes out the tag.
-// len(prefix) must be saltSize - markLen
-func (sg ServerSaltGenerator) getTag(prefix []byte) []byte {
-	nonce := make([]byte, sg.encrypter.NonceSize())
-	n := copy(nonce, prefix)
-	plaintext := prefix[n:]
-	encrypted := sg.encrypter.Seal(nil, nonce, plaintext, serverIndication)
-	return encrypted[len(plaintext):]
-}
-
-// GetSalt returns an apparently random salt that can be identified
-// as server-originated by anyone who knows the Shadowsocks key.
-func (sg ServerSaltGenerator) GetSalt() ([]byte, error) {
-	salt := make([]byte, sg.saltSize)
-	prefix, mark := sg.splitSalt(salt)
-	_, err := io.ReadFull(rand.Reader, prefix)
-	if err != nil {
-		return nil, err
-	}
-	tag := sg.getTag(prefix)
-	copy(mark, tag)
-	return salt, nil
-}
-
-// IsMarked returns true if the salt is marked as server-originated.
-func (sg ServerSaltGenerator) IsMarked(salt []byte) bool {
-	prefix, mark := sg.splitSalt(salt)
-	tag := sg.getTag(prefix)
-	return bytes.Equal(tag[:markLen], mark)
-}
 
 // Writer is an io.Writer that also implements io.ReaderFrom to
 // allow for piping the data without extra allocations and copies.
@@ -136,7 +57,7 @@ type Writer struct {
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
 func NewShadowsocksWriter(writer io.Writer, ssCipher shadowaead.Cipher) *Writer {
-	return &Writer{writer: writer, ssCipher: ssCipher, saltGenerator: randomSaltGenerator{ssCipher.SaltSize()}}
+	return &Writer{writer: writer, ssCipher: ssCipher, saltGenerator: RandomSaltGenerator}
 }
 
 // SetSaltGenerator sets the salt generator to be used. Must be called before the first write.
@@ -148,14 +69,15 @@ func (sw *Writer) SetSaltGenerator(saltGenerator SaltGenerator) {
 // the salt to the inner Writer.
 func (sw *Writer) init() (err error) {
 	if sw.aead == nil {
-		salt, err := sw.saltGenerator.GetSalt()
-		if err != nil {
+		salt := make([]byte, sw.ssCipher.SaltSize())
+		if err := sw.saltGenerator.GetSalt(salt); err != nil {
 			return fmt.Errorf("failed to generate salt: %v", err)
 		}
 		sw.aead, err = sw.ssCipher.Encrypter(salt)
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
+		sw.saltGenerator = nil // No longer needed, so release reference.
 		sw.counter = make([]byte, sw.aead.NonceSize())
 		// The maximum length message is the salt (first message only), length, length tag,
 		// payload, and payload tag.

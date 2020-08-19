@@ -30,9 +30,23 @@ const maxNonceSize = 12
 // CipherEntry holds a Cipher with an identifier.
 // The public fields are constant, but lastAddress is mutable under cipherList.mu.
 type CipherEntry struct {
-	ID           string
-	Cipher       shadowaead.Cipher
-	lastClientIP net.IP
+	ID            string
+	Cipher        shadowaead.Cipher
+	SaltGenerator ServerSaltGenerator
+	lastClientIP  net.IP
+}
+
+// MakeCipherEntry constructs a CipherEntry.
+func MakeCipherEntry(id string, cipher shadowaead.Cipher) (CipherEntry, error) {
+	saltGenerator, err := NewServerSaltGenerator(cipher)
+	if err != nil {
+		return CipherEntry{}, err
+	}
+	return CipherEntry{
+		ID:            id,
+		Cipher:        cipher,
+		SaltGenerator: saltGenerator,
+	}, nil
 }
 
 // CipherList is a thread-safe collection of CipherEntry elements that allows for
