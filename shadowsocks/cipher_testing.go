@@ -67,7 +67,6 @@ func MakeTestPayload(size int) []byte {
 type fakeAEAD struct {
 	cipher.AEAD
 	overhead, nonceSize int
-	salt                []byte
 }
 
 func (a *fakeAEAD) NonceSize() int {
