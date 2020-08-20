@@ -67,8 +67,8 @@ func (sg ServerSaltGenerator) splitSalt(salt []byte) (prefix, mark []byte) {
 // len(prefix) must be saltSize - markLen, which must be at least nonceSize.
 // prefix must be random to avoid nonce reuse.
 func (sg ServerSaltGenerator) getTag(prefix []byte) []byte {
-	// Only the first nonceSize bytes are used to compute the tag.
-	// In the event of a nonce collision (p=2^-33 after 2^32 messages),
+	// Only the first nonceSize bytes are used to compute the tag. In the event
+	// of a nonce collision (p=2^-33 after 2^32 messages for nonceSize==12),
 	// the only effect will be to reveal a pattern in the handshakes, not
 	// to reuse the same nonce on different inputs (which can cause more
 	// serious problems: https://www.imperialviolet.org/2015/05/16/aeads.html).
