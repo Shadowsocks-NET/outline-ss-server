@@ -35,6 +35,7 @@ var dnsAddr = net.UDPAddr{IP: []byte{192, 0, 2, 3}, Port: 53}
 var natCipher shadowaead.Cipher
 
 func init() {
+	logging.SetLevel(logging.INFO, "")
 	coreCipher, _ := core.PickCipher(testCipher, nil, "test password")
 	natCipher = coreCipher.(shadowaead.Cipher)
 }
@@ -287,8 +288,6 @@ func TestNATTimeout(t *testing.T) {
 
 // Simulates receiving invalid UDP packets on a server with 100 ciphers.
 func BenchmarkUDPUnpackFail(b *testing.B) {
-	logging.SetLevel(logging.INFO, "")
-
 	cipherList, err := MakeTestCiphers(MakeTestSecrets(100))
 	if err != nil {
 		b.Fatal(err)
@@ -305,8 +304,6 @@ func BenchmarkUDPUnpackFail(b *testing.B) {
 // Simulates receiving valid UDP packets from 100 different users, each with
 // their own cipher and IP address.
 func BenchmarkUDPUnpackRepeat(b *testing.B) {
-	logging.SetLevel(logging.INFO, "")
-
 	const numCiphers = 100 // Must be <256
 	cipherList, err := MakeTestCiphers(MakeTestSecrets(numCiphers))
 	if err != nil {
@@ -340,8 +337,6 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 // Simulates receiving valid UDP packets from 100 different IP addresses,
 // all using the same cipher.
 func BenchmarkUDPUnpackSharedKey(b *testing.B) {
-	logging.SetLevel(logging.INFO, "")
-
 	cipherList, err := MakeTestCiphers(MakeTestSecrets(1)) // One widely shared key
 	if err != nil {
 		b.Fatal(err)
