@@ -16,7 +16,6 @@ package shadowsocks
 
 import (
 	"container/list"
-	"crypto/cipher"
 	"fmt"
 
 	"github.com/shadowsocks/go-shadowsocks2/core"
@@ -44,10 +43,7 @@ func MakeTestCiphers(secrets []string) (CipherList, error) {
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create cipher %v: %v", i, err)
 		}
-		entry, err := MakeCipherEntry(cipherID, cipher.(shadowaead.Cipher))
-		if err != nil {
-			return nil, fmt.Errorf("Failed to create entry: %v", err)
-		}
+		entry := MakeCipherEntry(cipherID, cipher.(shadowaead.Cipher), secrets[i])
 		l.PushBack(&entry)
 	}
 	cipherList := NewCipherList()
@@ -62,45 +58,4 @@ func MakeTestPayload(size int) []byte {
 		payload[i] = byte(i)
 	}
 	return payload
-}
-
-type fakeAEAD struct {
-	cipher.AEAD
-	overhead, nonceSize int
-}
-
-func (a *fakeAEAD) NonceSize() int {
-	return a.nonceSize
-}
-
-func (a *fakeAEAD) Overhead() int {
-	return a.overhead
-}
-
-type fakeCipher struct {
-	keySize  int
-	saltSize int
-	aead     cipher.AEAD
-}
-
-func (c *fakeCipher) KeySize() int {
-	return c.keySize
-}
-
-func (c *fakeCipher) SaltSize() int {
-	return c.saltSize
-}
-
-func (c *fakeCipher) Decrypter(salt []byte) (cipher.AEAD, error) {
-	if len(salt) != c.saltSize {
-		return nil, fmt.Errorf("Wrong salt size: %d != %d", len(salt), c.saltSize)
-	}
-	return c.aead, nil
-}
-
-func (c *fakeCipher) Encrypter(salt []byte) (cipher.AEAD, error) {
-	if len(salt) != c.saltSize {
-		return nil, fmt.Errorf("Wrong salt size: %d != %d", len(salt), c.saltSize)
-	}
-	return c.aead, nil
 }

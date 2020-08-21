@@ -17,9 +17,6 @@ package shadowsocks
 import (
 	"bytes"
 	"testing"
-
-	"github.com/shadowsocks/go-shadowsocks2/core"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
 func TestRandomSaltGenerator(t *testing.T) {
@@ -35,96 +32,11 @@ func TestRandomSaltGenerator(t *testing.T) {
 	}
 }
 
-type mockAEAD struct {
-	fakeAEAD
-	t      *testing.T
-	sealed bool
-	tag    []byte
-}
-
-func (a *mockAEAD) Seal(dst, nonce, plaintext, additionalData []byte) []byte {
-	if len(nonce) != a.NonceSize() {
-		a.t.Errorf("Wrong nonce length: %d != %d", len(nonce), a.NonceSize())
-	}
-	if len(plaintext) != 0 {
-		a.t.Errorf("Wrong plaintext length: %d != 0", len(plaintext))
-	}
-	if !bytes.Equal(additionalData, serverSaltLabel) {
-		a.t.Errorf("Wrong additional data: %v", additionalData)
-	}
-	a.sealed = true
-	dst = append(dst, a.tag...)
-	return dst
-}
-
-// Test that ServerSaltGenerator works as expected using a fake cipher.
-func TestServerSaltFake(t *testing.T) {
-	tag := []byte("1234567890123456")
-	mockCipher := &fakeCipher{
-		saltSize: 32,
-		aead: &mockAEAD{
-			fakeAEAD: fakeAEAD{
-				nonceSize: 12,
-				overhead:  16,
-			},
-			t:   t,
-			tag: tag,
-		},
-	}
-
-	ssg, err := NewServerSaltGenerator(mockCipher)
-	if err != nil {
-		t.Fatal(err)
-	}
-	salt := make([]byte, mockCipher.saltSize)
-	if err := ssg.GetSalt(salt); err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Equal(salt, make([]byte, len(salt))) {
-		t.Error("Salt is zero")
-	}
-	if !bytes.Equal(salt[len(salt)-markLen:], tag[:markLen]) {
-		t.Error("Tag mismatch")
-	}
-	if !ssg.IsServerSalt(salt) {
-		t.Error("Tag was not recognized")
-	}
-
-	// Make another random salt with the same tag
-	salt2 := make([]byte, mockCipher.saltSize)
-	if err := ssg.GetSalt(salt2); err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Equal(salt, salt2) {
-		t.Error("Salts should be different")
-	}
-	if !bytes.Equal(salt2[len(salt2)-markLen:], tag[:markLen]) {
-		t.Error("Tag mismatch")
-	}
-	if !ssg.IsServerSalt(salt2) {
-		t.Error("Tag was not recognized")
-	}
-
-	// Alter tag
-	salt[len(salt)-1]++
-	if ssg.IsServerSalt(salt) {
-		t.Error("Altered tag was still recognized")
-	}
-}
-
 // Test that ServerSaltGenerator recognizes its own salts
 func TestServerSaltRecognized(t *testing.T) {
-	cipher, err := core.PickCipher(testCipher, nil, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead := cipher.(shadowaead.Cipher)
-	ssg, err := NewServerSaltGenerator(aead)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ssg := NewServerSaltGenerator("test")
 
-	salt := make([]byte, aead.SaltSize())
+	salt := make([]byte, 32)
 	if err := ssg.GetSalt(salt); err != nil {
 		t.Fatal(err)
 	}
@@ -135,17 +47,9 @@ func TestServerSaltRecognized(t *testing.T) {
 
 // Test that ServerSaltGenerator doesn't recognize random salts
 func TestServerSaltUnrecognized(t *testing.T) {
-	cipher, err := core.PickCipher(testCipher, nil, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead := cipher.(shadowaead.Cipher)
-	ssg, err := NewServerSaltGenerator(aead)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ssg := NewServerSaltGenerator("test")
 
-	salt := make([]byte, aead.SaltSize())
+	salt := make([]byte, 32)
 	if err := RandomSaltGenerator.GetSalt(salt); err != nil {
 		t.Fatal(err)
 	}
@@ -156,21 +60,13 @@ func TestServerSaltUnrecognized(t *testing.T) {
 
 // Test that ServerSaltGenerator produces different output on each call
 func TestServerSaltDifferent(t *testing.T) {
-	cipher, err := core.PickCipher(testCipher, nil, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead := cipher.(shadowaead.Cipher)
-	ssg, err := NewServerSaltGenerator(aead)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ssg := NewServerSaltGenerator("test")
 
-	salt1 := make([]byte, aead.SaltSize())
+	salt1 := make([]byte, 32)
 	if err := ssg.GetSalt(salt1); err != nil {
 		t.Fatal(err)
 	}
-	salt2 := make([]byte, aead.SaltSize())
+	salt2 := make([]byte, 32)
 	if err := ssg.GetSalt(salt2); err != nil {
 		t.Fatal(err)
 	}
@@ -180,68 +76,17 @@ func TestServerSaltDifferent(t *testing.T) {
 	}
 }
 
-// Test that two ServerSaltGenerators derived from the same cipher
-// produce different outputs and recognize each other's output.
-func TestServerSaltSameCipher(t *testing.T) {
-	cipher, err := core.PickCipher(testCipher, nil, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead := cipher.(shadowaead.Cipher)
-	ssg1, err := NewServerSaltGenerator(aead)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ssg2, err := NewServerSaltGenerator(aead)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	salt1 := make([]byte, aead.SaltSize())
-	if err := ssg1.GetSalt(salt1); err != nil {
-		t.Fatal(err)
-	}
-	salt2 := make([]byte, aead.SaltSize())
-	if err := ssg2.GetSalt(salt2); err != nil {
-		t.Fatal(err)
-	}
-
-	if bytes.Equal(salt1, salt2) {
-		t.Error("salts should be random")
-	}
-
-	if !ssg1.IsServerSalt(salt2) || !ssg2.IsServerSalt(salt1) {
-		t.Error("Cross-recognition failed")
-	}
-}
-
 // Test that two ServerSaltGenerators derived from the same secret
 // produce different outputs and recognize each other's output.
 func TestServerSaltSameSecret(t *testing.T) {
-	cipher1, err := core.PickCipher(testCipher, nil, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead1 := cipher1.(shadowaead.Cipher)
-	cipher2, err := core.PickCipher(testCipher, nil, "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead2 := cipher2.(shadowaead.Cipher)
-	ssg1, err := NewServerSaltGenerator(aead1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ssg2, err := NewServerSaltGenerator(aead2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ssg1 := NewServerSaltGenerator("test")
+	ssg2 := NewServerSaltGenerator("test")
 
-	salt1 := make([]byte, aead1.SaltSize())
+	salt1 := make([]byte, 32)
 	if err := ssg1.GetSalt(salt1); err != nil {
 		t.Fatal(err)
 	}
-	salt2 := make([]byte, aead2.SaltSize())
+	salt2 := make([]byte, 32)
 	if err := ssg2.GetSalt(salt2); err != nil {
 		t.Fatal(err)
 	}
@@ -258,30 +103,14 @@ func TestServerSaltSameSecret(t *testing.T) {
 // Test that two ServerSaltGenerators derived from different secrets
 // do not recognize each other's output.
 func TestServerSaltDifferentCiphers(t *testing.T) {
-	cipher1, err := core.PickCipher(testCipher, nil, "test1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead1 := cipher1.(shadowaead.Cipher)
-	cipher2, err := core.PickCipher(testCipher, nil, "test2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead2 := cipher2.(shadowaead.Cipher)
-	ssg1, err := NewServerSaltGenerator(aead1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ssg2, err := NewServerSaltGenerator(aead2)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ssg1 := NewServerSaltGenerator("test1")
+	ssg2 := NewServerSaltGenerator("test2")
 
-	salt1 := make([]byte, aead1.SaltSize())
+	salt1 := make([]byte, 32)
 	if err := ssg1.GetSalt(salt1); err != nil {
 		t.Fatal(err)
 	}
-	salt2 := make([]byte, aead2.SaltSize())
+	salt2 := make([]byte, 32)
 	if err := ssg2.GetSalt(salt2); err != nil {
 		t.Fatal(err)
 	}
@@ -295,6 +124,34 @@ func TestServerSaltDifferentCiphers(t *testing.T) {
 	}
 }
 
+func TestServerSaltShort(t *testing.T) {
+	ssg := NewServerSaltGenerator("test")
+
+	salt20 := make([]byte, 20)
+	if err := ssg.GetSalt(salt20); err != nil {
+		t.Fatal(err)
+	}
+	if !ssg.IsServerSalt(salt20) {
+		t.Error("Server salt was not recognized")
+	}
+
+	salt19 := make([]byte, 19)
+	if err := ssg.GetSalt(salt19); err != nil {
+		t.Fatal(err)
+	}
+	if ssg.IsServerSalt(salt19) {
+		t.Error("Short salt was marked")
+	}
+
+	salt2 := make([]byte, 2)
+	if err := ssg.GetSalt(salt2); err != nil {
+		t.Fatal(err)
+	}
+	if ssg.IsServerSalt(salt2) {
+		t.Error("Very short salt was marked")
+	}
+}
+
 func BenchmarkRandomSaltGenerator(b *testing.B) {
 	salt := make([]byte, 32)
 	for i := 0; i < b.N; i++ {
@@ -305,23 +162,17 @@ func BenchmarkRandomSaltGenerator(b *testing.B) {
 }
 
 func BenchmarkServerSaltGenerator(b *testing.B) {
-	cipher, err := core.PickCipher(testCipher, nil, "test")
-	if err != nil {
-		b.Fatal(err)
-	}
-	aead := cipher.(shadowaead.Cipher)
-	ssg, err := NewServerSaltGenerator(aead)
-	if err != nil {
-		b.Fatal(err)
-	}
-	salt := make([]byte, aead.SaltSize())
+	ssg := NewServerSaltGenerator("test")
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := ssg.GetSalt(salt); err != nil {
-			b.Fatal(err)
+	b.RunParallel(func(pb *testing.PB) {
+		salt := make([]byte, 32)
+		for pb.Next() {
+			if err := ssg.GetSalt(salt); err != nil {
+				b.Fatal(err)
+			}
+			if !ssg.IsServerSalt(salt) {
+				b.Fatal("Failed to recognize salt")
+			}
 		}
-		if !ssg.IsServerSalt(salt) {
-			b.Fatal("Failed to recognize salt")
-		}
-	}
+	})
 }

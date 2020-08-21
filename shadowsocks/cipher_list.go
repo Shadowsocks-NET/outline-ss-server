@@ -32,21 +32,17 @@ const maxNonceSize = 12
 type CipherEntry struct {
 	ID            string
 	Cipher        shadowaead.Cipher
-	SaltGenerator ServerSaltGenerator
+	SaltGenerator *ServerSaltGenerator
 	lastClientIP  net.IP
 }
 
 // MakeCipherEntry constructs a CipherEntry.
-func MakeCipherEntry(id string, cipher shadowaead.Cipher) (CipherEntry, error) {
-	saltGenerator, err := NewServerSaltGenerator(cipher)
-	if err != nil {
-		return CipherEntry{}, err
-	}
+func MakeCipherEntry(id string, cipher shadowaead.Cipher, secret string) CipherEntry {
 	return CipherEntry{
 		ID:            id,
 		Cipher:        cipher,
-		SaltGenerator: saltGenerator,
-	}, nil
+		SaltGenerator: NewServerSaltGenerator(secret),
+	}
 }
 
 // CipherList is a thread-safe collection of CipherEntry elements that allows for

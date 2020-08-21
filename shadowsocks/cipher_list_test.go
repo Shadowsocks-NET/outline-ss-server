@@ -16,17 +16,45 @@ package shadowsocks
 
 import (
 	"container/list"
+	"crypto/cipher"
 	"testing"
 
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
+type fakeAEAD struct {
+	cipher.AEAD
+	overhead, nonceSize int
+}
+
+func (a *fakeAEAD) NonceSize() int {
+	return a.nonceSize
+}
+
+func (a *fakeAEAD) Overhead() int {
+	return a.overhead
+}
+
+type fakeCipher struct {
+	shadowaead.Cipher
+	saltsize  int
+	decrypter *fakeAEAD
+}
+
+func (c *fakeCipher) SaltSize() int {
+	return c.saltsize
+}
+
+func (c *fakeCipher) Decrypter(b []byte) (cipher.AEAD, error) {
+	return c.decrypter, nil
+}
+
 func TestIncompatibleCiphers(t *testing.T) {
 	l := list.New()
 	l.PushBack(&CipherEntry{
 		ID:     "short",
-		Cipher: &fakeCipher{saltSize: 5, aead: &fakeAEAD{overhead: 3}}})
-	l.PushBack(&CipherEntry{ID: "long", Cipher: &fakeCipher{saltSize: 50, aead: &fakeAEAD{overhead: 30}}})
+		Cipher: &fakeCipher{saltsize: 5, decrypter: &fakeAEAD{overhead: 3}}})
+	l.PushBack(&CipherEntry{ID: "long", Cipher: &fakeCipher{saltsize: 50, decrypter: &fakeAEAD{overhead: 30}}})
 	cipherList := NewCipherList()
 	err := cipherList.Update(l)
 	if err == nil {
@@ -38,8 +66,8 @@ func TestMaxNonceSize(t *testing.T) {
 	l := list.New()
 	l.PushBack(&CipherEntry{
 		ID:     "oversize nonce",
-		Cipher: &fakeCipher{saltSize: 5, aead: &fakeAEAD{overhead: 3, nonceSize: 13}}})
-	l.PushBack(&CipherEntry{ID: "long", Cipher: &fakeCipher{saltSize: 50, aead: &fakeAEAD{overhead: 30}}})
+		Cipher: &fakeCipher{saltsize: 5, decrypter: &fakeAEAD{overhead: 3, nonceSize: 13}}})
+	l.PushBack(&CipherEntry{ID: "long", Cipher: &fakeCipher{saltsize: 50, decrypter: &fakeAEAD{overhead: 30}}})
 	cipherList := NewCipherList()
 	err := cipherList.Update(l)
 	if err == nil {
