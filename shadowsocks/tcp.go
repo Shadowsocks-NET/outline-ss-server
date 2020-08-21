@@ -247,7 +247,7 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 			if isServerSalt {
 				status = "ERR_REPLAY_SERVER"
 			} else {
-				status = "ERR_REPLAY"
+				status = "ERR_REPLAY_CLIENT"
 			}
 			s.absorbProbe(listenerPort, clientConn, clientLocation, status, &proxyMetrics)
 			logger.Debugf(status+": %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)

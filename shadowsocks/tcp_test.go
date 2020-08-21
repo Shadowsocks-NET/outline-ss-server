@@ -255,7 +255,7 @@ func TestReplayDefense(t *testing.T) {
 			t.Errorf("Unexpected probe data: %v", data)
 		}
 		status := testMetrics.probeStatus[0]
-		if status != "ERR_REPLAY" {
+		if status != "ERR_REPLAY_CLIENT" {
 			t.Errorf("Unexpected TCP probe status: %s", status)
 		}
 	} else {
@@ -263,7 +263,69 @@ func TestReplayDefense(t *testing.T) {
 	}
 	if len(testMetrics.closeStatus) == 2 {
 		status := testMetrics.closeStatus[1]
-		if status != "ERR_REPLAY" {
+		if status != "ERR_REPLAY_CLIENT" {
+			t.Errorf("Unexpected TCP close status: %s", status)
+		}
+	} else {
+		t.Error("Replay should have reported an error status")
+	}
+}
+
+func TestReverseReplayDefense(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenTCP failed: %v", err)
+	}
+	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayCache := NewReplayCache(5)
+	testMetrics := &probeTestMetrics{}
+	const testTimeout = 200 * time.Millisecond
+	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
+	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	cipherEntry := snapshot[0].Value.(*CipherEntry)
+	cipher := cipherEntry.Cipher
+	reader, writer := io.Pipe()
+	ssWriter := NewShadowsocksWriter(writer, cipher)
+	// Use a server-marked salt in the client's preamble.
+	ssWriter.SetSaltGenerator(cipherEntry.SaltGenerator)
+	go ssWriter.Write([]byte{0})
+	preamble := make([]byte, 32+2+16)
+	if _, err := io.ReadFull(reader, preamble); err != nil {
+		t.Fatal(err)
+	}
+
+	go s.Serve(listener)
+
+	conn, err := net.Dial(listener.Addr().Network(), listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := conn.Write(preamble)
+	if n < len(preamble) {
+		t.Error(err)
+	}
+	conn.Close()
+	s.GracefulStop()
+
+	// The preamble should have been marked as a server replay.
+	if len(testMetrics.probeData) == 1 {
+		data := testMetrics.probeData[0]
+		if data.ClientProxy != int64(len(preamble)) {
+			t.Errorf("Unexpected probe data: %v", data)
+		}
+		status := testMetrics.probeStatus[0]
+		if status != "ERR_REPLAY_SERVER" {
+			t.Errorf("Unexpected TCP probe status: %s", status)
+		}
+	} else {
+		t.Error("Replay should have triggered probe detection")
+	}
+	if len(testMetrics.closeStatus) == 1 {
+		status := testMetrics.closeStatus[0]
+		if status != "ERR_REPLAY_SERVER" {
 			t.Errorf("Unexpected TCP close status: %s", status)
 		}
 	} else {
