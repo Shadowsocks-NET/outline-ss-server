@@ -30,11 +30,14 @@ func TestRandomSaltGenerator(t *testing.T) {
 	if bytes.Equal(salt, make([]byte, 16)) {
 		t.Error("Salt is all zeros")
 	}
+	if RandomSaltGenerator.IsServerSalt(salt) {
+		t.Error("RandomSaltGenerator.IsServerSalt is always false")
+	}
 }
 
 // Test that ServerSaltGenerator recognizes its own salts
 func TestServerSaltRecognized(t *testing.T) {
-	ssg := NewServerSaltGenerator("test")
+	ssg := NewServerSaltGenerator(&fakeCipher{saltsize: 32}, "test")
 
 	salt := make([]byte, 32)
 	if err := ssg.GetSalt(salt); err != nil {
@@ -47,7 +50,7 @@ func TestServerSaltRecognized(t *testing.T) {
 
 // Test that ServerSaltGenerator doesn't recognize random salts
 func TestServerSaltUnrecognized(t *testing.T) {
-	ssg := NewServerSaltGenerator("test")
+	ssg := NewServerSaltGenerator(&fakeCipher{saltsize: 32}, "test")
 
 	salt := make([]byte, 32)
 	if err := RandomSaltGenerator.GetSalt(salt); err != nil {
@@ -60,7 +63,7 @@ func TestServerSaltUnrecognized(t *testing.T) {
 
 // Test that ServerSaltGenerator produces different output on each call
 func TestServerSaltDifferent(t *testing.T) {
-	ssg := NewServerSaltGenerator("test")
+	ssg := NewServerSaltGenerator(&fakeCipher{saltsize: 32}, "test")
 
 	salt1 := make([]byte, 32)
 	if err := ssg.GetSalt(salt1); err != nil {
@@ -79,8 +82,8 @@ func TestServerSaltDifferent(t *testing.T) {
 // Test that two ServerSaltGenerators derived from the same secret
 // produce different outputs and recognize each other's output.
 func TestServerSaltSameSecret(t *testing.T) {
-	ssg1 := NewServerSaltGenerator("test")
-	ssg2 := NewServerSaltGenerator("test")
+	ssg1 := NewServerSaltGenerator(&fakeCipher{saltsize: 32}, "test")
+	ssg2 := NewServerSaltGenerator(&fakeCipher{saltsize: 32}, "test")
 
 	salt1 := make([]byte, 32)
 	if err := ssg1.GetSalt(salt1); err != nil {
@@ -103,8 +106,8 @@ func TestServerSaltSameSecret(t *testing.T) {
 // Test that two ServerSaltGenerators derived from different secrets
 // do not recognize each other's output.
 func TestServerSaltDifferentCiphers(t *testing.T) {
-	ssg1 := NewServerSaltGenerator("test1")
-	ssg2 := NewServerSaltGenerator("test2")
+	ssg1 := NewServerSaltGenerator(&fakeCipher{saltsize: 32}, "test1")
+	ssg2 := NewServerSaltGenerator(&fakeCipher{saltsize: 32}, "test2")
 
 	salt1 := make([]byte, 32)
 	if err := ssg1.GetSalt(salt1); err != nil {
@@ -125,44 +128,52 @@ func TestServerSaltDifferentCiphers(t *testing.T) {
 }
 
 func TestServerSaltShort(t *testing.T) {
-	ssg := NewServerSaltGenerator("test")
-
+	ssg20 := NewServerSaltGenerator(&fakeCipher{saltsize: 20}, "test")
 	salt20 := make([]byte, 20)
-	if err := ssg.GetSalt(salt20); err != nil {
+	if err := ssg20.GetSalt(salt20); err != nil {
 		t.Fatal(err)
 	}
-	if !ssg.IsServerSalt(salt20) {
+	if !ssg20.IsServerSalt(salt20) {
 		t.Error("Server salt was not recognized")
 	}
 
+	ssg19 := NewServerSaltGenerator(&fakeCipher{saltsize: 19}, "test")
 	salt19 := make([]byte, 19)
-	if err := ssg.GetSalt(salt19); err != nil {
+	if err := ssg19.GetSalt(salt19); err != nil {
 		t.Fatal(err)
 	}
-	if ssg.IsServerSalt(salt19) {
+	if ssg19.IsServerSalt(salt19) {
 		t.Error("Short salt was marked")
 	}
+}
 
-	salt2 := make([]byte, 2)
-	if err := ssg.GetSalt(salt2); err != nil {
-		t.Fatal(err)
+func TestServerSaltWrongSize(t *testing.T) {
+	ssg := NewServerSaltGenerator(&fakeCipher{saltsize: 32}, "test")
+
+	salt33 := make([]byte, 33)
+	if err := ssg.GetSalt(salt33); err == nil {
+		t.Error("Expected error for wrong size salt")
 	}
-	if ssg.IsServerSalt(salt2) {
-		t.Error("Very short salt was marked")
+
+	salt31 := make([]byte, 31)
+	if err := ssg.GetSalt(salt31); err == nil {
+		t.Error("Expected error for wrong size salt")
 	}
 }
 
 func BenchmarkRandomSaltGenerator(b *testing.B) {
-	salt := make([]byte, 32)
-	for i := 0; i < b.N; i++ {
-		if err := RandomSaltGenerator.GetSalt(salt); err != nil {
-			b.Fatal(err)
+	b.RunParallel(func(pb *testing.PB) {
+		salt := make([]byte, 32)
+		for pb.Next() {
+			if err := RandomSaltGenerator.GetSalt(salt); err != nil {
+				b.Fatal(err)
+			}
 		}
-	}
+	})
 }
 
 func BenchmarkServerSaltGenerator(b *testing.B) {
-	ssg := NewServerSaltGenerator("test")
+	ssg := NewServerSaltGenerator(&fakeCipher{saltsize: 32}, "test")
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		salt := make([]byte, 32)

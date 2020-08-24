@@ -32,7 +32,7 @@ const maxNonceSize = 12
 type CipherEntry struct {
 	ID            string
 	Cipher        shadowaead.Cipher
-	SaltGenerator *ServerSaltGenerator
+	SaltGenerator ServerSaltGenerator
 	lastClientIP  net.IP
 }
 
@@ -41,7 +41,7 @@ func MakeCipherEntry(id string, cipher shadowaead.Cipher, secret string) CipherE
 	return CipherEntry{
 		ID:            id,
 		Cipher:        cipher,
-		SaltGenerator: NewServerSaltGenerator(secret),
+		SaltGenerator: NewServerSaltGenerator(cipher, secret),
 	}
 }
 

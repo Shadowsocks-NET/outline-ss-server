@@ -19,8 +19,10 @@ import (
 	"crypto"
 	"crypto/hmac"
 	"crypto/rand"
+	"fmt"
 	"io"
 
+	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -28,6 +30,13 @@ import (
 type SaltGenerator interface {
 	// Returns a new salt
 	GetSalt(salt []byte) error
+}
+
+type ServerSaltGenerator interface {
+	SaltGenerator
+	// IsServerSalt returns true if the salt was created by this generator
+	// and is marked as server-originated.
+	IsServerSalt(salt []byte) bool
 }
 
 // randomSaltGenerator generates a new random salt.
@@ -39,12 +48,17 @@ func (randomSaltGenerator) GetSalt(salt []byte) error {
 	return err
 }
 
-// RandomSaltGenerator is a basic SaltGenerator.
-var RandomSaltGenerator SaltGenerator = randomSaltGenerator{}
+func (randomSaltGenerator) IsServerSalt(salt []byte) bool {
+	return false
+}
 
-// ServerSaltGenerator generates unique salts that are secretly marked.
-type ServerSaltGenerator struct {
-	key []byte
+// RandomSaltGenerator is a basic SaltGenerator.
+var RandomSaltGenerator ServerSaltGenerator = randomSaltGenerator{}
+
+// serverSaltGenerator generates unique salts that are secretly marked.
+type serverSaltGenerator struct {
+	saltSize int
+	key      []byte
 }
 
 // Number of bytes of salt to use as a marker.  Increasing this value reduces
@@ -64,23 +78,28 @@ var serverSaltLabel = []byte("outline-server-salt")
 // random, but is secretly marked as being issued by the server.
 // This is useful to prevent the server from accepting its own output in a
 // reflection attack.
-func NewServerSaltGenerator(secret string) *ServerSaltGenerator {
+func NewServerSaltGenerator(cipher shadowaead.Cipher, secret string) ServerSaltGenerator {
+	if cipher.SaltSize()-markLen < minEntropy {
+		// This cipher doesn't support server marking.
+		return RandomSaltGenerator
+	}
+
 	// Shadowsocks already uses HKDF-SHA1 to derive the AEAD key, so we use
 	// the same derivation with a different "info" to generate our HMAC key.
 	keySource := hkdf.New(crypto.SHA1.New, []byte(secret), nil, serverSaltLabel)
 	// The key can be any size, but matching the block size is most efficient.
 	key := make([]byte, crypto.SHA1.Size())
 	io.ReadFull(keySource, key)
-	return &ServerSaltGenerator{key}
+	return serverSaltGenerator{cipher.SaltSize(), key}
 }
 
-func (sg *ServerSaltGenerator) splitSalt(salt []byte) (prefix, mark []byte) {
+func (sg serverSaltGenerator) splitSalt(salt []byte) (prefix, mark []byte) {
 	prefixLen := len(salt) - markLen
 	return salt[:prefixLen], salt[prefixLen:]
 }
 
 // getTag takes in a salt prefix and returns the tag.
-func (sg *ServerSaltGenerator) getTag(prefix []byte) []byte {
+func (sg serverSaltGenerator) getTag(prefix []byte) []byte {
 	// Use HMAC-SHA1, even though SHA1 is broken, because HMAC-SHA1 is still
 	// secure, and we're already using HKDF-SHA1.
 	hmac := hmac.New(crypto.SHA1.New, sg.key)
@@ -90,9 +109,9 @@ func (sg *ServerSaltGenerator) getTag(prefix []byte) []byte {
 
 // GetSalt returns an apparently random salt that can be identified
 // as server-originated by anyone who knows the Shadowsocks key.
-func (sg *ServerSaltGenerator) GetSalt(salt []byte) error {
-	if len(salt)-markLen < minEntropy {
-		return RandomSaltGenerator.GetSalt(salt)
+func (sg serverSaltGenerator) GetSalt(salt []byte) error {
+	if len(salt) != sg.saltSize {
+		return fmt.Errorf("Wrong salt size: %d != %d", len(salt), sg.saltSize)
 	}
 	prefix, mark := sg.splitSalt(salt)
 	if _, err := rand.Read(prefix); err != nil {
@@ -103,9 +122,8 @@ func (sg *ServerSaltGenerator) GetSalt(salt []byte) error {
 	return nil
 }
 
-// IsServerSalt returns true if the salt is marked as server-originated.
-func (sg *ServerSaltGenerator) IsServerSalt(salt []byte) bool {
-	if len(salt) < markLen {
+func (sg serverSaltGenerator) IsServerSalt(salt []byte) bool {
+	if len(salt) != sg.saltSize {
 		return false
 	}
 	prefix, mark := sg.splitSalt(salt)

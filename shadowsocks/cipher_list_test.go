@@ -16,38 +16,10 @@ package shadowsocks
 
 import (
 	"container/list"
-	"crypto/cipher"
 	"testing"
 
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
-
-type fakeAEAD struct {
-	cipher.AEAD
-	overhead, nonceSize int
-}
-
-func (a *fakeAEAD) NonceSize() int {
-	return a.nonceSize
-}
-
-func (a *fakeAEAD) Overhead() int {
-	return a.overhead
-}
-
-type fakeCipher struct {
-	shadowaead.Cipher
-	saltsize  int
-	decrypter *fakeAEAD
-}
-
-func (c *fakeCipher) SaltSize() int {
-	return c.saltsize
-}
-
-func (c *fakeCipher) Decrypter(b []byte) (cipher.AEAD, error) {
-	return c.decrypter, nil
-}
 
 func TestIncompatibleCiphers(t *testing.T) {
 	l := list.New()
