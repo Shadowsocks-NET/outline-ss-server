@@ -30,6 +30,9 @@ func TestRandomSaltGenerator(t *testing.T) {
 	if bytes.Equal(salt, make([]byte, 16)) {
 		t.Error("Salt is all zeros")
 	}
+	if RandomSaltGenerator.IsServerSalt(salt) {
+		t.Error("RandomSaltGenerator.IsServerSalt is always false")
+	}
 }
 
 // Test that ServerSaltGenerator recognizes its own salts
@@ -127,38 +130,37 @@ func TestServerSaltDifferentCiphers(t *testing.T) {
 func TestServerSaltShort(t *testing.T) {
 	ssg := NewServerSaltGenerator("test")
 
-	salt20 := make([]byte, 20)
-	if err := ssg.GetSalt(salt20); err != nil {
+	salt5 := make([]byte, 5)
+	if err := ssg.GetSalt(salt5); err != nil {
 		t.Fatal(err)
 	}
-	if !ssg.IsServerSalt(salt20) {
+	if !ssg.IsServerSalt(salt5) {
 		t.Error("Server salt was not recognized")
 	}
 
-	salt19 := make([]byte, 19)
-	if err := ssg.GetSalt(salt19); err != nil {
+	salt4 := make([]byte, 4)
+	if err := ssg.GetSalt(salt4); err != nil {
 		t.Fatal(err)
 	}
-	if ssg.IsServerSalt(salt19) {
-		t.Error("Short salt was marked")
+	if !ssg.IsServerSalt(salt4) {
+		t.Error("Server salt was not recognized")
 	}
 
-	salt2 := make([]byte, 2)
-	if err := ssg.GetSalt(salt2); err != nil {
-		t.Fatal(err)
-	}
-	if ssg.IsServerSalt(salt2) {
-		t.Error("Very short salt was marked")
+	salt3 := make([]byte, 3)
+	if err := ssg.GetSalt(salt3); err == nil {
+		t.Error("Expected error for too-short salt")
 	}
 }
 
 func BenchmarkRandomSaltGenerator(b *testing.B) {
-	salt := make([]byte, 32)
-	for i := 0; i < b.N; i++ {
-		if err := RandomSaltGenerator.GetSalt(salt); err != nil {
-			b.Fatal(err)
+	b.RunParallel(func(pb *testing.PB) {
+		salt := make([]byte, 32)
+		for pb.Next() {
+			if err := RandomSaltGenerator.GetSalt(salt); err != nil {
+				b.Fatal(err)
+			}
 		}
-	}
+	})
 }
 
 func BenchmarkServerSaltGenerator(b *testing.B) {

@@ -27,21 +27,30 @@ import (
 // All ciphers must have a nonce size this big or smaller.
 const maxNonceSize = 12
 
+// Don't add a tag if it would reduce the salt entropy below this amount.
+const minSaltEntropy = 16
+
 // CipherEntry holds a Cipher with an identifier.
-// The public fields are constant, but lastAddress is mutable under cipherList.mu.
+// The public fields are constant, but lastClientIP is mutable under cipherList.mu.
 type CipherEntry struct {
 	ID            string
 	Cipher        shadowaead.Cipher
-	SaltGenerator *ServerSaltGenerator
+	SaltGenerator ServerSaltGenerator
 	lastClientIP  net.IP
 }
 
 // MakeCipherEntry constructs a CipherEntry.
 func MakeCipherEntry(id string, cipher shadowaead.Cipher, secret string) CipherEntry {
+	var saltGenerator ServerSaltGenerator
+	if cipher.SaltSize()-ServerSaltMarkLen >= minSaltEntropy {
+		saltGenerator = NewServerSaltGenerator(secret)
+	} else {
+		saltGenerator = RandomSaltGenerator
+	}
 	return CipherEntry{
 		ID:            id,
 		Cipher:        cipher,
-		SaltGenerator: NewServerSaltGenerator(secret),
+		SaltGenerator: saltGenerator,
 	}
 }
 
