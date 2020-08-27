@@ -43,8 +43,11 @@ type CipherEntry struct {
 func MakeCipherEntry(id string, cipher shadowaead.Cipher, secret string) CipherEntry {
 	var saltGenerator ServerSaltGenerator
 	if cipher.SaltSize()-ServerSaltMarkLen >= minSaltEntropy {
+		// Mark salts with a tag for reverse replay protection.
 		saltGenerator = NewServerSaltGenerator(secret)
 	} else {
+		// Adding a tag would leave too little randomness to protect
+		// against accidental salt reuse, so don't mark the salts.
 		saltGenerator = RandomSaltGenerator
 	}
 	return CipherEntry{
