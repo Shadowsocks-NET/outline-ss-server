@@ -68,14 +68,14 @@ type ssPort struct {
 	cipherList shadowsocks.CipherList
 }
 
-type ssServer struct {
+type SSServer struct {
 	natTimeout  time.Duration
 	m           metrics.ShadowsocksMetrics
 	replayCache shadowsocks.ReplayCache
 	ports       map[int]*ssPort
 }
 
-func (s *ssServer) startPort(portNum int) error {
+func (s *SSServer) startPort(portNum int) error {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: portNum})
 	if err != nil {
 		return fmt.Errorf("Failed to start TCP on port %v: %v", portNum, err)
@@ -95,7 +95,7 @@ func (s *ssServer) startPort(portNum int) error {
 	return nil
 }
 
-func (s *ssServer) removePort(portNum int) error {
+func (s *SSServer) removePort(portNum int) error {
 	port, ok := s.ports[portNum]
 	if !ok {
 		return fmt.Errorf("Port %v doesn't exist", portNum)
@@ -113,7 +113,7 @@ func (s *ssServer) removePort(portNum int) error {
 	return nil
 }
 
-func (s *ssServer) loadConfig(filename string) error {
+func (s *SSServer) loadConfig(filename string) error {
 	config, err := readConfig(filename)
 	if err != nil {
 		return fmt.Errorf("Failed to read config file %v: %v", filename, err)
@@ -166,8 +166,19 @@ func (s *ssServer) loadConfig(filename string) error {
 	return nil
 }
 
-func runSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int) error {
-	server := &ssServer{
+// Stop serving on all ports.
+func (s *SSServer) Stop() error {
+	for portNum := range s.ports {
+		if err := s.removePort(portNum); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RunSSServer starts a shadowsocks server running, and returns the server or an error.
+func RunSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int) (*SSServer, error) {
+	server := &SSServer{
 		natTimeout:  natTimeout,
 		m:           sm,
 		replayCache: shadowsocks.NewReplayCache(replayHistory),
@@ -175,7 +186,7 @@ func runSSServer(filename string, natTimeout time.Duration, sm metrics.Shadowsoc
 	}
 	err := server.loadConfig(filename)
 	if err != nil {
-		return fmt.Errorf("Failed to load config file %v: %v", filename, err)
+		return nil, fmt.Errorf("Failed to load config file %v: %v", filename, err)
 	}
 	sigHup := make(chan os.Signal, 1)
 	signal.Notify(sigHup, syscall.SIGHUP)
@@ -187,7 +198,7 @@ func runSSServer(filename string, natTimeout time.Duration, sm metrics.Shadowsoc
 			}
 		}
 	}()
-	return nil
+	return server, nil
 }
 
 type Config struct {
@@ -265,7 +276,7 @@ func main() {
 	}
 	m := metrics.NewPrometheusShadowsocksMetrics(ipCountryDB, prometheus.DefaultRegisterer)
 	m.SetBuildInfo(version)
-	err = runSSServer(flags.ConfigFile, flags.natTimeout, m, flags.replayHistory)
+	_, err = RunSSServer(flags.ConfigFile, flags.natTimeout, m, flags.replayHistory)
 	if err != nil {
 		logger.Fatal(err)
 	}
