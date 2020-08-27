@@ -56,13 +56,12 @@ func debugTCP(cipherID, template string, val interface{}) {
 	}
 }
 
-func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, onet.DuplexConn, []byte, time.Duration, error) {
-	clientIP := remoteIP(clientConn)
+func findAccessKey(clientReader io.Reader, clientIP net.IP, cipherList CipherList) (*CipherEntry, io.Reader, []byte, time.Duration, error) {
 	// We snapshot the list because it may be modified while we use it.
 	tcpTrialSize, ciphers := cipherList.SnapshotForClientIP(clientIP)
 	firstBytes := make([]byte, tcpTrialSize)
-	if n, err := io.ReadFull(clientConn, firstBytes); err != nil {
-		return "", clientConn, nil, 0, fmt.Errorf("Reading header failed after %d bytes: %v", n, err)
+	if n, err := io.ReadFull(clientReader, firstBytes); err != nil {
+		return nil, clientReader, nil, 0, fmt.Errorf("Reading header failed after %d bytes: %v", n, err)
 	}
 
 	findStartTime := time.Now()
@@ -70,16 +69,13 @@ func findAccessKey(clientConn onet.DuplexConn, cipherList CipherList) (string, o
 	timeToCipher := time.Now().Sub(findStartTime)
 	if entry == nil {
 		// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-		return "", clientConn, nil, timeToCipher, fmt.Errorf("Could not find valid TCP cipher")
+		return nil, clientReader, nil, timeToCipher, fmt.Errorf("Could not find valid TCP cipher")
 	}
 
 	// Move the active cipher to the front, so that the search is quicker next time.
 	cipherList.MarkUsedByClientIP(elt, clientIP)
-	id, cipher := entry.ID, entry.Cipher
-	ssr := NewShadowsocksReader(io.MultiReader(bytes.NewReader(firstBytes), clientConn), cipher)
-	ssw := NewShadowsocksWriter(clientConn, cipher)
-	salt := firstBytes[:cipher.SaltSize()]
-	return id, onet.WrapConn(clientConn, ssr, ssw).(onet.DuplexConn), salt, timeToCipher, nil
+	salt := firstBytes[:entry.Cipher.SaltSize()]
+	return entry, io.MultiReader(bytes.NewReader(firstBytes), clientReader), salt, timeToCipher, nil
 }
 
 // Implements a trial decryption search.  This assumes that all ciphers are AEAD.
@@ -234,7 +230,7 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 	clientConn.SetReadDeadline(connStart.Add(s.readTimeout))
 	var proxyMetrics metrics.ProxyMetrics
 	clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
-	keyID, clientConn, salt, timeToCipher, keyErr := findAccessKey(clientConn, s.ciphers)
+	cipherEntry, clientReader, clientSalt, timeToCipher, keyErr := findAccessKey(clientConn, remoteIP(clientConn), s.ciphers)
 
 	connError := func() *onet.ConnectionError {
 		if keyErr != nil {
@@ -242,14 +238,28 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 			const status = "ERR_CIPHER"
 			s.absorbProbe(listenerPort, clientConn, clientLocation, status, &proxyMetrics)
 			return onet.NewConnectionError(status, "Failed to find a valid cipher", keyErr)
-		} else if !s.replayCache.Add(keyID, salt) { // Only check the cache if findAccessKey succeeded.
-			const status = "ERR_REPLAY"
+		}
+
+		isServerSalt := cipherEntry.SaltGenerator.IsServerSalt(clientSalt)
+		// Only check the cache if findAccessKey succeeded and the salt is unrecognized.
+		if isServerSalt || !s.replayCache.Add(cipherEntry.ID, clientSalt) {
+			var status string
+			if isServerSalt {
+				status = "ERR_REPLAY_SERVER"
+			} else {
+				status = "ERR_REPLAY_CLIENT"
+			}
 			s.absorbProbe(listenerPort, clientConn, clientLocation, status, &proxyMetrics)
-			logger.Debugf("Replay: %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
+			logger.Debugf(status+": %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
 			return onet.NewConnectionError(status, "Replay detected", nil)
 		}
 		// Clear the authentication deadline
 		clientConn.SetReadDeadline(time.Time{})
+
+		ssr := NewShadowsocksReader(clientReader, cipherEntry.Cipher)
+		ssw := NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
+		ssw.SetSaltGenerator(cipherEntry.SaltGenerator)
+		clientConn = onet.WrapConn(clientConn, ssr, ssw)
 		return proxyConnection(clientConn, &proxyMetrics, s.checkAllowedIP)
 	}()
 
@@ -259,7 +269,11 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 		logger.Debugf("TCP Error: %v: %v", connError.Message, connError.Cause)
 		status = connError.Status
 	}
-	s.m.AddClosedTCPConnection(clientLocation, keyID, status, proxyMetrics, timeToCipher, connDuration)
+	var id string
+	if cipherEntry != nil {
+		id = cipherEntry.ID
+	}
+	s.m.AddClosedTCPConnection(clientLocation, id, status, proxyMetrics, timeToCipher, connDuration)
 	clientConn.Close() // Closing after the metrics are added aids integration testing.
 	logger.Debugf("Done with status %v, duration %v", status, connDuration)
 }

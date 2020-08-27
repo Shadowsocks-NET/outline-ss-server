@@ -17,7 +17,6 @@ package shadowsocks
 import (
 	"bytes"
 	"crypto/cipher"
-	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -34,27 +33,16 @@ const payloadSizeMask = 0x3FFF // 16*1024 - 1
 // The LazyWrite and Flush methods allow a header to be
 // added but delayed until the first write, for concatenation.
 // All methods except Flush must be called from a single thread.
-type Writer interface {
-	io.Writer
-	io.ReaderFrom
-	// LazyWrite queues p to be written, but doesn't send it until
-	// Flush() is called, a non-lazy write is made, or the buffer
-	// is filled.
-	LazyWrite(p []byte) (int, error)
-	// Flush sends the pending data, if any.  This method is
-	// thread-safe.
-	Flush() error
-}
-
-type shadowsocksWriter struct {
+type Writer struct {
 	// This type is single-threaded except when needFlush is true.
 	// mu protects needFlush, and also protects everything
 	// else while needFlush could be true.
 	mu sync.Mutex
 	// Indicates that a concurrent flush is currently allowed.
-	needFlush bool
-	writer    io.Writer
-	ssCipher  shadowaead.Cipher
+	needFlush     bool
+	writer        io.Writer
+	ssCipher      shadowaead.Cipher
+	saltGenerator SaltGenerator
 	// Wrapper for input that arrives as a slice.
 	byteWrapper bytes.Reader
 	// Number of plaintext bytes that are currently buffered.
@@ -68,22 +56,28 @@ type shadowsocksWriter struct {
 
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksWriter(writer io.Writer, ssCipher shadowaead.Cipher) Writer {
-	return &shadowsocksWriter{writer: writer, ssCipher: ssCipher}
+func NewShadowsocksWriter(writer io.Writer, ssCipher shadowaead.Cipher) *Writer {
+	return &Writer{writer: writer, ssCipher: ssCipher, saltGenerator: RandomSaltGenerator}
+}
+
+// SetSaltGenerator sets the salt generator to be used. Must be called before the first write.
+func (sw *Writer) SetSaltGenerator(saltGenerator SaltGenerator) {
+	sw.saltGenerator = saltGenerator
 }
 
 // init generates a random salt, sets up the AEAD object and writes
 // the salt to the inner Writer.
-func (sw *shadowsocksWriter) init() (err error) {
+func (sw *Writer) init() (err error) {
 	if sw.aead == nil {
 		salt := make([]byte, sw.ssCipher.SaltSize())
-		if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		if err := sw.saltGenerator.GetSalt(salt); err != nil {
 			return fmt.Errorf("failed to generate salt: %v", err)
 		}
 		sw.aead, err = sw.ssCipher.Encrypter(salt)
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
+		sw.saltGenerator = nil // No longer needed, so release reference.
 		sw.counter = make([]byte, sw.aead.NonceSize())
 		// The maximum length message is the salt (first message only), length, length tag,
 		// payload, and payload tag.
@@ -98,19 +92,21 @@ func (sw *shadowsocksWriter) init() (err error) {
 
 // encryptBlock encrypts `plaintext` in-place.  The slice must have enough capacity
 // for the tag. Returns the total ciphertext length.
-func (sw *shadowsocksWriter) encryptBlock(plaintext []byte) int {
+func (sw *Writer) encryptBlock(plaintext []byte) int {
 	out := sw.aead.Seal(plaintext[:0], sw.counter, plaintext, nil)
 	increment(sw.counter)
 	return len(out)
 }
 
-func (sw *shadowsocksWriter) Write(p []byte) (int, error) {
+func (sw *Writer) Write(p []byte) (int, error) {
 	sw.byteWrapper.Reset(p)
 	n, err := sw.ReadFrom(&sw.byteWrapper)
 	return int(n), err
 }
 
-func (sw *shadowsocksWriter) LazyWrite(p []byte) (int, error) {
+// LazyWrite queues p to be written, but doesn't send it until Flush() is
+// called, a non-lazy write is made, or the buffer is filled.
+func (sw *Writer) LazyWrite(p []byte) (int, error) {
 	if err := sw.init(); err != nil {
 		return 0, err
 	}
@@ -137,7 +133,8 @@ func (sw *shadowsocksWriter) LazyWrite(p []byte) (int, error) {
 	}
 }
 
-func (sw *shadowsocksWriter) Flush() error {
+// Flush sends the pending data, if any.  This method is thread-safe.
+func (sw *Writer) Flush() error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	if !sw.needFlush {
@@ -156,7 +153,7 @@ func isZero(b []byte) bool {
 }
 
 // Returns the slices of sw.buf in which to place plaintext for encryption.
-func (sw *shadowsocksWriter) buffers() (sizeBuf, payloadBuf []byte) {
+func (sw *Writer) buffers() (sizeBuf, payloadBuf []byte) {
 	// sw.buf starts with the salt.
 	saltSize := sw.ssCipher.SaltSize()
 
@@ -168,7 +165,8 @@ func (sw *shadowsocksWriter) buffers() (sizeBuf, payloadBuf []byte) {
 	return
 }
 
-func (sw *shadowsocksWriter) ReadFrom(r io.Reader) (int64, error) {
+// ReadFrom implements the io.ReaderFrom interface.
+func (sw *Writer) ReadFrom(r io.Reader) (int64, error) {
 	if err := sw.init(); err != nil {
 		return 0, err
 	}
@@ -218,7 +216,7 @@ func (sw *shadowsocksWriter) ReadFrom(r io.Reader) (int64, error) {
 
 // Adds as much of `plaintext` into the buffer as will fit, and increases
 // sw.pending accordingly.  Returns the number of bytes consumed.
-func (sw *shadowsocksWriter) enqueue(plaintext []byte) int {
+func (sw *Writer) enqueue(plaintext []byte) int {
 	_, payloadBuf := sw.buffers()
 	n := copy(payloadBuf[sw.pending:], plaintext)
 	sw.pending += n
@@ -226,7 +224,7 @@ func (sw *shadowsocksWriter) enqueue(plaintext []byte) int {
 }
 
 // Encrypts all pending data and writes it to the output.
-func (sw *shadowsocksWriter) flush() error {
+func (sw *Writer) flush() error {
 	if sw.pending == 0 {
 		return nil
 	}

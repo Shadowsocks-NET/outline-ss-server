@@ -27,12 +27,34 @@ import (
 // All ciphers must have a nonce size this big or smaller.
 const maxNonceSize = 12
 
+// Don't add a tag if it would reduce the salt entropy below this amount.
+const minSaltEntropy = 16
+
 // CipherEntry holds a Cipher with an identifier.
-// The public fields are constant, but lastAddress is mutable under cipherList.mu.
+// The public fields are constant, but lastClientIP is mutable under cipherList.mu.
 type CipherEntry struct {
-	ID           string
-	Cipher       shadowaead.Cipher
-	lastClientIP net.IP
+	ID            string
+	Cipher        shadowaead.Cipher
+	SaltGenerator ServerSaltGenerator
+	lastClientIP  net.IP
+}
+
+// MakeCipherEntry constructs a CipherEntry.
+func MakeCipherEntry(id string, cipher shadowaead.Cipher, secret string) CipherEntry {
+	var saltGenerator ServerSaltGenerator
+	if cipher.SaltSize()-ServerSaltMarkLen >= minSaltEntropy {
+		// Mark salts with a tag for reverse replay protection.
+		saltGenerator = NewServerSaltGenerator(secret)
+	} else {
+		// Adding a tag would leave too little randomness to protect
+		// against accidental salt reuse, so don't mark the salts.
+		saltGenerator = RandomSaltGenerator
+	}
+	return CipherEntry{
+		ID:            id,
+		Cipher:        cipher,
+		SaltGenerator: saltGenerator,
+	}
 }
 
 // CipherList is a thread-safe collection of CipherEntry elements that allows for

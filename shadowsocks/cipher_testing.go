@@ -43,7 +43,8 @@ func MakeTestCiphers(secrets []string) (CipherList, error) {
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create cipher %v: %v", i, err)
 		}
-		l.PushBack(&CipherEntry{ID: cipherID, Cipher: cipher.(shadowaead.Cipher)})
+		entry := MakeCipherEntry(cipherID, cipher.(shadowaead.Cipher), secrets[i])
+		l.PushBack(&entry)
 	}
 	cipherList := NewCipherList()
 	cipherList.Update(l)
