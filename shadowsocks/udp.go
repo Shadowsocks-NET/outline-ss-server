@@ -50,9 +50,9 @@ func debugUDPAddr(addr net.Addr, template string, val interface{}) {
 	}
 }
 
-// upack decrypts src into dst. It tries each cipher until it finds one that authenticates
+// Decrypts src into dst. It tries each cipher until it finds one that authenticates
 // correctly. dst and src must not overlap.
-func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
+func findAccessKeyUDP(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
 	_, snapshot := cipherList.SnapshotForClientIP(clientIP)
@@ -177,7 +177,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				ip := clientAddr.(*net.UDPAddr).IP
 				var cipher shadowaead.Cipher
 				unpackStart := time.Now()
-				textData, keyID, cipher, err = unpack(ip, textBuf, cipherData, s.ciphers)
+				textData, keyID, cipher, err = findAccessKeyUDP(ip, textBuf, cipherData, s.ciphers)
 				timeToCipher = time.Now().Sub(unpackStart)
 
 				if err != nil {
