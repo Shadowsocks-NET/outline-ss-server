@@ -147,6 +147,8 @@ type TCPService interface {
 func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkAllowedIP onet.IPPolicy) *onet.ConnectionError {
 	tgtAddr, err := socks.ReadAddr(clientConn)
 	if err != nil {
+		// Drain to prevent a close on cipher error.
+		clientConn.(io.WriterTo).WriteTo(ioutil.Discard)
 		return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
 	}
 	tgtTCPAddr, err := net.ResolveTCPAddr("tcp", tgtAddr.String())
@@ -172,7 +174,7 @@ func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetr
 		// Send FIN to target.
 		tgtConn.CloseWrite()
 		if fromClientErr != nil {
-			// Drain client connection.
+			// Drain to prevent a close on cipher error.
 			clientConn.(io.WriterTo).WriteTo(ioutil.Discard)
 		}
 		clientConn.CloseRead()

@@ -213,8 +213,8 @@ func TestReplayDefense(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := func() net.Conn {
-		conn, err := net.Dial(listener.Addr().Network(), listener.Addr().String())
+	run := func() *net.TCPConn {
+		conn, err := net.DialTCP(listener.Addr().Network(), nil, listener.Addr().(*net.TCPAddr))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -235,8 +235,8 @@ func TestReplayDefense(t *testing.T) {
 	if len(testMetrics.closeStatus) != 0 {
 		t.Errorf("First connection should not have been closed yet: %v", testMetrics.probeData[0])
 	}
-	// Write a minimal invalid chunk to trigger a proxy-driven close.
-	conn1.Write(make([]byte, 2+16))
+	// CloseWrite will trigger the closing of the reader after the timeout.
+	conn1.CloseWrite()
 	// Wait for the close.  This ensures that conn1 and conn2 can't be
 	// processed out of order at the proxy.
 	conn1.Read(make([]byte, 1))
