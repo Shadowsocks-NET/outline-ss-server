@@ -30,7 +30,7 @@ func TestMethodsDontPanic(t *testing.T) {
 func BenchmarkGetLocation(b *testing.B) {
 	var ipCountryDB *geoip2.Reader
 	// The test data is in a git submodule that must be initialized before running the test.
-	dbPath := "../third_party/maxmind/test-data/GeoIP2-Country-Test.mmdb"
+	dbPath := "../../third_party/maxmind/test-data/GeoIP2-Country-Test.mmdb"
 	ipCountryDB, err := geoip2.Open(dbPath)
 	if err != nil {
 		b.Fatalf("Could not open geoip database at %v: %v", dbPath, err)
