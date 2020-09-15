@@ -235,8 +235,8 @@ func TestReplayDefense(t *testing.T) {
 	if len(testMetrics.closeStatus) != 0 {
 		t.Errorf("First connection should not have been closed yet: %v", testMetrics.probeData[0])
 	}
-	// CloseWrite will trigger the closing of the reader after the timeout.
-	conn1.CloseWrite()
+	// Write a minimal invalid chunk to trigger a cipher error and a close.
+	conn1.Write(make([]byte, 2+16))
 	// Wait for the close.  This ensures that conn1 and conn2 can't be
 	// processed out of order at the proxy.
 	conn1.Read(make([]byte, 1))
