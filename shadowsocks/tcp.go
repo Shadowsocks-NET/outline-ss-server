@@ -166,9 +166,29 @@ func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetr
 	tgtConn := metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy)
 
 	logger.Debugf("proxy %s <-> %s", clientConn.RemoteAddr().String(), tgtConn.RemoteAddr().String())
-	_, _, err = onet.Relay(clientConn, tgtConn)
-	if err != nil {
-		return onet.NewConnectionError("ERR_RELAY", "Failed to relay traffic", err)
+	fromClientErrCh := make(chan error)
+	go func() {
+		_, fromClientErr := clientConn.(io.WriterTo).WriteTo(tgtConn)
+		// Send FIN to target.
+		tgtConn.CloseWrite()
+		if fromClientErr != nil {
+			// Drain client connection.
+			clientConn.(io.WriterTo).WriteTo(ioutil.Discard)
+		}
+		clientConn.CloseRead()
+		fromClientErrCh <- fromClientErr
+	}()
+	_, fromTargetErr := clientConn.(io.ReaderFrom).ReadFrom(tgtConn)
+	// Send FIN to client.
+	clientConn.CloseWrite()
+	tgtConn.CloseRead()
+
+	fromClientErr := <-fromClientErrCh
+	if fromClientErr != nil {
+		return onet.NewConnectionError("ERR_RELAY_CLIENT", "Failed to relay traffic from client", fromClientErr)
+	}
+	if fromTargetErr != nil {
+		return onet.NewConnectionError("ERR_RELAY_TARGET", "Failed to relay traffic from target", fromTargetErr)
 	}
 	return nil
 }
