@@ -28,7 +28,6 @@ import (
 	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	logging "github.com/op/go-logging"
-
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -144,13 +143,7 @@ type TCPService interface {
 }
 
 // proxyConnection will route the clientConn according to the address read from the connection.
-func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkAllowedIP onet.IPPolicy) *onet.ConnectionError {
-	tgtAddr, err := socks.ReadAddr(clientConn)
-	if err != nil {
-		// Drain to prevent a close on cipher error.
-		clientConn.(io.WriterTo).WriteTo(ioutil.Discard)
-		return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
-	}
+func proxyConnection(clientConn onet.DuplexConn, tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, checkAllowedIP onet.IPPolicy) *onet.ConnectionError {
 	tgtTCPAddr, err := net.ResolveTCPAddr("tcp", tgtAddr.String())
 	if err != nil {
 		return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
@@ -248,7 +241,7 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 
 	connStart := time.Now()
 	clientConn.(*net.TCPConn).SetKeepAlive(true)
-	// Set a deadline for connection authentication
+	// Set a deadline to establish a connection to the target.
 	clientConn.SetReadDeadline(connStart.Add(s.readTimeout))
 	var proxyMetrics metrics.ProxyMetrics
 	clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
@@ -275,14 +268,21 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 			logger.Debugf(status+": %v in %s sent %d bytes", clientConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
 			return onet.NewConnectionError(status, "Replay detected", nil)
 		}
-		// Clear the authentication deadline
-		clientConn.SetReadDeadline(time.Time{})
 
 		ssr := NewShadowsocksReader(clientReader, cipherEntry.Cipher)
+		tgtAddr, err := socks.ReadAddr(ssr)
+		if err != nil {
+			// Drain to prevent a close on cipher error.
+			clientConn.(io.WriterTo).WriteTo(ioutil.Discard)
+			return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
+		}
+
+		// Clear the connection deadline
+		clientConn.SetReadDeadline(time.Time{})
 		ssw := NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
 		ssw.SetSaltGenerator(cipherEntry.SaltGenerator)
 		clientConn = onet.WrapConn(clientConn, ssr, ssw)
-		return proxyConnection(clientConn, &proxyMetrics, s.checkAllowedIP)
+		return proxyConnection(clientConn, tgtAddr, &proxyMetrics, s.checkAllowedIP)
 	}()
 
 	connDuration := time.Now().Sub(connStart)
