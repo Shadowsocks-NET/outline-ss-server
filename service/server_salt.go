@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package shadowsocks
+package service
 
 import (
 	"bytes"
@@ -22,19 +22,14 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	"golang.org/x/crypto/hkdf"
 )
-
-// SaltGenerator generates unique salts to use in Shadowsocks connections.
-type SaltGenerator interface {
-	// Returns a new salt
-	GetSalt(salt []byte) error
-}
 
 // ServerSaltGenerator offers the ability to check if a salt was marked as
 // server-originated.
 type ServerSaltGenerator interface {
-	SaltGenerator
+	shadowsocks.SaltGenerator
 	// IsServerSalt returns true if the salt was created by this generator
 	// and is marked as server-originated.
 	IsServerSalt(salt []byte) bool
@@ -53,8 +48,8 @@ func (randomSaltGenerator) IsServerSalt(salt []byte) bool {
 	return false
 }
 
-// RandomSaltGenerator is a basic SaltGenerator.
-var RandomSaltGenerator ServerSaltGenerator = randomSaltGenerator{}
+// RandomServerSaltGenerator is a basic ServerSaltGenerator.
+var RandomServerSaltGenerator ServerSaltGenerator = randomSaltGenerator{}
 
 // serverSaltGenerator generates unique salts that are secretly marked.
 type serverSaltGenerator struct {

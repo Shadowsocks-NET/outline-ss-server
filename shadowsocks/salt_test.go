@@ -14,4 +14,31 @@
 
 package shadowsocks
 
-const MaxUDPPacketSize = 64 * 1024
+import (
+	"bytes"
+	"testing"
+)
+
+func TestRandomSaltGenerator(t *testing.T) {
+	if err := RandomSaltGenerator.GetSalt(nil); err != nil {
+		t.Error(err)
+	}
+	salt := make([]byte, 16)
+	if err := RandomSaltGenerator.GetSalt(salt); err != nil {
+		t.Error(err)
+	}
+	if bytes.Equal(salt, make([]byte, 16)) {
+		t.Error("Salt is all zeros")
+	}
+}
+
+func BenchmarkRandomSaltGenerator(b *testing.B) {
+	b.RunParallel(func(pb *testing.PB) {
+		salt := make([]byte, 32)
+		for pb.Next() {
+			if err := RandomSaltGenerator.GetSalt(salt); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}

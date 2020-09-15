@@ -1,4 +1,4 @@
-package shadowsocks
+package client
 
 import (
 	"bytes"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
@@ -18,6 +19,7 @@ import (
 const (
 	testPassword   = "testPassword"
 	testTargetAddr = "test.local:1111"
+	testCipher     = "chacha20-ietf-poly1305"
 )
 
 func TestShadowsocksClient_DialTCP(t *testing.T) {
@@ -35,7 +37,7 @@ func TestShadowsocksClient_DialTCP(t *testing.T) {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
-	expectEchoPayload(conn, MakeTestPayload(1024), make([]byte, 1024), t)
+	expectEchoPayload(conn, ss.MakeTestPayload(1024), make([]byte, 1024), t)
 	conn.Close()
 
 	proxy.Close()
@@ -129,7 +131,7 @@ func TestShadowsocksClient_ListenUDP(t *testing.T) {
 	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
 	pcrw := &packetConnReadWriter{PacketConn: conn, targetAddr: NewAddr(testTargetAddr, "udp")}
-	expectEchoPayload(pcrw, MakeTestPayload(1024), make([]byte, 1024), t)
+	expectEchoPayload(pcrw, ss.MakeTestPayload(1024), make([]byte, 1024), t)
 
 	proxy.Close()
 	running.Wait()
@@ -155,7 +157,7 @@ func BenchmarkShadowsocksClient_DialTCP(b *testing.B) {
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
 	buf := make([]byte, 1024)
 	for n := 0; n < b.N; n++ {
-		payload := MakeTestPayload(1024)
+		payload := ss.MakeTestPayload(1024)
 		b.StartTimer()
 		expectEchoPayload(conn, payload, buf, b)
 		b.StopTimer()
@@ -185,9 +187,9 @@ func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 	}
 	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
-	buf := make([]byte, maxUDPBufferSize)
+	buf := make([]byte, ss.MaxUDPPacketSize)
 	for n := 0; n < b.N; n++ {
-		payload := MakeTestPayload(1024)
+		payload := ss.MakeTestPayload(1024)
 		pcrw := &packetConnReadWriter{PacketConn: conn, targetAddr: NewAddr(testTargetAddr, "udp")}
 		b.StartTimer()
 		expectEchoPayload(pcrw, payload, buf, b)
@@ -223,8 +225,8 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Lis
 			go func() {
 				defer running.Done()
 				defer clientConn.Close()
-				ssr := NewShadowsocksReader(clientConn, cipher)
-				ssw := NewShadowsocksWriter(clientConn, cipher)
+				ssr := ss.NewShadowsocksReader(clientConn, cipher)
+				ssw := ss.NewShadowsocksWriter(clientConn, cipher)
 				ssClientConn := onet.WrapConn(clientConn, ssr, ssw)
 
 				tgtAddr, err := socks.ReadAddr(ssClientConn)
@@ -247,8 +249,8 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Co
 		t.Fatalf("Proxy ListenUDP failed: %v", err)
 	}
 	t.Logf("Starting SS UDP echo proxy at %v\n", conn.LocalAddr())
-	cipherBuf := make([]byte, udpBufSize)
-	clientBuf := make([]byte, udpBufSize)
+	cipherBuf := make([]byte, ss.MaxUDPPacketSize)
+	clientBuf := make([]byte, ss.MaxUDPPacketSize)
 	cipher, err := newAeadCipher(testCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)
@@ -351,7 +353,7 @@ func BenchmarkShadowsocksClient_UDPWrite(b *testing.B) {
 		b.Fatalf("ShadowsocksClient.ListenUDP failed: %v", err)
 	}
 	defer conn.Close()
-	payload := MakeTestPayload(1024)
+	payload := ss.MakeTestPayload(1024)
 	destAddr := &net.UDPAddr{
 		IP:   net.ParseIP("192.0.2.2"),
 		Port: 1,

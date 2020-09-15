@@ -12,28 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package shadowsocks
+package service
 
 import (
 	"bytes"
 	"testing"
 )
-
-func TestRandomSaltGenerator(t *testing.T) {
-	if err := RandomSaltGenerator.GetSalt(nil); err != nil {
-		t.Error(err)
-	}
-	salt := make([]byte, 16)
-	if err := RandomSaltGenerator.GetSalt(salt); err != nil {
-		t.Error(err)
-	}
-	if bytes.Equal(salt, make([]byte, 16)) {
-		t.Error("Salt is all zeros")
-	}
-	if RandomSaltGenerator.IsServerSalt(salt) {
-		t.Error("RandomSaltGenerator.IsServerSalt is always false")
-	}
-}
 
 // Test that ServerSaltGenerator recognizes its own salts
 func TestServerSaltRecognized(t *testing.T) {
@@ -53,7 +37,7 @@ func TestServerSaltUnrecognized(t *testing.T) {
 	ssg := NewServerSaltGenerator("test")
 
 	salt := make([]byte, 32)
-	if err := RandomSaltGenerator.GetSalt(salt); err != nil {
+	if err := RandomServerSaltGenerator.GetSalt(salt); err != nil {
 		t.Fatal(err)
 	}
 	if ssg.IsServerSalt(salt) {
@@ -150,17 +134,6 @@ func TestServerSaltShort(t *testing.T) {
 	if err := ssg.GetSalt(salt3); err == nil {
 		t.Error("Expected error for too-short salt")
 	}
-}
-
-func BenchmarkRandomSaltGenerator(b *testing.B) {
-	b.RunParallel(func(pb *testing.PB) {
-		salt := make([]byte, 32)
-		for pb.Next() {
-			if err := RandomSaltGenerator.GetSalt(salt); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
 }
 
 func BenchmarkServerSaltGenerator(b *testing.B) {

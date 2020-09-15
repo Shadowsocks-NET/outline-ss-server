@@ -15,14 +15,11 @@
 package shadowsocks
 
 import (
-	"container/list"
 	"fmt"
-
-	"github.com/shadowsocks/go-shadowsocks2/core"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
-const testCipher = "chacha20-ietf-poly1305"
+// TestCipher is a preferred cipher to use in testing.
+const TestCipher = "chacha20-ietf-poly1305"
 
 // MakeTestSecrets returns a slice of `n` test passwords.  Not secure!
 func MakeTestSecrets(n int) []string {
@@ -31,24 +28,6 @@ func MakeTestSecrets(n int) []string {
 		secrets[i] = fmt.Sprintf("secret-%v", i)
 	}
 	return secrets
-}
-
-// MakeTestCiphers creates a CipherList containing one fresh AEAD cipher
-// for each secret in `secrets`.
-func MakeTestCiphers(secrets []string) (CipherList, error) {
-	l := list.New()
-	for i := 0; i < len(secrets); i++ {
-		cipherID := fmt.Sprintf("id-%v", i)
-		cipher, err := core.PickCipher(testCipher, nil, secrets[i])
-		if err != nil {
-			return nil, fmt.Errorf("Failed to create cipher %v: %v", i, err)
-		}
-		entry := MakeCipherEntry(cipherID, cipher.(shadowaead.Cipher), secrets[i])
-		l.PushBack(&entry)
-	}
-	cipherList := NewCipherList()
-	cipherList.Update(l)
-	return cipherList, nil
 }
 
 // MakeTestPayload returns a slice of `size` arbitrary bytes.

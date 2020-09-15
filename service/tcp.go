@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package shadowsocks
+package service
 
 import (
 	"bytes"
@@ -25,8 +25,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
+	"github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
 
 	"github.com/shadowsocks/go-shadowsocks2/socks"
@@ -117,30 +118,36 @@ type tcpService struct {
 	running     sync.WaitGroup
 	readTimeout time.Duration
 	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
-	replayCache    *ReplayCache
-	checkAllowedIP func(net.IP) *onet.ConnectionError
+	replayCache       *ReplayCache
+	isTargetIPAllowed func(net.IP) *onet.ConnectionError
 }
 
 // NewTCPService creates a TCPService
 // `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
 func NewTCPService(ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
 	return &tcpService{
-		ciphers:        ciphers,
-		m:              m,
-		readTimeout:    timeout,
-		replayCache:    replayCache,
-		checkAllowedIP: onet.RequirePublicIP,
+		ciphers:           ciphers,
+		m:                 m,
+		readTimeout:       timeout,
+		replayCache:       replayCache,
+		isTargetIPAllowed: onet.RequirePublicIP,
 	}
 }
 
 // TCPService is a Shadowsocks TCP service that can be started and stopped.
 type TCPService interface {
+	// SetTargetIPValidator sets the function to be used to validate the target IP addresses.
+	SetTargetIPValidator(isTargetIPAllowed func(ip net.IP) *onet.ConnectionError)
 	// Serve adopts the listener, which will be closed before Serve returns.  Serve returns an error unless Stop() was called.
 	Serve(listener *net.TCPListener) error
 	// Stop closes the listener but does not interfere with existing connections.
 	Stop() error
 	// GracefulStop calls Stop(), and then blocks until all resources have been cleaned up.
 	GracefulStop() error
+}
+
+func (s *tcpService) SetTargetIPValidator(isTargetIPAllowed func(ip net.IP) *onet.ConnectionError) {
+	s.isTargetIPAllowed = isTargetIPAllowed
 }
 
 // proxyConnection will route the clientConn according to the address read from the connection.
@@ -190,7 +197,6 @@ func (s *tcpService) Serve(listener *net.TCPListener) error {
 
 	defer s.running.Done()
 	for {
-		var clientConn onet.DuplexConn
 		clientConn, err := listener.AcceptTCP()
 		if err != nil {
 			s.mu.RLock()
@@ -256,11 +262,11 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 		// Clear the authentication deadline
 		clientConn.SetReadDeadline(time.Time{})
 
-		ssr := NewShadowsocksReader(clientReader, cipherEntry.Cipher)
-		ssw := NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
+		ssr := shadowsocks.NewShadowsocksReader(clientReader, cipherEntry.Cipher)
+		ssw := shadowsocks.NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
 		ssw.SetSaltGenerator(cipherEntry.SaltGenerator)
 		clientConn = onet.WrapConn(clientConn, ssr, ssw)
-		return proxyConnection(clientConn, &proxyMetrics, s.checkAllowedIP)
+		return proxyConnection(clientConn, &proxyMetrics, s.isTargetIPAllowed)
 	}()
 
 	connDuration := time.Now().Sub(connStart)

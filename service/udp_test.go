@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package shadowsocks
+package service
 
 import (
 	"bytes"
@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
@@ -36,7 +37,7 @@ var natCipher shadowaead.Cipher
 
 func init() {
 	logging.SetLevel(logging.INFO, "")
-	coreCipher, _ := core.PickCipher(testCipher, nil, "test password")
+	coreCipher, _ := core.PickCipher(ss.TestCipher, nil, "test password")
 	natCipher = coreCipher.(shadowaead.Cipher)
 }
 
@@ -288,12 +289,12 @@ func TestNATTimeout(t *testing.T) {
 
 // Simulates receiving invalid UDP packets on a server with 100 ciphers.
 func BenchmarkUDPUnpackFail(b *testing.B) {
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(100))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(100))
 	if err != nil {
 		b.Fatal(err)
 	}
-	testPayload := MakeTestPayload(50)
-	textBuf := make([]byte, udpBufSize)
+	testPayload := ss.MakeTestPayload(50)
+	textBuf := make([]byte, ss.MaxUDPPacketSize)
 	testIP := net.ParseIP("192.0.2.1")
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
@@ -305,18 +306,18 @@ func BenchmarkUDPUnpackFail(b *testing.B) {
 // their own cipher and IP address.
 func BenchmarkUDPUnpackRepeat(b *testing.B) {
 	const numCiphers = 100 // Must be <256
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(numCiphers))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(numCiphers))
 	if err != nil {
 		b.Fatal(err)
 	}
-	testBuf := make([]byte, udpBufSize)
+	testBuf := make([]byte, ss.MaxUDPPacketSize)
 	packets := [numCiphers][]byte{}
 	ips := [numCiphers]net.IP{}
 	_, snapshot := cipherList.SnapshotForClientIP(nil)
 	for i, element := range snapshot {
-		packets[i] = make([]byte, 0, udpBufSize)
-		plaintext := MakeTestPayload(50)
-		packets[i], err = shadowaead.Pack(make([]byte, udpBufSize), plaintext, element.Value.(*CipherEntry).Cipher)
+		packets[i] = make([]byte, 0, ss.MaxUDPPacketSize)
+		plaintext := ss.MakeTestPayload(50)
+		packets[i], err = shadowaead.Pack(make([]byte, ss.MaxUDPPacketSize), plaintext, element.Value.(*CipherEntry).Cipher)
 		if err != nil {
 			b.Error(err)
 		}
@@ -337,15 +338,15 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 // Simulates receiving valid UDP packets from 100 different IP addresses,
 // all using the same cipher.
 func BenchmarkUDPUnpackSharedKey(b *testing.B) {
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(1)) // One widely shared key
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1)) // One widely shared key
 	if err != nil {
 		b.Fatal(err)
 	}
-	testBuf := make([]byte, udpBufSize)
-	plaintext := MakeTestPayload(50)
+	testBuf := make([]byte, ss.MaxUDPPacketSize)
+	plaintext := ss.MakeTestPayload(50)
 	_, snapshot := cipherList.SnapshotForClientIP(nil)
 	cipher := snapshot[0].Value.(*CipherEntry).Cipher
-	packet, err := shadowaead.Pack(make([]byte, udpBufSize), plaintext, cipher)
+	packet, err := shadowaead.Pack(make([]byte, ss.MaxUDPPacketSize), plaintext, cipher)
 
 	const numIPs = 100 // Must be <256
 	ips := [numIPs]net.IP{}
@@ -363,7 +364,7 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 }
 
 func TestUDPDoubleServe(t *testing.T) {
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +398,7 @@ func TestUDPDoubleServe(t *testing.T) {
 }
 
 func TestUDPEarlyStop(t *testing.T) {
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
 	}

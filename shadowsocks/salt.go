@@ -1,4 +1,4 @@
-// Copyright 2018 Jigsaw Operations LLC
+// Copyright 2020 Jigsaw Operations LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,24 @@
 
 package shadowsocks
 
-import logging "github.com/op/go-logging"
+import (
+	"crypto/rand"
+)
 
-var logger = logging.MustGetLogger("shadowsocks")
+// SaltGenerator generates unique salts to use in Shadowsocks connections.
+type SaltGenerator interface {
+	// Returns a new salt
+	GetSalt(salt []byte) error
+}
+
+// randomSaltGenerator generates a new random salt.
+type randomSaltGenerator struct{}
+
+// GetSalt outputs a random salt.
+func (randomSaltGenerator) GetSalt(salt []byte) error {
+	_, err := rand.Read(salt)
+	return err
+}
+
+// RandomSaltGenerator is a basic SaltGenerator.
+var RandomSaltGenerator SaltGenerator = randomSaltGenerator{}

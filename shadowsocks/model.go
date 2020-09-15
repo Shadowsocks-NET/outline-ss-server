@@ -14,4 +14,29 @@
 
 package shadowsocks
 
-const MaxUDPPacketSize = 64 * 1024
+// import "io"
+
+// // AccessKeyID is the ID of an access key.
+// type AccessKeyID = string
+
+// // TextConn is a simple duplex connection
+// type NetConn interface {
+// 	Location() string
+// 	WriteTo(write io.Writer) (int64, error)
+// 	CloseRead()
+// 	ReadFrom(reader io.Reader) (int64, error)
+// 	CloseWrite()
+// }
+
+// type CryptoConn interface {
+// 	Decrypt(CipherList) (AccessKeyConn, error)
+// }
+
+// type Proxy interface {
+// 	proxy
+// }
+
+// type AccessKeyConn interface {
+// 	NetConn
+// 	AccessKeyID() AccessKeyID
+// }
