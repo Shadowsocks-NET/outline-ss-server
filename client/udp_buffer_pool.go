@@ -3,12 +3,12 @@ package client
 import (
 	"sync"
 
-	"github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 )
 
 var pool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, shadowsocks.MaxUDPPacketSize)
+		return make([]byte, ss.MaxUDPPacketSize)
 	},
 }
 

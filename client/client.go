@@ -7,7 +7,7 @@ import (
 	"time"
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-	"github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	"github.com/shadowsocks/go-shadowsocks2/core"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
@@ -70,7 +70,7 @@ func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string) (onet.DuplexConn, e
 	if err != nil {
 		return nil, err
 	}
-	ssw := shadowsocks.NewShadowsocksWriter(proxyConn, c.cipher)
+	ssw := ss.NewShadowsocksWriter(proxyConn, c.cipher)
 	_, err = ssw.LazyWrite(socksTargetAddr)
 	if err != nil {
 		proxyConn.Close()
@@ -79,7 +79,7 @@ func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string) (onet.DuplexConn, e
 	time.AfterFunc(helloWait, func() {
 		ssw.Flush()
 	})
-	ssr := shadowsocks.NewShadowsocksReader(proxyConn, c.cipher)
+	ssr := ss.NewShadowsocksReader(proxyConn, c.cipher)
 	return onet.WrapConn(proxyConn, ssr, ssw), nil
 }
 

@@ -22,14 +22,14 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	"golang.org/x/crypto/hkdf"
 )
 
 // ServerSaltGenerator offers the ability to check if a salt was marked as
 // server-originated.
 type ServerSaltGenerator interface {
-	shadowsocks.SaltGenerator
+	ss.SaltGenerator
 	// IsServerSalt returns true if the salt was created by this generator
 	// and is marked as server-originated.
 	IsServerSalt(salt []byte) bool

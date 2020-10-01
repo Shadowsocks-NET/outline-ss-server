@@ -27,7 +27,7 @@ import (
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
-	"github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
 
 	"github.com/shadowsocks/go-shadowsocks2/socks"
@@ -262,8 +262,8 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 		// Clear the authentication deadline
 		clientConn.SetReadDeadline(time.Time{})
 
-		ssr := shadowsocks.NewShadowsocksReader(clientReader, cipherEntry.Cipher)
-		ssw := shadowsocks.NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
+		ssr := ss.NewShadowsocksReader(clientReader, cipherEntry.Cipher)
+		ssw := ss.NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
 		ssw.SetSaltGenerator(cipherEntry.SaltGenerator)
 		clientConn = onet.WrapConn(clientConn, ssr, ssw)
 		return proxyConnection(clientConn, &proxyMetrics, s.isTargetIPAllowed)
