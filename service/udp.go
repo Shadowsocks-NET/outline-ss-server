@@ -19,16 +19,12 @@ import (
 	"fmt"
 	"net"
 	"runtime/debug"
+	"sync"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
-
-	logging "github.com/op/go-logging"
-
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-
-	"sync"
-
+	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
+	logging "github.com/op/go-logging"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
