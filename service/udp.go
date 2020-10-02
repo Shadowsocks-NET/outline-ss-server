@@ -97,7 +97,7 @@ type UDPService interface {
 	GracefulStop() error
 }
 
-func (s *udpService) SetTargetIPValidator(isTargetIPAllowed func(ip net.IP) *onet.ConnectionError) {
+func (s *udpService) SetTargetIPValidator(isTargetIPAllowed onet.IPPolicy) {
 	s.isTargetIPAllowed = isTargetIPAllowed
 }
 
