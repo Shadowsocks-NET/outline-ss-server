@@ -12,29 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package shadowsocks
+package service
 
-import (
-	"fmt"
-)
+import logging "github.com/op/go-logging"
 
-// TestCipher is a preferred cipher to use in testing.
-const TestCipher = "chacha20-ietf-poly1305"
-
-// MakeTestSecrets returns a slice of `n` test passwords.  Not secure!
-func MakeTestSecrets(n int) []string {
-	secrets := make([]string, n)
-	for i := 0; i < n; i++ {
-		secrets[i] = fmt.Sprintf("secret-%v", i)
-	}
-	return secrets
-}
-
-// MakeTestPayload returns a slice of `size` arbitrary bytes.
-func MakeTestPayload(size int) []byte {
-	payload := make([]byte, size)
-	for i := 0; i < size; i++ {
-		payload[i] = byte(i)
-	}
-	return payload
-}
+var logger = logging.MustGetLogger("shadowsocks")

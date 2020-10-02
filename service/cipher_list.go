@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package shadowsocks
+package service
 
 import (
 	"container/list"
@@ -48,7 +48,7 @@ func MakeCipherEntry(id string, cipher shadowaead.Cipher, secret string) CipherE
 	} else {
 		// Adding a tag would leave too little randomness to protect
 		// against accidental salt reuse, so don't mark the salts.
-		saltGenerator = RandomSaltGenerator
+		saltGenerator = RandomServerSaltGenerator
 	}
 	return CipherEntry{
 		ID:            id,

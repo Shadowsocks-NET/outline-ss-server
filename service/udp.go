@@ -12,27 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package shadowsocks
+package service
 
 import (
 	"errors"
 	"fmt"
 	"net"
 	"runtime/debug"
+	"sync"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-ss-server/metrics"
-	logging "github.com/op/go-logging"
-
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-
-	"sync"
-
+	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
+	logging "github.com/op/go-logging"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
-const udpBufSize = 64 * 1024
+// Max UDP buffer size for the server code.
+const serverUDPBufferSize = 64 * 1024
 
 // Wrapper for logger.Debugf during UDP proxying.
 func debugUDP(tag string, template string, val interface{}) {
@@ -50,9 +48,9 @@ func debugUDPAddr(addr net.Addr, template string, val interface{}) {
 	}
 }
 
-// upack decrypts src into dst. It tries each cipher until it finds one that authenticates
+// Decrypts src into dst. It tries each cipher until it finds one that authenticates
 // correctly. dst and src must not overlap.
-func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
+func findAccessKeyUDP(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
 	_, snapshot := cipherList.SnapshotForClientIP(clientIP)
@@ -72,29 +70,35 @@ func unpack(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, st
 }
 
 type udpService struct {
-	mu             sync.RWMutex // Protects .clientConn and .stopped
-	clientConn     net.PacketConn
-	stopped        bool
-	natTimeout     time.Duration
-	ciphers        CipherList
-	m              metrics.ShadowsocksMetrics
-	running        sync.WaitGroup
-	checkAllowedIP func(net.IP) *onet.ConnectionError
+	mu                sync.RWMutex // Protects .clientConn and .stopped
+	clientConn        net.PacketConn
+	stopped           bool
+	natTimeout        time.Duration
+	ciphers           CipherList
+	m                 metrics.ShadowsocksMetrics
+	running           sync.WaitGroup
+	targetIPValidator onet.TargetIPValidator
 }
 
 // NewUDPService creates a UDPService
 func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, checkAllowedIP: onet.RequirePublicIP}
+	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, targetIPValidator: onet.RequirePublicIP}
 }
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
+	// SetTargetIPValidator sets the function to be used to validate the target IP addresses.
+	SetTargetIPValidator(targetIPValidator onet.TargetIPValidator)
 	// Serve adopts the clientConn, and will not return until it is closed by Stop().
 	Serve(clientConn net.PacketConn) error
 	// Stop closes the clientConn and prevents further forwarding of packets.
 	Stop() error
 	// GracefulStop calls Stop(), and then blocks until all resources have been cleaned up.
 	GracefulStop() error
+}
+
+func (s *udpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidator) {
+	s.targetIPValidator = targetIPValidator
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
@@ -117,8 +121,8 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 
 	nm := newNATmap(s.natTimeout, s.m, &s.running)
 	defer nm.Close()
-	cipherBuf := make([]byte, udpBufSize)
-	textBuf := make([]byte, udpBufSize)
+	cipherBuf := make([]byte, serverUDPBufferSize)
+	textBuf := make([]byte, serverUDPBufferSize)
 
 	stopped := false
 	for !stopped {
@@ -163,30 +167,9 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				defer logger.Debugf("UDP(%v): done", clientAddr)
 				logger.Debugf("UDP(%v): Outbound packet has %d bytes", clientAddr, clientProxyBytes)
 			}
-			unpackStart := time.Now()
-			ip := clientAddr.(*net.UDPAddr).IP
-			buf, keyID, cipher, err := unpack(ip, textBuf, cipherBuf[:clientProxyBytes], s.ciphers)
-			timeToCipher = time.Now().Sub(unpackStart)
 
-			if err != nil {
-				return onet.NewConnectionError("ERR_CIPHER", "Failed to upack data from client", err)
-			}
-
-			tgtAddr := socks.SplitAddr(buf)
-			if tgtAddr == nil {
-				return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", nil)
-			}
-
-			tgtUDPAddr, err := net.ResolveUDPAddr("udp", tgtAddr.String())
-			if err != nil {
-				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
-			}
-			if err := s.checkAllowedIP(tgtUDPAddr.IP); err != nil {
-				return err
-			}
-
-			payload := buf[len(tgtAddr):]
-
+			cipherData := cipherBuf[:clientProxyBytes]
+			var textData []byte
 			targetConn := nm.Get(clientAddr.String())
 			if targetConn == nil {
 				clientLocation, locErr := s.m.GetLocation(clientAddr)
@@ -195,15 +178,46 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				}
 				debugUDPAddr(clientAddr, "Got location \"%s\"", clientLocation)
 
+				ip := clientAddr.(*net.UDPAddr).IP
+				var cipher shadowaead.Cipher
+				unpackStart := time.Now()
+				textData, keyID, cipher, err = findAccessKeyUDP(ip, textBuf, cipherData, s.ciphers)
+				timeToCipher = time.Now().Sub(unpackStart)
+
+				if err != nil {
+					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack initial packet", err)
+				}
+
 				udpConn, err := net.ListenPacket("udp", "")
 				if err != nil {
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
 				targetConn = nm.Add(clientAddr, clientConn, cipher, udpConn, clientLocation, keyID)
+			} else {
+				unpackStart := time.Now()
+				textData, err = shadowaead.Unpack(textBuf, cipherData, targetConn.cipher)
+				timeToCipher = time.Now().Sub(unpackStart)
+				if err != nil {
+					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack data from client", err)
+				}
 			}
 			clientLocation = targetConn.clientLocation
 
+			tgtAddr := socks.SplitAddr(textData)
+			if tgtAddr == nil {
+				return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", nil)
+			}
+
+			tgtUDPAddr, err := net.ResolveUDPAddr("udp", tgtAddr.String())
+			if err != nil {
+				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
+			}
+			if err := s.targetIPValidator(tgtUDPAddr.IP); err != nil {
+				return err
+			}
+
 			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
+			payload := textData[len(tgtAddr):]
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to target", err)
@@ -237,6 +251,7 @@ func isDNS(addr net.Addr) bool {
 
 type natconn struct {
 	net.PacketConn
+	cipher shadowaead.Cipher
 	// We store the client location in the NAT map to avoid recomputing it
 	// for every downstream packet in a UDP-based connection.
 	clientLocation string
@@ -317,9 +332,10 @@ func (m *natmap) Get(key string) *natconn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) set(key string, pc net.PacketConn, clientLocation string) *natconn {
+func (m *natmap) set(key string, pc net.PacketConn, cipher shadowaead.Cipher, clientLocation string) *natconn {
 	entry := &natconn{
 		PacketConn:     pc,
+		cipher:         cipher,
 		clientLocation: clientLocation,
 		defaultTimeout: m.timeout,
 	}
@@ -344,12 +360,12 @@ func (m *natmap) del(key string) net.PacketConn {
 }
 
 func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) *natconn {
-	entry := m.set(clientAddr.String(), targetConn, clientLocation)
+	entry := m.set(clientAddr.String(), targetConn, cipher, clientLocation)
 
 	m.metrics.AddUDPNatEntry()
 	m.running.Add(1)
 	go func() {
-		timedCopy(clientAddr, clientConn, cipher, entry, keyID, m.metrics)
+		timedCopy(clientAddr, clientConn, entry, keyID, m.metrics)
 		m.metrics.RemoveUDPNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
@@ -378,14 +394,14 @@ func (m *natmap) Close() error {
 var maxAddrLen int = len(socks.ParseAddr("[2001:db8::1]:12345"))
 
 // copy from target to client until read timeout
-func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn *natconn,
+func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, targetConn *natconn,
 	keyID string, sm metrics.ShadowsocksMetrics) {
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
 	// [padding?][salt][address][body][tag][extra]
 	// Padding is only used if the address is IPv4.
-	pkt := make([]byte, udpBufSize)
+	pkt := make([]byte, serverUDPBufferSize)
 
-	saltSize := cipher.SaltSize()
+	saltSize := targetConn.cipher.SaltSize()
 	// Leave enough room at the beginning of the packet for a max-length header (i.e. IPv6).
 	bodyStart := saltSize + maxAddrLen
 
@@ -429,7 +445,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 			//           [            packBuf             ]
 			//           [          buf           ]
 			packBuf := pkt[saltStart:]
-			buf, err := shadowaead.Pack(packBuf, plaintextBuf, cipher) // Encrypt in-place
+			buf, err := shadowaead.Pack(packBuf, plaintextBuf, targetConn.cipher) // Encrypt in-place
 			if err != nil {
 				return onet.NewConnectionError("ERR_PACK", "Failed to pack data to client", err)
 			}
