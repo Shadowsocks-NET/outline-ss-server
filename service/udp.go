@@ -77,18 +77,18 @@ type udpService struct {
 	ciphers           CipherList
 	m                 metrics.ShadowsocksMetrics
 	running           sync.WaitGroup
-	isTargetIPAllowed func(net.IP) *onet.ConnectionError
+	targetIPValidator func(net.IP) *onet.ConnectionError
 }
 
 // NewUDPService creates a UDPService
 func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, isTargetIPAllowed: onet.RequirePublicIP}
+	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, targetIPValidator: onet.RequirePublicIP}
 }
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
 	// SetTargetIPValidator sets the function to be used to validate the target IP addresses.
-	SetTargetIPValidator(isTargetIPAllowed func(ip net.IP) *onet.ConnectionError)
+	SetTargetIPValidator(targetIPValidator onet.TargetIPValidator)
 	// Serve adopts the clientConn, and will not return until it is closed by Stop().
 	Serve(clientConn net.PacketConn) error
 	// Stop closes the clientConn and prevents further forwarding of packets.
@@ -97,8 +97,8 @@ type UDPService interface {
 	GracefulStop() error
 }
 
-func (s *udpService) SetTargetIPValidator(isTargetIPAllowed onet.IPPolicy) {
-	s.isTargetIPAllowed = isTargetIPAllowed
+func (s *udpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidator) {
+	s.targetIPValidator = targetIPValidator
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
@@ -212,7 +212,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 			if err != nil {
 				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
 			}
-			if err := s.isTargetIPAllowed(tgtUDPAddr.IP); err != nil {
+			if err := s.targetIPValidator(tgtUDPAddr.IP); err != nil {
 				return err
 			}
 

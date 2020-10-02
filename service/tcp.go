@@ -119,7 +119,7 @@ type tcpService struct {
 	readTimeout time.Duration
 	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
 	replayCache       *ReplayCache
-	isTargetIPAllowed func(net.IP) *onet.ConnectionError
+	targetIPValidator onet.TargetIPValidator
 }
 
 // NewTCPService creates a TCPService
@@ -130,14 +130,14 @@ func NewTCPService(ciphers CipherList, replayCache *ReplayCache, m metrics.Shado
 		m:                 m,
 		readTimeout:       timeout,
 		replayCache:       replayCache,
-		isTargetIPAllowed: onet.RequirePublicIP,
+		targetIPValidator: onet.RequirePublicIP,
 	}
 }
 
 // TCPService is a Shadowsocks TCP service that can be started and stopped.
 type TCPService interface {
 	// SetTargetIPValidator sets the function to be used to validate the target IP addresses.
-	SetTargetIPValidator(isTargetIPAllowed func(ip net.IP) *onet.ConnectionError)
+	SetTargetIPValidator(targetIPValidator onet.TargetIPValidator)
 	// Serve adopts the listener, which will be closed before Serve returns.  Serve returns an error unless Stop() was called.
 	Serve(listener *net.TCPListener) error
 	// Stop closes the listener but does not interfere with existing connections.
@@ -146,12 +146,12 @@ type TCPService interface {
 	GracefulStop() error
 }
 
-func (s *tcpService) SetTargetIPValidator(isTargetIPAllowed onet.IPPolicy) {
-	s.isTargetIPAllowed = isTargetIPAllowed
+func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidator) {
+	s.targetIPValidator = targetIPValidator
 }
 
 // proxyConnection will route the clientConn according to the address read from the connection.
-func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkAllowedIP onet.IPPolicy) *onet.ConnectionError {
+func proxyConnection(clientConn onet.DuplexConn, proxyMetrics *metrics.ProxyMetrics, checkAllowedIP onet.TargetIPValidator) *onet.ConnectionError {
 	tgtAddr, err := socks.ReadAddr(clientConn)
 	if err != nil {
 		return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
@@ -266,7 +266,7 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 		ssw := ss.NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
 		ssw.SetSaltGenerator(cipherEntry.SaltGenerator)
 		clientConn = onet.WrapConn(clientConn, ssr, ssw)
-		return proxyConnection(clientConn, &proxyMetrics, s.isTargetIPAllowed)
+		return proxyConnection(clientConn, &proxyMetrics, s.targetIPValidator)
 	}()
 
 	connDuration := time.Now().Sub(connStart)
