@@ -515,12 +515,15 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 
 	const N = 1000
 	buf := make([]byte, N)
+	conns := make([]net.PacketConn, len(clients))
+	for i, client := range clients {
+		conns[i], _ = client.ListenUDP(nil)
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		conn, _ := clients[i%numKeys].ListenUDP(nil)
+		conn := conns[i%numKeys]
 		conn.WriteTo(buf, echoConn.LocalAddr())
 		conn.ReadFrom(buf)
-		conn.Close()
 	}
 	b.StopTimer()
 	proxy.Stop()
