@@ -187,7 +187,7 @@ func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 	}
 	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
-	buf := make([]byte, maxUDPBufferSize)
+	buf := make([]byte, clientUDPBufferSize)
 	for n := 0; n < b.N; n++ {
 		payload := ss.MakeTestPayload(1024)
 		pcrw := &packetConnReadWriter{PacketConn: conn, targetAddr: NewAddr(testTargetAddr, "udp")}
@@ -249,8 +249,8 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Co
 		t.Fatalf("Proxy ListenUDP failed: %v", err)
 	}
 	t.Logf("Starting SS UDP echo proxy at %v\n", conn.LocalAddr())
-	cipherBuf := make([]byte, maxUDPBufferSize)
-	clientBuf := make([]byte, maxUDPBufferSize)
+	cipherBuf := make([]byte, clientUDPBufferSize)
+	clientBuf := make([]byte, clientUDPBufferSize)
 	cipher, err := newAeadCipher(testCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)

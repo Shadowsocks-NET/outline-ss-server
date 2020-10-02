@@ -31,6 +31,8 @@ import (
 	logging "github.com/op/go-logging"
 )
 
+const maxUDPPacketSize = 64 * 1024
+
 func init() {
 	logging.SetLevel(logging.INFO, "")
 }
@@ -77,7 +79,7 @@ func startUDPEchoServer(t testing.TB) (*net.UDPConn, *sync.WaitGroup) {
 	go func() {
 		defer running.Done()
 		defer conn.Close()
-		buf := make([]byte, ss.MaxUDPPacketSize)
+		buf := make([]byte, maxUDPPacketSize)
 		for {
 			n, clientAddr, err := conn.ReadFromUDP(buf)
 			if err != nil {

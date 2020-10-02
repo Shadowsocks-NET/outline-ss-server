@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
-	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 
 	logging "github.com/op/go-logging"
 
@@ -33,6 +32,9 @@ import (
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
+
+// Max UDP buffer size for the server code.
+const serverUDPBufferSize = 64 * 1024
 
 // Wrapper for logger.Debugf during UDP proxying.
 func debugUDP(tag string, template string, val interface{}) {
@@ -123,8 +125,8 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 
 	nm := newNATmap(s.natTimeout, s.m, &s.running)
 	defer nm.Close()
-	cipherBuf := make([]byte, ss.MaxUDPPacketSize)
-	textBuf := make([]byte, ss.MaxUDPPacketSize)
+	cipherBuf := make([]byte, serverUDPBufferSize)
+	textBuf := make([]byte, serverUDPBufferSize)
 
 	stopped := false
 	for !stopped {
@@ -389,7 +391,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
 	// [padding?][salt][address][body][tag][extra]
 	// Padding is only used if the address is IPv4.
-	pkt := make([]byte, ss.MaxUDPPacketSize)
+	pkt := make([]byte, serverUDPBufferSize)
 
 	saltSize := cipher.SaltSize()
 	// Leave enough room at the beginning of the packet for a max-length header (i.e. IPv6).

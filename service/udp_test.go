@@ -294,7 +294,7 @@ func BenchmarkUDPUnpackFail(b *testing.B) {
 		b.Fatal(err)
 	}
 	testPayload := ss.MakeTestPayload(50)
-	textBuf := make([]byte, ss.MaxUDPPacketSize)
+	textBuf := make([]byte, serverUDPBufferSize)
 	testIP := net.ParseIP("192.0.2.1")
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
@@ -310,14 +310,14 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	testBuf := make([]byte, ss.MaxUDPPacketSize)
+	testBuf := make([]byte, serverUDPBufferSize)
 	packets := [numCiphers][]byte{}
 	ips := [numCiphers]net.IP{}
 	_, snapshot := cipherList.SnapshotForClientIP(nil)
 	for i, element := range snapshot {
-		packets[i] = make([]byte, 0, ss.MaxUDPPacketSize)
+		packets[i] = make([]byte, 0, serverUDPBufferSize)
 		plaintext := ss.MakeTestPayload(50)
-		packets[i], err = shadowaead.Pack(make([]byte, ss.MaxUDPPacketSize), plaintext, element.Value.(*CipherEntry).Cipher)
+		packets[i], err = shadowaead.Pack(make([]byte, serverUDPBufferSize), plaintext, element.Value.(*CipherEntry).Cipher)
 		if err != nil {
 			b.Error(err)
 		}
@@ -342,11 +342,11 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	testBuf := make([]byte, ss.MaxUDPPacketSize)
+	testBuf := make([]byte, serverUDPBufferSize)
 	plaintext := ss.MakeTestPayload(50)
 	_, snapshot := cipherList.SnapshotForClientIP(nil)
 	cipher := snapshot[0].Value.(*CipherEntry).Cipher
-	packet, err := shadowaead.Pack(make([]byte, ss.MaxUDPPacketSize), plaintext, cipher)
+	packet, err := shadowaead.Pack(make([]byte, serverUDPBufferSize), plaintext, cipher)
 
 	const numIPs = 100 // Must be <256
 	ips := [numIPs]net.IP{}
