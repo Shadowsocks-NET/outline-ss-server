@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package shadowsocks
+package service
 
 import (
 	"errors"
@@ -22,8 +22,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-ss-server/metrics"
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
 )
 
@@ -41,11 +42,11 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
 
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(100))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(100))
 	if err != nil {
 		b.Fatal(err)
 	}
-	testPayload := MakeTestPayload(50)
+	testPayload := ss.MakeTestPayload(50)
 	for n := 0; n < b.N; n++ {
 		go func() {
 			conn, err := net.Dial("tcp", listener.Addr().String())
@@ -128,7 +129,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 	b.ResetTimer()
 
 	const numCiphers = 100 // Must be <256
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(numCiphers))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(numCiphers))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		addr := &net.TCPAddr{IP: clientIP, Port: 54321}
 		c := conn{clientAddr: addr, reader: reader, writer: writer}
 		cipher := cipherEntries[cipherNumber].Cipher
-		go NewShadowsocksWriter(writer, cipher).Write(MakeTestPayload(50))
+		go ss.NewShadowsocksWriter(writer, cipher).Write(ss.MakeTestPayload(50))
 		b.StartTimer()
 		_, _, _, _, err := findAccessKey(&c, clientIP, cipherList)
 		b.StopTimer()
@@ -195,7 +196,7 @@ func TestReplayDefense(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +208,7 @@ func TestReplayDefense(t *testing.T) {
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
-	go NewShadowsocksWriter(writer, cipher).Write([]byte{0})
+	go ss.NewShadowsocksWriter(writer, cipher).Write([]byte{0})
 	preamble := make([]byte, 32+2+16)
 	if _, err := io.ReadFull(reader, preamble); err != nil {
 		t.Fatal(err)
@@ -276,7 +277,7 @@ func TestReverseReplayDefense(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +289,7 @@ func TestReverseReplayDefense(t *testing.T) {
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
-	ssWriter := NewShadowsocksWriter(writer, cipher)
+	ssWriter := ss.NewShadowsocksWriter(writer, cipher)
 	// Use a server-marked salt in the client's preamble.
 	ssWriter.SetSaltGenerator(cipherEntry.SaltGenerator)
 	go ssWriter.Write([]byte{0})
@@ -348,14 +349,14 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(5))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(5))
 	if err != nil {
 		t.Fatal(err)
 	}
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, testTimeout)
 
-	testPayload := MakeTestPayload(payloadSize)
+	testPayload := ss.MakeTestPayload(payloadSize)
 	done := make(chan bool)
 	go func() {
 		defer func() { done <- true }()
@@ -411,7 +412,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 }
 
 func TestTCPDoubleServe(t *testing.T) {
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +447,7 @@ func TestTCPDoubleServe(t *testing.T) {
 }
 
 func TestTCPEarlyStop(t *testing.T) {
-	cipherList, err := MakeTestCiphers(MakeTestSecrets(1))
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,8 +28,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-ss-server/metrics"
-	"github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
+	"github.com/Jigsaw-Code/outline-ss-server/service"
+	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
 	"github.com/op/go-logging"
 	"github.com/oschwald/geoip2-golang"
 	"github.com/prometheus/client_golang/prometheus"
@@ -63,15 +63,15 @@ func init() {
 }
 
 type ssPort struct {
-	tcpService shadowsocks.TCPService
-	udpService shadowsocks.UDPService
-	cipherList shadowsocks.CipherList
+	tcpService service.TCPService
+	udpService service.UDPService
+	cipherList service.CipherList
 }
 
 type SSServer struct {
 	natTimeout  time.Duration
 	m           metrics.ShadowsocksMetrics
-	replayCache shadowsocks.ReplayCache
+	replayCache service.ReplayCache
 	ports       map[int]*ssPort
 }
 
@@ -85,10 +85,10 @@ func (s *SSServer) startPort(portNum int) error {
 		return fmt.Errorf("Failed to start UDP on port %v: %v", portNum, err)
 	}
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
-	port := &ssPort{cipherList: shadowsocks.NewCipherList()}
+	port := &ssPort{cipherList: service.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
-	port.tcpService = shadowsocks.NewTCPService(port.cipherList, &s.replayCache, s.m, tcpReadTimeout)
-	port.udpService = shadowsocks.NewUDPService(s.natTimeout, port.cipherList, s.m)
+	port.tcpService = service.NewTCPService(port.cipherList, &s.replayCache, s.m, tcpReadTimeout)
+	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m)
 	s.ports[portNum] = port
 	go port.tcpService.Serve(listener)
 	go port.udpService.Serve(packetConn)
@@ -139,7 +139,7 @@ func (s *SSServer) loadConfig(filename string) error {
 		if !ok {
 			return fmt.Errorf("Only AEAD ciphers are supported. Found %v", keyConfig.Cipher)
 		}
-		entry := shadowsocks.MakeCipherEntry(keyConfig.ID, aead, keyConfig.Secret)
+		entry := service.MakeCipherEntry(keyConfig.ID, aead, keyConfig.Secret)
 		cipherList.PushBack(&entry)
 	}
 	for port := range s.ports {
@@ -181,7 +181,7 @@ func RunSSServer(filename string, natTimeout time.Duration, sm metrics.Shadowsoc
 	server := &SSServer{
 		natTimeout:  natTimeout,
 		m:           sm,
-		replayCache: shadowsocks.NewReplayCache(replayHistory),
+		replayCache: service.NewReplayCache(replayHistory),
 		ports:       make(map[int]*ssPort),
 	}
 	err := server.loadConfig(filename)

@@ -1,13 +1,15 @@
-package shadowsocks
+package client
 
-import "sync"
+import (
+	"sync"
+)
 
-// maxUDPBufferSize is the maximum UDP packet size in bytes.
-const maxUDPBufferSize = 16 * 1024
+// clientUDPBufferSize is the maximum UDP packet size in bytes.
+const clientUDPBufferSize = 16 * 1024
 
 var pool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, maxUDPBufferSize)
+		return make([]byte, clientUDPBufferSize)
 	},
 }
 

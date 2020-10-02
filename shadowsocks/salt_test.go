@@ -1,4 +1,4 @@
-// Copyright 2018 Jigsaw Operations LLC
+// Copyright 2020 Jigsaw Operations LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,26 +15,30 @@
 package shadowsocks
 
 import (
-	"fmt"
+	"bytes"
+	"testing"
 )
 
-// TestCipher is a preferred cipher to use in testing.
-const TestCipher = "chacha20-ietf-poly1305"
-
-// MakeTestSecrets returns a slice of `n` test passwords.  Not secure!
-func MakeTestSecrets(n int) []string {
-	secrets := make([]string, n)
-	for i := 0; i < n; i++ {
-		secrets[i] = fmt.Sprintf("secret-%v", i)
+func TestRandomSaltGenerator(t *testing.T) {
+	if err := RandomSaltGenerator.GetSalt(nil); err != nil {
+		t.Error(err)
 	}
-	return secrets
+	salt := make([]byte, 16)
+	if err := RandomSaltGenerator.GetSalt(salt); err != nil {
+		t.Error(err)
+	}
+	if bytes.Equal(salt, make([]byte, 16)) {
+		t.Error("Salt is all zeros")
+	}
 }
 
-// MakeTestPayload returns a slice of `size` arbitrary bytes.
-func MakeTestPayload(size int) []byte {
-	payload := make([]byte, size)
-	for i := 0; i < size; i++ {
-		payload[i] = byte(i)
-	}
-	return payload
+func BenchmarkRandomSaltGenerator(b *testing.B) {
+	b.RunParallel(func(pb *testing.PB) {
+		salt := make([]byte, 32)
+		for pb.Next() {
+			if err := RandomSaltGenerator.GetSalt(salt); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

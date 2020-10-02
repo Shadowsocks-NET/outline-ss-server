@@ -12,27 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package shadowsocks
+package service
 
 import (
 	"errors"
 	"fmt"
 	"net"
 	"runtime/debug"
+	"sync"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-ss-server/metrics"
-	logging "github.com/op/go-logging"
-
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-
-	"sync"
-
+	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
+	logging "github.com/op/go-logging"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
-const udpBufSize = 64 * 1024
+// Max UDP buffer size for the server code.
+const serverUDPBufferSize = 64 * 1024
 
 // Wrapper for logger.Debugf during UDP proxying.
 func debugUDP(tag string, template string, val interface{}) {
@@ -72,29 +70,35 @@ func findAccessKeyUDP(clientIP net.IP, dst, src []byte, cipherList CipherList) (
 }
 
 type udpService struct {
-	mu             sync.RWMutex // Protects .clientConn and .stopped
-	clientConn     net.PacketConn
-	stopped        bool
-	natTimeout     time.Duration
-	ciphers        CipherList
-	m              metrics.ShadowsocksMetrics
-	running        sync.WaitGroup
-	checkAllowedIP func(net.IP) *onet.ConnectionError
+	mu                sync.RWMutex // Protects .clientConn and .stopped
+	clientConn        net.PacketConn
+	stopped           bool
+	natTimeout        time.Duration
+	ciphers           CipherList
+	m                 metrics.ShadowsocksMetrics
+	running           sync.WaitGroup
+	targetIPValidator onet.TargetIPValidator
 }
 
 // NewUDPService creates a UDPService
 func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, checkAllowedIP: onet.RequirePublicIP}
+	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, targetIPValidator: onet.RequirePublicIP}
 }
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
+	// SetTargetIPValidator sets the function to be used to validate the target IP addresses.
+	SetTargetIPValidator(targetIPValidator onet.TargetIPValidator)
 	// Serve adopts the clientConn, and will not return until it is closed by Stop().
 	Serve(clientConn net.PacketConn) error
 	// Stop closes the clientConn and prevents further forwarding of packets.
 	Stop() error
 	// GracefulStop calls Stop(), and then blocks until all resources have been cleaned up.
 	GracefulStop() error
+}
+
+func (s *udpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidator) {
+	s.targetIPValidator = targetIPValidator
 }
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
@@ -117,8 +121,8 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 
 	nm := newNATmap(s.natTimeout, s.m, &s.running)
 	defer nm.Close()
-	cipherBuf := make([]byte, udpBufSize)
-	textBuf := make([]byte, udpBufSize)
+	cipherBuf := make([]byte, serverUDPBufferSize)
+	textBuf := make([]byte, serverUDPBufferSize)
 
 	stopped := false
 	for !stopped {
@@ -208,7 +212,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 			if err != nil {
 				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
 			}
-			if err := s.checkAllowedIP(tgtUDPAddr.IP); err != nil {
+			if err := s.targetIPValidator(tgtUDPAddr.IP); err != nil {
 				return err
 			}
 
@@ -395,7 +399,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, targetConn *natco
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
 	// [padding?][salt][address][body][tag][extra]
 	// Padding is only used if the address is IPv4.
-	pkt := make([]byte, udpBufSize)
+	pkt := make([]byte, serverUDPBufferSize)
 
 	saltSize := targetConn.cipher.SaltSize()
 	// Leave enough room at the beginning of the packet for a max-length header (i.e. IPv6).

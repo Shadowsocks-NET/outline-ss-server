@@ -297,3 +297,24 @@ func (c *measuredConn) ReadFrom(r io.Reader) (int64, error) {
 func MeasureConn(conn onet.DuplexConn, bytesSent, bytesReceived *int64) onet.DuplexConn {
 	return &measuredConn{DuplexConn: conn, writeCount: bytesSent, readCount: bytesReceived}
 }
+
+// NoOpMetrics is a fake ShadowsocksMetrics that doesn't do anything. Useful in tests
+// or if you don't want to track metrics.
+type NoOpMetrics struct{}
+
+func (m *NoOpMetrics) SetBuildInfo(version string) {}
+func (m *NoOpMetrics) AddTCPProbe(clientLocation, status, drainResult string, port int, data ProxyMetrics) {
+}
+func (m *NoOpMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data ProxyMetrics, timeToCipher, duration time.Duration) {
+}
+func (m *NoOpMetrics) GetLocation(net.Addr) (string, error) {
+	return "", nil
+}
+func (m *NoOpMetrics) SetNumAccessKeys(numKeys int, numPorts int) {}
+func (m *NoOpMetrics) AddOpenTCPConnection(clientLocation string) {}
+func (m *NoOpMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {
+}
+func (m *NoOpMetrics) AddUDPPacketFromTarget(clientLocation, accessKey, status string, targetProxyBytes, proxyClientBytes int) {
+}
+func (m *NoOpMetrics) AddUDPNatEntry()    {}
+func (m *NoOpMetrics) RemoveUDPNatEntry() {}
