@@ -35,21 +35,21 @@ type ServerSaltGenerator interface {
 	IsServerSalt(salt []byte) bool
 }
 
-// randomSaltGenerator generates a new random salt.
-type randomSaltGenerator struct{}
+// randomServerSaltGenerator generates a new random salt.
+type randomServerSaltGenerator struct{}
 
 // GetSalt outputs a random salt.
-func (randomSaltGenerator) GetSalt(salt []byte) error {
+func (randomServerSaltGenerator) GetSalt(salt []byte) error {
 	_, err := rand.Read(salt)
 	return err
 }
 
-func (randomSaltGenerator) IsServerSalt(salt []byte) bool {
+func (randomServerSaltGenerator) IsServerSalt(salt []byte) bool {
 	return false
 }
 
 // RandomServerSaltGenerator is a basic ServerSaltGenerator.
-var RandomServerSaltGenerator ServerSaltGenerator = randomSaltGenerator{}
+var RandomServerSaltGenerator ServerSaltGenerator = randomServerSaltGenerator{}
 
 // serverSaltGenerator generates unique salts that are secretly marked.
 type serverSaltGenerator struct {
