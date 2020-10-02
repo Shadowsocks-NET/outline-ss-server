@@ -134,7 +134,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		b.Fatal(err)
 	}
 	cipherEntries := [numCiphers]*CipherEntry{}
-	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	snapshot := cipherList.SnapshotForClientIP(nil)
 	for cipherNumber, element := range snapshot {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
 	}
@@ -204,7 +204,7 @@ func TestReplayDefense(t *testing.T) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
-	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	snapshot := cipherList.SnapshotForClientIP(nil)
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
@@ -285,7 +285,7 @@ func TestReverseReplayDefense(t *testing.T) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
-	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	snapshot := cipherList.SnapshotForClientIP(nil)
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()

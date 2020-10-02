@@ -19,8 +19,6 @@ import (
 	"fmt"
 
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
-	"github.com/shadowsocks/go-shadowsocks2/core"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
 // MakeTestCiphers creates a CipherList containing one fresh AEAD cipher
@@ -29,11 +27,11 @@ func MakeTestCiphers(secrets []string) (CipherList, error) {
 	l := list.New()
 	for i := 0; i < len(secrets); i++ {
 		cipherID := fmt.Sprintf("id-%v", i)
-		cipher, err := core.PickCipher(ss.TestCipher, nil, secrets[i])
+		cipher, err := ss.NewCipher(ss.TestCipher, secrets[i])
 		if err != nil {
 			return nil, fmt.Errorf("Failed to create cipher %v: %v", i, err)
 		}
-		entry := MakeCipherEntry(cipherID, cipher.(shadowaead.Cipher), secrets[i])
+		entry := MakeCipherEntry(cipherID, cipher, secrets[i])
 		l.PushBack(&entry)
 	}
 	cipherList := NewCipherList()

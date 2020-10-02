@@ -15,79 +15,34 @@
 package service
 
 import (
-	"container/list"
-	"crypto/cipher"
+	"math"
 	"math/rand"
 	"net"
 	"testing"
 
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
-type fakeAEAD struct {
-	cipher.AEAD
-	overhead, nonceSize int
-}
-
-func (a *fakeAEAD) NonceSize() int {
-	return a.nonceSize
-}
-
-func (a *fakeAEAD) Overhead() int {
-	return a.overhead
-}
-
-type fakeCipher struct {
-	shadowaead.Cipher
-	saltsize  int
-	decrypter *fakeAEAD
-}
-
-func (c *fakeCipher) SaltSize() int {
-	return c.saltsize
-}
-
-func (c *fakeCipher) Decrypter(b []byte) (cipher.AEAD, error) {
-	return c.decrypter, nil
-}
-
-func TestIncompatibleCiphers(t *testing.T) {
-	l := list.New()
-	l.PushBack(&CipherEntry{
-		ID:     "short",
-		Cipher: &fakeCipher{saltsize: 5, decrypter: &fakeAEAD{overhead: 3}}})
-	l.PushBack(&CipherEntry{ID: "long", Cipher: &fakeCipher{saltsize: 50, decrypter: &fakeAEAD{overhead: 30}}})
-	cipherList := NewCipherList()
-	err := cipherList.Update(l)
-	if err == nil {
-		t.Error("Expected Update to fail due to incompatible ciphers")
-	}
-}
-
-func TestMaxNonceSize(t *testing.T) {
-	l := list.New()
-	l.PushBack(&CipherEntry{
-		ID:     "oversize nonce",
-		Cipher: &fakeCipher{saltsize: 5, decrypter: &fakeAEAD{overhead: 3, nonceSize: 13}}})
-	l.PushBack(&CipherEntry{ID: "long", Cipher: &fakeCipher{saltsize: 50, decrypter: &fakeAEAD{overhead: 30}}})
-	cipherList := NewCipherList()
-	err := cipherList.Update(l)
-	if err == nil {
-		t.Error("Expected Update to fail due to oversize nonce")
-	}
-}
-
 func TestCompatibleCiphers(t *testing.T) {
-	chacha20, _ := shadowaead.Chacha20Poly1305(make([]byte, 32))
-	aes128, _ := shadowaead.AESGCM(make([]byte, 16))
-	l := list.New()
-	l.PushBack(&CipherEntry{ID: "aes128", Cipher: aes128})
-	l.PushBack(&CipherEntry{ID: "chacha20", Cipher: chacha20})
-	cipherList := NewCipherList()
-	err := cipherList.Update(l)
-	if err != nil {
-		t.Error(err)
+	maxRequired := 0
+	minProvided := int(math.MaxInt32) // Very large initial value
+	for _, cipherName := range ss.SuportedCipherNames {
+		cipher, _ := ss.NewCipher(cipherName, "dummy secret")
+		// We need at least this many bytes to assess whether a TCP stream corresponds
+		// to this cipher.
+		requires := cipher.SaltSize() + 2 + cipher.TagSize()
+		if requires > maxRequired {
+			maxRequired = requires
+		}
+		// Any TCP stream for this cipher will deliver at least this many bytes before
+		// requiring the proxy to act.
+		provides := requires + cipher.TagSize()
+		if provides < minProvided {
+			minProvided = provides
+		}
+	}
+	if maxRequired > minProvided {
+		t.Fatalf("Supported ciphers contains incompatible ciphers: %d > %d", maxRequired, minProvided)
 	}
 }
 
@@ -98,7 +53,7 @@ func BenchmarkLocking(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, entries := ciphers.SnapshotForClientIP(nil)
+			entries := ciphers.SnapshotForClientIP(nil)
 			ciphers.MarkUsedByClientIP(entries[0], ip)
 		}
 	})
@@ -114,7 +69,7 @@ func BenchmarkSnapshot(b *testing.B) {
 
 	// Shuffling simulates the behavior of a real server, where successive
 	// ciphers are not expected to be nearby in memory.
-	_, entries := ciphers.SnapshotForClientIP(nil)
+	entries := ciphers.SnapshotForClientIP(nil)
 	rand.Shuffle(N, func(i, j int) {
 		entries[i], entries[j] = entries[j], entries[i]
 	})

@@ -8,8 +8,6 @@ import (
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
-	"github.com/shadowsocks/go-shadowsocks2/core"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -28,24 +26,24 @@ type Client interface {
 // NewClient creates a client that routes connections to a Shadowsocks proxy listening at
 // `host:port`, with authentication parameters `cipher` (AEAD) and `password`.
 // TODO: add a dialer argument to support proxy chaining and transport changes.
-func NewClient(host string, port int, password, cipher string) (Client, error) {
+func NewClient(host string, port int, password, cipherName string) (Client, error) {
 	// TODO: consider using net.LookupIP to get a list of IPs, and add logic for optimal selection.
 	proxyIP, err := net.ResolveIPAddr("ip", host)
 	if err != nil {
 		return nil, errors.New("Failed to resolve proxy address")
 	}
-	aead, err := newAeadCipher(cipher, password)
+	cipher, err := ss.NewCipher(cipherName, password)
 	if err != nil {
 		return nil, err
 	}
-	d := ssClient{proxyIP: proxyIP.IP, proxyPort: port, cipher: aead}
+	d := ssClient{proxyIP: proxyIP.IP, proxyPort: port, cipher: cipher}
 	return &d, nil
 }
 
 type ssClient struct {
 	proxyIP   net.IP
 	proxyPort int
-	cipher    shadowaead.Cipher
+	cipher    *ss.Cipher
 }
 
 // This code contains an optimization to send the initial client payload along with
@@ -95,7 +93,7 @@ func (c *ssClient) ListenUDP(laddr *net.UDPAddr) (net.PacketConn, error) {
 
 type packetConn struct {
 	*net.UDPConn
-	cipher shadowaead.Cipher
+	cipher *ss.Cipher
 }
 
 // WriteTo encrypts `b` and writes to `addr` through the proxy.
@@ -161,16 +159,4 @@ func (a *addr) Network() string {
 // Used for SOCKS addressing.
 func NewAddr(address, network string) net.Addr {
 	return &addr{address: address, network: network}
-}
-
-func newAeadCipher(cipher, password string) (shadowaead.Cipher, error) {
-	ssCipher, err := core.PickCipher(cipher, nil, password)
-	if err != nil {
-		return nil, err
-	}
-	aead, ok := ssCipher.(shadowaead.Cipher)
-	if !ok {
-		return nil, errors.New("Only AEAD ciphers supported")
-	}
-	return aead, nil
 }

@@ -26,7 +26,6 @@ import (
 	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -51,10 +50,10 @@ func debugUDPAddr(addr net.Addr, template string, val interface{}) {
 
 // Decrypts src into dst. It tries each cipher until it finds one that authenticates
 // correctly. dst and src must not overlap.
-func findAccessKeyUDP(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, shadowaead.Cipher, error) {
+func findAccessKeyUDP(clientIP net.IP, dst, src []byte, cipherList CipherList) ([]byte, string, *ss.Cipher, error) {
 	// Try each cipher until we find one that authenticates successfully. This assumes that all ciphers are AEAD.
 	// We snapshot the list because it may be modified while we use it.
-	_, snapshot := cipherList.SnapshotForClientIP(clientIP)
+	snapshot := cipherList.SnapshotForClientIP(clientIP)
 	for ci, entry := range snapshot {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 		buf, err := ss.Unpack(dst, src, cipher)
@@ -180,7 +179,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				debugUDPAddr(clientAddr, "Got location \"%s\"", clientLocation)
 
 				ip := clientAddr.(*net.UDPAddr).IP
-				var cipher shadowaead.Cipher
+				var cipher *ss.Cipher
 				unpackStart := time.Now()
 				textData, keyID, cipher, err = findAccessKeyUDP(ip, textBuf, cipherData, s.ciphers)
 				timeToCipher = time.Now().Sub(unpackStart)
@@ -252,7 +251,7 @@ func isDNS(addr net.Addr) bool {
 
 type natconn struct {
 	net.PacketConn
-	cipher shadowaead.Cipher
+	cipher *ss.Cipher
 	// We store the client location in the NAT map to avoid recomputing it
 	// for every downstream packet in a UDP-based connection.
 	clientLocation string
@@ -333,7 +332,7 @@ func (m *natmap) Get(key string) *natconn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) set(key string, pc net.PacketConn, cipher shadowaead.Cipher, clientLocation string) *natconn {
+func (m *natmap) set(key string, pc net.PacketConn, cipher *ss.Cipher, clientLocation string) *natconn {
 	entry := &natconn{
 		PacketConn:     pc,
 		cipher:         cipher,
@@ -360,7 +359,7 @@ func (m *natmap) del(key string) net.PacketConn {
 	return nil
 }
 
-func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher shadowaead.Cipher, targetConn net.PacketConn, clientLocation, keyID string) *natconn {
+func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher *ss.Cipher, targetConn net.PacketConn, clientLocation, keyID string) *natconn {
 	entry := m.set(clientAddr.String(), targetConn, cipher, clientLocation)
 
 	m.metrics.AddUDPNatEntry()

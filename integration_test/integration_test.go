@@ -257,7 +257,7 @@ func TestUDPEcho(t *testing.T) {
 	echoRunning.Wait()
 	proxy.GracefulStop()
 	// Verify that the expected metrics were reported.
-	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	snapshot := cipherList.SnapshotForClientIP(nil)
 	keyID := snapshot[0].Value.(*service.CipherEntry).ID
 
 	if testMetrics.natAdded != 1 {

@@ -30,12 +30,11 @@ import (
 
 	"github.com/Jigsaw-Code/outline-ss-server/service"
 	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	"github.com/op/go-logging"
 	"github.com/oschwald/geoip2-golang"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/shadowsocks/go-shadowsocks2/core"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"golang.org/x/crypto/ssh/terminal"
 	"gopkg.in/yaml.v2"
 )
@@ -128,18 +127,11 @@ func (s *SSServer) loadConfig(filename string) error {
 			cipherList = list.New()
 			portCiphers[keyConfig.Port] = cipherList
 		}
-		cipher, err := core.PickCipher(keyConfig.Cipher, nil, keyConfig.Secret)
+		cipher, err := ss.NewCipher(keyConfig.Cipher, keyConfig.Secret)
 		if err != nil {
-			if err == core.ErrCipherNotSupported {
-				return fmt.Errorf("Cipher %v for key %v is not supported", keyConfig.Cipher, keyConfig.ID)
-			}
 			return fmt.Errorf("Failed to create cipher for key %v: %v", keyConfig.ID, err)
 		}
-		aead, ok := cipher.(shadowaead.Cipher)
-		if !ok {
-			return fmt.Errorf("Only AEAD ciphers are supported. Found %v", keyConfig.Cipher)
-		}
-		entry := service.MakeCipherEntry(keyConfig.ID, aead, keyConfig.Secret)
+		entry := service.MakeCipherEntry(keyConfig.ID, cipher, keyConfig.Secret)
 		cipherList.PushBack(&entry)
 	}
 	for port := range s.ports {
@@ -157,9 +149,7 @@ func (s *SSServer) loadConfig(filename string) error {
 		}
 	}
 	for portNum, cipherList := range portCiphers {
-		if err := s.ports[portNum].cipherList.Update(cipherList); err != nil {
-			return err
-		}
+		s.ports[portNum].cipherList.Update(cipherList)
 	}
 	logger.Infof("Loaded %v access keys", len(config.Keys))
 	s.m.SetNumAccessKeys(len(config.Keys), len(portCiphers))
