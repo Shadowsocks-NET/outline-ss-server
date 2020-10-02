@@ -146,7 +146,7 @@ type TCPService interface {
 	GracefulStop() error
 }
 
-func (s *tcpService) SetTargetIPValidator(isTargetIPAllowed func(ip net.IP) *onet.ConnectionError) {
+func (s *tcpService) SetTargetIPValidator(isTargetIPAllowed onet.IPPolicy) {
 	s.isTargetIPAllowed = isTargetIPAllowed
 }
 
