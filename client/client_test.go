@@ -19,7 +19,6 @@ import (
 const (
 	testPassword   = "testPassword"
 	testTargetAddr = "test.local:1111"
-	testCipher     = "chacha20-ietf-poly1305"
 )
 
 func TestShadowsocksClient_DialTCP(t *testing.T) {
@@ -28,7 +27,7 @@ func TestShadowsocksClient_DialTCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to parse proxy address: %v", err)
 	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -50,7 +49,7 @@ func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to parse proxy address: %v", err)
 	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -95,7 +94,7 @@ func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to parse proxy address: %v", err)
 	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -120,7 +119,7 @@ func TestShadowsocksClient_ListenUDP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to parse proxy address: %v", err)
 	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -146,7 +145,7 @@ func BenchmarkShadowsocksClient_DialTCP(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to parse proxy address: %v", err)
 	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -177,7 +176,7 @@ func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to parse proxy address: %v", err)
 	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -206,7 +205,7 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Lis
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
 	t.Logf("Starting SS TCP echo proxy at %v\n", listener.Addr())
-	cipher, err := newAeadCipher(testCipher, testPassword)
+	cipher, err := newAeadCipher(ss.TestCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)
 	}
@@ -251,7 +250,7 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Co
 	t.Logf("Starting SS UDP echo proxy at %v\n", conn.LocalAddr())
 	cipherBuf := make([]byte, clientUDPBufferSize)
 	clientBuf := make([]byte, clientUDPBufferSize)
-	cipher, err := newAeadCipher(testCipher, testPassword)
+	cipher, err := newAeadCipher(ss.TestCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)
 	}
@@ -344,7 +343,7 @@ func splitHostPortNumber(address string) (host string, port int, err error) {
 func BenchmarkShadowsocksClient_UDPWrite(b *testing.B) {
 	proxyHost := "192.0.2.1"
 	proxyPort := 1
-	d, err := NewClient(proxyHost, proxyPort, testPassword, testCipher)
+	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
