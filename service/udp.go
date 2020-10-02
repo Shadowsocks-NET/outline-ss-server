@@ -77,7 +77,7 @@ type udpService struct {
 	ciphers           CipherList
 	m                 metrics.ShadowsocksMetrics
 	running           sync.WaitGroup
-	targetIPValidator func(net.IP) *onet.ConnectionError
+	targetIPValidator onet.TargetIPValidator
 }
 
 // NewUDPService creates a UDPService
