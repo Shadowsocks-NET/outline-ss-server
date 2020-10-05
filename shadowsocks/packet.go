@@ -27,6 +27,31 @@ var ErrShortPacket = errors.New("short packet")
 // This array must be at least service.maxNonceSize bytes.
 var zeroNonce [12]byte
 
+// Pack encrypts a Shadowsocks-UDP packet and returns a slice containing the encrypted packet.
+// dst must be big enough to hold the encrypted packet.
+// If plaintext and dst overlap but are not aligned for in-place encryption, this
+// function will panic.
+func Pack(dst, plaintext []byte, cipher shadowaead.Cipher) ([]byte, error) {
+	saltSize := cipher.SaltSize()
+	if len(dst) < saltSize {
+		return nil, io.ErrShortBuffer
+	}
+	salt := dst[:saltSize]
+	if err := RandomSaltGenerator.GetSalt(salt); err != nil {
+		return nil, err
+	}
+
+	aead, err := cipher.Encrypter(salt)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(dst) < saltSize+len(plaintext)+aead.Overhead() {
+		return nil, io.ErrShortBuffer
+	}
+	return aead.Seal(salt, zeroNonce[:aead.NonceSize()], plaintext, nil), nil
+}
+
 // Unpack decrypts a Shadowsocks-UDP packet and returns a slice containing the decrypted payload or an error.
 // If dst is present, it is used to store the plaintext, and must have enough capacity.
 // If dst is nil, decryption proceeds in-place.
