@@ -33,6 +33,9 @@ var zeroNonce [12]byte
 // function will panic.
 func Pack(dst, plaintext []byte, cipher shadowaead.Cipher) ([]byte, error) {
 	saltSize := cipher.SaltSize()
+	if len(dst) < saltSize {
+		return nil, io.ErrShortBuffer
+	}
 	salt := dst[:saltSize]
 	if err := RandomSaltGenerator.GetSalt(salt); err != nil {
 		return nil, err
