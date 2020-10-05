@@ -10,15 +10,19 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
-// limitations under the License.import "github.com/shadowsocks/go-shadowsocks2/shadowaead"
+// limitations under the License.
 
 package shadowsocks
 
 import (
+	"errors"
 	"io"
 
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
+
+// ErrShortPacket is identical to shadowaead.ErrShortPacket
+var ErrShortPacket = errors.New("short packet")
 
 // This array must be at least service.maxNonceSize bytes.
 var zeroNonce [12]byte
@@ -31,7 +35,7 @@ var zeroNonce [12]byte
 func Unpack(dst, pkt []byte, cipher shadowaead.Cipher) ([]byte, error) {
 	saltSize := cipher.SaltSize()
 	if len(pkt) < saltSize {
-		return nil, shadowaead.ErrShortPacket
+		return nil, ErrShortPacket
 	}
 	salt := pkt[:saltSize]
 	aead, err := cipher.Decrypter(salt)
@@ -40,11 +44,11 @@ func Unpack(dst, pkt []byte, cipher shadowaead.Cipher) ([]byte, error) {
 	}
 	msg := pkt[saltSize:]
 	if len(msg) < aead.Overhead() {
-		return nil, shadowaead.ErrShortPacket
+		return nil, ErrShortPacket
 	}
 	if dst == nil {
 		dst = msg
-	} else if len(dst)+aead.Overhead() < len(msg) {
+	} else if len(msg)-aead.Overhead() > len(dst) {
 		return nil, io.ErrShortBuffer
 	}
 	return aead.Open(dst[:0], zeroNonce[:aead.NonceSize()], msg, nil)
