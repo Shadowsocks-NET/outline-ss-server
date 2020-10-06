@@ -116,7 +116,7 @@ func NewCipher(cipherName string, secretText string) (*Cipher, error) {
 // Assumes all ciphers have NonceSize() <= 12.
 var zeroNonce [12]byte
 
-// DecryptOnce will decrypt the cipherText using the cipher and salt, outputting to plainText.
+// DecryptOnce will decrypt the cipherText using the cipher and salt, appending the output to plainText.
 func DecryptOnce(cipher *Cipher, salt []byte, plainText, cipherText []byte) ([]byte, error) {
 	aead, err := cipher.NewAEAD(salt)
 	if err != nil {
