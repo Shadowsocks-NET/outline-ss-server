@@ -26,7 +26,7 @@ import (
 func TestCompatibleCiphers(t *testing.T) {
 	maxRequired := 0
 	minProvided := int(math.MaxInt32) // Very large initial value
-	for _, cipherName := range ss.SuportedCipherNames {
+	for _, cipherName := range ss.SuportedCipherNames() {
 		cipher, _ := ss.NewCipher(cipherName, "dummy secret")
 		// We need at least this many bytes to assess whether a TCP stream corresponds
 		// to this cipher.

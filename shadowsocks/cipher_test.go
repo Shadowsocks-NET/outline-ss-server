@@ -44,7 +44,7 @@ func TestUnsupportedCipher(t *testing.T) {
 }
 
 func TestMaxNonceSize(t *testing.T) {
-	for _, aeadName := range SuportedCipherNames {
+	for _, aeadName := range SuportedCipherNames() {
 		cipher, err := NewCipher(aeadName, "")
 		if err != nil {
 			t.Errorf("Failed to create Cipher %v: %v", aeadName, err)

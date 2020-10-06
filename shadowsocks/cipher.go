@@ -27,13 +27,12 @@ import (
 )
 
 // SuportedCipherNames lists the names of the AEAD ciphers that are supported.
-var SuportedCipherNames []string
-
-func init() {
-	SuportedCipherNames = make([]string, len(supportedAEADs))
+func SuportedCipherNames() []string {
+	names := make([]string, len(supportedAEADs))
 	for i, spec := range supportedAEADs {
-		SuportedCipherNames[i] = spec.name
+		names[i] = spec.name
 	}
+	return names
 }
 
 type aeadSpec struct {
