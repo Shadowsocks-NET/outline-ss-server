@@ -24,6 +24,7 @@ import (
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
@@ -56,7 +57,7 @@ func findAccessKeyUDP(clientIP net.IP, dst, src []byte, cipherList CipherList) (
 	_, snapshot := cipherList.SnapshotForClientIP(clientIP)
 	for ci, entry := range snapshot {
 		id, cipher := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
-		buf, err := shadowaead.Unpack(dst, src, cipher)
+		buf, err := ss.Unpack(dst, src, cipher)
 		if err != nil {
 			debugUDP(id, "Failed to unpack: %v", err)
 			continue
@@ -195,7 +196,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				targetConn = nm.Add(clientAddr, clientConn, cipher, udpConn, clientLocation, keyID)
 			} else {
 				unpackStart := time.Now()
-				textData, err = shadowaead.Unpack(textBuf, cipherData, targetConn.cipher)
+				textData, err = ss.Unpack(nil, cipherData, targetConn.cipher)
 				timeToCipher = time.Now().Sub(unpackStart)
 				if err != nil {
 					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack data from client", err)
@@ -445,7 +446,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, targetConn *natco
 			//           [            packBuf             ]
 			//           [          buf           ]
 			packBuf := pkt[saltStart:]
-			buf, err := shadowaead.Pack(packBuf, plaintextBuf, targetConn.cipher) // Encrypt in-place
+			buf, err := ss.Pack(packBuf, plaintextBuf, targetConn.cipher) // Encrypt in-place
 			if err != nil {
 				return onet.NewConnectionError("ERR_PACK", "Failed to pack data to client", err)
 			}
