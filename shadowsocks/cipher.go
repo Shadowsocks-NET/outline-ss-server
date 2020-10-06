@@ -39,23 +39,24 @@ type aeadSpec struct {
 	name        string
 	newInstance func(key []byte) (cipher.AEAD, error)
 	keySize     int
+	saltSize    int
 	tagSize     int
 }
 
 // List of supported AEAD ciphers, as specified at https://shadowsocks.org/en/spec/AEAD-Ciphers.html
 var supportedAEADs = [...]aeadSpec{
-	newAEADSpec("chacha20-ietf-poly1305", chacha20poly1305.New, chacha20poly1305.KeySize),
-	newAEADSpec("aes-256-gcm", newAesGCM, 32),
-	newAEADSpec("aes-192-gcm", newAesGCM, 24),
-	newAEADSpec("aes-128-gcm", newAesGCM, 16),
+	newAEADSpec("chacha20-ietf-poly1305", chacha20poly1305.New, chacha20poly1305.KeySize, 32),
+	newAEADSpec("aes-256-gcm", newAesGCM, 32, 32),
+	newAEADSpec("aes-192-gcm", newAesGCM, 24, 24),
+	newAEADSpec("aes-128-gcm", newAesGCM, 16, 16),
 }
 
-func newAEADSpec(name string, newInstance func(key []byte) (cipher.AEAD, error), keySize int) aeadSpec {
+func newAEADSpec(name string, newInstance func(key []byte) (cipher.AEAD, error), keySize, saltSize int) aeadSpec {
 	dummyAead, err := newInstance(make([]byte, keySize))
 	if err != nil {
 		panic(fmt.Sprintf("Failed to initialize AEAD %v", name))
 	}
-	return aeadSpec{name, newInstance, keySize, dummyAead.Overhead()}
+	return aeadSpec{name, newInstance, keySize, saltSize, dummyAead.Overhead()}
 }
 
 func getAEADSpec(name string) (*aeadSpec, error) {
@@ -84,7 +85,7 @@ type Cipher struct {
 
 // SaltSize is the size of the salt for this Cipher
 func (c *Cipher) SaltSize() int {
-	return c.aead.keySize
+	return c.aead.saltSize
 }
 
 // TagSize is the size of the AEAD tag for this Cipher
