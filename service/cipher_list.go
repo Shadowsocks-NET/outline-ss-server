@@ -55,8 +55,7 @@ func MakeCipherEntry(id string, cipher *ss.Cipher, secret string) CipherEntry {
 // CipherList is a thread-safe collection of CipherEntry elements that allows for
 // snapshotting and moving to front.
 type CipherList interface {
-	// Returns a snapshot of the cipher list optimized for this client IP,
-	// and also the number of bytes needed for TCP trial decryption.
+	// Returns a snapshot of the cipher list optimized for this client IP
 	SnapshotForClientIP(clientIP net.IP) []*list.Element
 	MarkUsedByClientIP(e *list.Element, clientIP net.IP)
 	// Update replaces the current contents of the CipherList with `contents`,
