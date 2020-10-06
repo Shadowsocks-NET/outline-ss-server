@@ -44,7 +44,7 @@ type aeadSpec struct {
 }
 
 // List of supported AEAD ciphers, as specified at https://shadowsocks.org/en/spec/AEAD-Ciphers.html
-var supportedAEADs = []aeadSpec{
+var supportedAEADs = [...]aeadSpec{
 	newAeadSpec("chacha20-ietf-poly1305", chacha20poly1305.New, chacha20poly1305.KeySize),
 	newAeadSpec("aes-256-gcm", newAesGCM, 32),
 	newAeadSpec("aes-192-gcm", newAesGCM, 24),
