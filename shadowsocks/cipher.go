@@ -44,18 +44,28 @@ type aeadSpec struct {
 
 // List of supported AEAD ciphers, as specified at https://shadowsocks.org/en/spec/AEAD-Ciphers.html
 var supportedAEADs = [...]aeadSpec{
-	newAeadSpec("chacha20-ietf-poly1305", chacha20poly1305.New, chacha20poly1305.KeySize),
-	newAeadSpec("aes-256-gcm", newAesGCM, 32),
-	newAeadSpec("aes-192-gcm", newAesGCM, 24),
-	newAeadSpec("aes-128-gcm", newAesGCM, 16),
+	newAEADSpec("chacha20-ietf-poly1305", chacha20poly1305.New, chacha20poly1305.KeySize),
+	newAEADSpec("aes-256-gcm", newAesGCM, 32),
+	newAEADSpec("aes-192-gcm", newAesGCM, 24),
+	newAEADSpec("aes-128-gcm", newAesGCM, 16),
 }
 
-func newAeadSpec(name string, newInstance func(key []byte) (cipher.AEAD, error), keySize int) aeadSpec {
+func newAEADSpec(name string, newInstance func(key []byte) (cipher.AEAD, error), keySize int) aeadSpec {
 	dummyAead, err := newInstance(make([]byte, keySize))
 	if err != nil {
 		panic(fmt.Sprintf("Failed to initialize AEAD %v", name))
 	}
 	return aeadSpec{name, newInstance, keySize, dummyAead.Overhead()}
+}
+
+func getAEADSpec(name string) (*aeadSpec, error) {
+	name = strings.ToLower(name)
+	for _, aeadSpec := range supportedAEADs {
+		if aeadSpec.name == name {
+			return &aeadSpec, nil
+		}
+	}
+	return nil, fmt.Errorf("Unknown cipher %v", name)
 }
 
 func newAesGCM(key []byte) (cipher.AEAD, error) {
@@ -92,16 +102,6 @@ func (c *Cipher) NewAEAD(salt []byte) (cipher.AEAD, error) {
 		return nil, err
 	}
 	return c.aead.newInstance(sessionKey)
-}
-
-func getAEADSpec(name string) (*aeadSpec, error) {
-	name = strings.ToLower(name)
-	for _, aeadSpec := range supportedAEADs {
-		if aeadSpec.name == name {
-			return &aeadSpec, nil
-		}
-	}
-	return nil, fmt.Errorf("Unknown cipher %v", name)
 }
 
 // NewCipher creates a Cipher given a cipher name and a secret
