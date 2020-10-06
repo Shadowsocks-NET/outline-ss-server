@@ -82,10 +82,12 @@ func (c *Cipher) TagSize() int {
 	return c.aead.tagSize
 }
 
+var subkeyInfo = []byte("ss-subkey")
+
 // NewAEAD creates the AEAD for this cipher
 func (c *Cipher) NewAEAD(salt []byte) (cipher.AEAD, error) {
 	sessionKey := make([]byte, c.aead.keySize)
-	r := hkdf.New(sha1.New, c.secret, salt, []byte("ss-subkey"))
+	r := hkdf.New(sha1.New, c.secret, salt, subkeyInfo)
 	if _, err := io.ReadFull(r, sessionKey); err != nil {
 		return nil, err
 	}
