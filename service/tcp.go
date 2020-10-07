@@ -149,24 +149,25 @@ func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 	s.targetIPValidator = targetIPValidator
 }
 
-// proxyConnection will route the clientConn according to the address read from the connection.
-func proxyConnection(clientSSConn onet.DuplexConn, tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator) *onet.ConnectionError {
+func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator) (onet.DuplexConn, *onet.ConnectionError) {
 	tgtTCPAddr, err := net.ResolveTCPAddr("tcp", tgtAddr.String())
 	if err != nil {
-		return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
+		return nil, onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
 	}
 	if err := targetIPValidator(tgtTCPAddr.IP); err != nil {
-		return err
+		return nil, err
 	}
 
 	tgtTCPConn, err := net.DialTCP("tcp", nil, tgtTCPAddr)
 	if err != nil {
-		return onet.NewConnectionError("ERR_CONNECT", "Failed to connect to target", err)
+		return nil, onet.NewConnectionError("ERR_CONNECT", "Failed to connect to target", err)
 	}
-	defer tgtTCPConn.Close()
 	tgtTCPConn.SetKeepAlive(true)
-	tgtConn := metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy)
+	return metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy), nil
+}
 
+// proxyConnection will route the clientConn according to the address read from the connection.
+func proxyConnection(clientSSConn onet.DuplexConn, tgtConn onet.DuplexConn) *onet.ConnectionError {
 	logger.Debugf("proxy %s <-> %s", clientSSConn.RemoteAddr().String(), tgtConn.RemoteAddr().String())
 	fromClientErrCh := make(chan error)
 	go func() {
@@ -286,12 +287,19 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn *net.TCPCo
 			return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
 		}
 
-		// Clear the deadline for the target address
+		// Clear the deadline for the target address and dial Target
 		clientConn.SetReadDeadline(time.Time{})
+		tgtConn, dialErr := dialTarget(tgtAddr, &proxyMetrics, s.targetIPValidator)
+		if dialErr != nil {
+			clientConn.(io.WriterTo).WriteTo(ioutil.Discard)
+			return dialErr
+		}
+		defer tgtConn.Close()
+
 		ssw := ss.NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
 		ssw.SetSaltGenerator(cipherEntry.SaltGenerator)
 		clientSSConn := onet.WrapConn(clientConn, ssr, ssw)
-		return proxyConnection(clientSSConn, tgtAddr, &proxyMetrics, s.targetIPValidator)
+		return proxyConnection(clientSSConn, tgtConn)
 	}()
 
 	connDuration := time.Now().Sub(connStart)
