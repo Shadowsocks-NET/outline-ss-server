@@ -24,8 +24,6 @@ import (
 
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
-	"github.com/shadowsocks/go-shadowsocks2/core"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
 const timeout = 5 * time.Minute
@@ -33,12 +31,11 @@ const timeout = 5 * time.Minute
 var clientAddr = net.UDPAddr{IP: []byte{192, 0, 2, 1}, Port: 12345}
 var targetAddr = net.UDPAddr{IP: []byte{192, 0, 2, 2}, Port: 54321}
 var dnsAddr = net.UDPAddr{IP: []byte{192, 0, 2, 3}, Port: 53}
-var natCipher shadowaead.Cipher
+var natCipher *ss.Cipher
 
 func init() {
 	logging.SetLevel(logging.INFO, "")
-	coreCipher, _ := core.PickCipher(ss.TestCipher, nil, "test password")
-	natCipher = coreCipher.(shadowaead.Cipher)
+	natCipher, _ = ss.NewCipher(ss.TestCipher, "test password")
 }
 
 type packet struct {
@@ -313,11 +310,11 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 	testBuf := make([]byte, serverUDPBufferSize)
 	packets := [numCiphers][]byte{}
 	ips := [numCiphers]net.IP{}
-	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	snapshot := cipherList.SnapshotForClientIP(nil)
 	for i, element := range snapshot {
 		packets[i] = make([]byte, 0, serverUDPBufferSize)
 		plaintext := ss.MakeTestPayload(50)
-		packets[i], err = shadowaead.Pack(make([]byte, serverUDPBufferSize), plaintext, element.Value.(*CipherEntry).Cipher)
+		packets[i], err = ss.Pack(make([]byte, serverUDPBufferSize), plaintext, element.Value.(*CipherEntry).Cipher)
 		if err != nil {
 			b.Error(err)
 		}
@@ -344,9 +341,9 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	}
 	testBuf := make([]byte, serverUDPBufferSize)
 	plaintext := ss.MakeTestPayload(50)
-	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	snapshot := cipherList.SnapshotForClientIP(nil)
 	cipher := snapshot[0].Value.(*CipherEntry).Cipher
-	packet, err := shadowaead.Pack(make([]byte, serverUDPBufferSize), plaintext, cipher)
+	packet, err := ss.Pack(make([]byte, serverUDPBufferSize), plaintext, cipher)
 
 	const numIPs = 100 // Must be <256
 	ips := [numIPs]net.IP{}

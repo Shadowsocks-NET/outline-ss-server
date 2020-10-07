@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
 // payloadSizeMask is the maximum size of payload in bytes.
@@ -41,7 +39,7 @@ type Writer struct {
 	// Indicates that a concurrent flush is currently allowed.
 	needFlush     bool
 	writer        io.Writer
-	ssCipher      shadowaead.Cipher
+	ssCipher      *Cipher
 	saltGenerator SaltGenerator
 	// Wrapper for input that arrives as a slice.
 	byteWrapper bytes.Reader
@@ -56,7 +54,7 @@ type Writer struct {
 
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksWriter(writer io.Writer, ssCipher shadowaead.Cipher) *Writer {
+func NewShadowsocksWriter(writer io.Writer, ssCipher *Cipher) *Writer {
 	return &Writer{writer: writer, ssCipher: ssCipher, saltGenerator: RandomSaltGenerator}
 }
 
@@ -73,7 +71,7 @@ func (sw *Writer) init() (err error) {
 		if err := sw.saltGenerator.GetSalt(salt); err != nil {
 			return fmt.Errorf("failed to generate salt: %v", err)
 		}
-		sw.aead, err = sw.ssCipher.Encrypter(salt)
+		sw.aead, err = sw.ssCipher.NewAEAD(salt)
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
@@ -259,7 +257,7 @@ type ChunkReader interface {
 
 type chunkReader struct {
 	reader   io.Reader
-	ssCipher shadowaead.Cipher
+	ssCipher *Cipher
 	// These are lazily initialized:
 	aead cipher.AEAD
 	// Index of the next encrypted chunk to read.
@@ -276,7 +274,7 @@ type Reader interface {
 
 // NewShadowsocksReader creates a Reader that decrypts the given Reader using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksReader(reader io.Reader, ssCipher shadowaead.Cipher) Reader {
+func NewShadowsocksReader(reader io.Reader, ssCipher *Cipher) Reader {
 	return &readConverter{
 		cr: &chunkReader{reader: reader, ssCipher: ssCipher},
 	}
@@ -293,7 +291,7 @@ func (cr *chunkReader) init() (err error) {
 			}
 			return err
 		}
-		cr.aead, err = cr.ssCipher.Decrypter(salt)
+		cr.aead, err = cr.ssCipher.NewAEAD(salt)
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
