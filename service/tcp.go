@@ -150,7 +150,7 @@ func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 }
 
 // proxyConnection will route the clientConn according to the address read from the connection.
-func proxyConnection(clientConn onet.DuplexConn, tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator) *onet.ConnectionError {
+func proxyConnection(clientSSConn onet.DuplexConn, tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator) *onet.ConnectionError {
 	tgtTCPAddr, err := net.ResolveTCPAddr("tcp", tgtAddr.String())
 	if err != nil {
 		return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
@@ -167,22 +167,23 @@ func proxyConnection(clientConn onet.DuplexConn, tgtAddr socks.Addr, proxyMetric
 	tgtTCPConn.SetKeepAlive(true)
 	tgtConn := metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy)
 
-	logger.Debugf("proxy %s <-> %s", clientConn.RemoteAddr().String(), tgtConn.RemoteAddr().String())
+	logger.Debugf("proxy %s <-> %s", clientSSConn.RemoteAddr().String(), tgtConn.RemoteAddr().String())
 	fromClientErrCh := make(chan error)
 	go func() {
-		_, fromClientErr := clientConn.(io.WriterTo).WriteTo(tgtConn)
+		_, fromClientErr := clientSSConn.(io.WriterTo).WriteTo(tgtConn)
 		// Send FIN to target.
 		tgtConn.CloseWrite()
 		if fromClientErr != nil {
 			// Drain to prevent a close on cipher error.
-			clientConn.(io.WriterTo).WriteTo(ioutil.Discard)
+			// TODO: Need to drain the underlying connections instead.
+			clientSSConn.(io.WriterTo).WriteTo(ioutil.Discard)
 		}
-		clientConn.CloseRead()
+		clientSSConn.CloseRead()
 		fromClientErrCh <- fromClientErr
 	}()
-	_, fromTargetErr := clientConn.(io.ReaderFrom).ReadFrom(tgtConn)
+	_, fromTargetErr := clientSSConn.(io.ReaderFrom).ReadFrom(tgtConn)
 	// Send FIN to client.
-	clientConn.CloseWrite()
+	clientSSConn.CloseWrite()
 	tgtConn.CloseRead()
 
 	fromClientErr := <-fromClientErrCh
@@ -237,20 +238,20 @@ func (s *tcpService) Serve(listener *net.TCPListener) error {
 	}
 }
 
-func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexConn) {
-	clientLocation, err := s.m.GetLocation(clientConn.RemoteAddr())
+func (s *tcpService) handleConnection(listenerPort int, clientTCPConn *net.TCPConn) {
+	clientLocation, err := s.m.GetLocation(clientTCPConn.RemoteAddr())
 	if err != nil {
 		logger.Warningf("Failed location lookup: %v", err)
 	}
-	logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientConn.RemoteAddr().String())
+	logger.Debugf("Got location \"%v\" for IP %v", clientLocation, clientTCPConn.RemoteAddr().String())
 	s.m.AddOpenTCPConnection(clientLocation)
 
 	connStart := time.Now()
-	clientConn.(*net.TCPConn).SetKeepAlive(true)
-	// Set a deadline to establish a connection to the target.
-	clientConn.SetReadDeadline(connStart.Add(s.readTimeout))
+	clientTCPConn.SetKeepAlive(true)
+	// Set a deadline to receive the address to the target.
+	clientTCPConn.SetReadDeadline(connStart.Add(s.readTimeout))
 	var proxyMetrics metrics.ProxyMetrics
-	clientConn = metrics.MeasureConn(clientConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
+	clientConn := metrics.MeasureConn(clientTCPConn, &proxyMetrics.ProxyClient, &proxyMetrics.ClientProxy)
 	cipherEntry, clientReader, clientSalt, timeToCipher, keyErr := findAccessKey(clientConn, remoteIP(clientConn), s.ciphers)
 
 	connError := func() *onet.ConnectionError {
@@ -283,12 +284,12 @@ func (s *tcpService) handleConnection(listenerPort int, clientConn onet.DuplexCo
 			return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
 		}
 
-		// Clear the connection deadline
+		// Clear the deadline for the target address
 		clientConn.SetReadDeadline(time.Time{})
 		ssw := ss.NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
 		ssw.SetSaltGenerator(cipherEntry.SaltGenerator)
-		clientConn = onet.WrapConn(clientConn, ssr, ssw)
-		return proxyConnection(clientConn, tgtAddr, &proxyMetrics, s.targetIPValidator)
+		clientSSConn := onet.WrapConn(clientConn, ssr, ssw)
+		return proxyConnection(clientSSConn, tgtAddr, &proxyMetrics, s.targetIPValidator)
 	}()
 
 	connDuration := time.Now().Sub(connStart)
