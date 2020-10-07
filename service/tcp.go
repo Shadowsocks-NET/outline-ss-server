@@ -257,6 +257,7 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn *net.TCPCo
 		clientTCPConn.SetReadDeadline(time.Time{})
 		tgtConn, dialErr := dialTarget(tgtAddr, &proxyMetrics, s.targetIPValidator)
 		if dialErr != nil {
+			// We don't drain so dial errors and invalid addresses are communicated quickly.
 			return dialErr
 		}
 		defer tgtConn.Close()
