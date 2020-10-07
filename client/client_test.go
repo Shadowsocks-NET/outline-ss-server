@@ -12,7 +12,6 @@ import (
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -205,7 +204,7 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Lis
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
 	t.Logf("Starting SS TCP echo proxy at %v\n", listener.Addr())
-	cipher, err := newAeadCipher(ss.TestCipher, testPassword)
+	cipher, err := ss.NewCipher(ss.TestCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)
 	}
@@ -250,7 +249,7 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Co
 	t.Logf("Starting SS UDP echo proxy at %v\n", conn.LocalAddr())
 	cipherBuf := make([]byte, clientUDPBufferSize)
 	clientBuf := make([]byte, clientUDPBufferSize)
-	cipher, err := newAeadCipher(ss.TestCipher, testPassword)
+	cipher, err := ss.NewCipher(ss.TestCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)
 	}
@@ -265,7 +264,7 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Co
 				t.Logf("Failed to read from UDP conn: %v", err)
 				return
 			}
-			buf, err := shadowaead.Unpack(clientBuf, cipherBuf[:n], cipher)
+			buf, err := ss.Unpack(clientBuf, cipherBuf[:n], cipher)
 			if err != nil {
 				t.Fatalf("Failed to decrypt: %v", err)
 			}
@@ -277,7 +276,7 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Co
 				t.Fatalf("Expected target address '%v'. Got '%v'", expectedTgtAddr, tgtAddr)
 			}
 			// Echo both the payload and SOCKS address.
-			buf, err = shadowaead.Pack(cipherBuf, buf, cipher)
+			buf, err = ss.Pack(cipherBuf, buf, cipher)
 			if err != nil {
 				t.Fatalf("Failed to encrypt: %v", err)
 			}

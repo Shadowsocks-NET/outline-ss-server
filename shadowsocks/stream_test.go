@@ -10,13 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-func newTestCipher(t *testing.T) shadowaead.Cipher {
-	key := []byte("12345678901234567890123456789012") // 32 bytes
-	cipher, err := shadowaead.Chacha20Poly1305(key)
+func newTestCipher(t *testing.T) *Cipher {
+	cipher, err := NewCipher("chacha20-ietf-poly1305", "test secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,9 +61,9 @@ func TestCipherReaderEOF(t *testing.T) {
 	}
 }
 
-func encryptBlocks(cipher shadowaead.Cipher, salt []byte, blocks [][]byte) (io.Reader, error) {
+func encryptBlocks(cipher *Cipher, salt []byte, blocks [][]byte) (io.Reader, error) {
 	var ssText bytes.Buffer
-	aead, err := cipher.Encrypter(salt)
+	aead, err := cipher.NewAEAD(salt)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to create AEAD: %v", err)
 	}

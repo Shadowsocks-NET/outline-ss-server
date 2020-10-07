@@ -16,16 +16,11 @@ package service
 
 import (
 	"container/list"
-	"fmt"
-	"math"
 	"net"
 	"sync"
 
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
+	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 )
-
-// All ciphers must have a nonce size this big or smaller.
-const maxNonceSize = 12
 
 // Don't add a tag if it would reduce the salt entropy below this amount.
 const minSaltEntropy = 16
@@ -34,13 +29,13 @@ const minSaltEntropy = 16
 // The public fields are constant, but lastClientIP is mutable under cipherList.mu.
 type CipherEntry struct {
 	ID            string
-	Cipher        shadowaead.Cipher
+	Cipher        *ss.Cipher
 	SaltGenerator ServerSaltGenerator
 	lastClientIP  net.IP
 }
 
 // MakeCipherEntry constructs a CipherEntry.
-func MakeCipherEntry(id string, cipher shadowaead.Cipher, secret string) CipherEntry {
+func MakeCipherEntry(id string, cipher *ss.Cipher, secret string) CipherEntry {
 	var saltGenerator ServerSaltGenerator
 	if cipher.SaltSize()-ServerSaltMarkLen >= minSaltEntropy {
 		// Mark salts with a tag for reverse replay protection.
@@ -60,21 +55,19 @@ func MakeCipherEntry(id string, cipher shadowaead.Cipher, secret string) CipherE
 // CipherList is a thread-safe collection of CipherEntry elements that allows for
 // snapshotting and moving to front.
 type CipherList interface {
-	// Returns a snapshot of the cipher list optimized for this client IP,
-	// and also the number of bytes needed for TCP trial decryption.
-	SnapshotForClientIP(clientIP net.IP) (int, []*list.Element)
+	// Returns a snapshot of the cipher list optimized for this client IP
+	SnapshotForClientIP(clientIP net.IP) []*list.Element
 	MarkUsedByClientIP(e *list.Element, clientIP net.IP)
 	// Update replaces the current contents of the CipherList with `contents`,
 	// which is a List of *CipherEntry.  Update takes ownership of `contents`,
 	// which must not be read or written after this call.
-	Update(contents *list.List) error
+	Update(contents *list.List)
 }
 
 type cipherList struct {
 	CipherList
-	list         *list.List
-	mu           sync.RWMutex
-	tcpTrialSize int
+	list *list.List
+	mu   sync.RWMutex
 }
 
 // NewCipherList creates an empty CipherList
@@ -87,7 +80,7 @@ func matchesIP(e *list.Element, clientIP net.IP) bool {
 	return clientIP != nil && clientIP.Equal(c.lastClientIP)
 }
 
-func (cl *cipherList) SnapshotForClientIP(clientIP net.IP) (int, []*list.Element) {
+func (cl *cipherList) SnapshotForClientIP(clientIP net.IP) []*list.Element {
 	cl.mu.RLock()
 	defer cl.mu.RUnlock()
 	cipherArray := make([]*list.Element, cl.list.Len())
@@ -106,7 +99,7 @@ func (cl *cipherList) SnapshotForClientIP(clientIP net.IP) (int, []*list.Element
 			i++
 		}
 	}
-	return cl.tcpTrialSize, cipherArray
+	return cipherArray
 }
 
 func (cl *cipherList) MarkUsedByClientIP(e *list.Element, clientIP net.IP) {
@@ -118,53 +111,8 @@ func (cl *cipherList) MarkUsedByClientIP(e *list.Element, clientIP net.IP) {
 	c.lastClientIP = clientIP
 }
 
-func tcpHeaderBounds(cipher shadowaead.Cipher) (requires, provides int, err error) {
-	saltSize := cipher.SaltSize()
-
-	aead, err := cipher.Decrypter(make([]byte, saltSize))
-	if err != nil {
-		return
-	}
-
-	if aead.NonceSize() > maxNonceSize {
-		err = fmt.Errorf("Cipher has oversize nonce: %v", cipher)
-		return
-	}
-	overhead := aead.Overhead()
-
-	// We need at least this many bytes to assess whether a TCP stream corresponds
-	// to this cipher.
-	requires = saltSize + 2 + overhead
-	// Any TCP stream for this cipher will deliver at least this many bytes before
-	// requiring the proxy to act.
-	provides = requires + overhead
-	return
-}
-
-func (cl *cipherList) Update(src *list.List) error {
-	maxRequired := 0
-	minProvided := int(math.MaxInt32) // Very large initial value
-	for e := src.Front(); e != nil; e = e.Next() {
-		cipher := e.Value.(*CipherEntry).Cipher
-		requires, provides, err := tcpHeaderBounds(cipher)
-		if err != nil {
-			return err
-		}
-
-		if requires > maxRequired {
-			maxRequired = requires
-		}
-		if provides < minProvided {
-			minProvided = provides
-		}
-	}
-	if maxRequired > minProvided {
-		return fmt.Errorf("List contains incompatible ciphers: %d > %d", maxRequired, minProvided)
-	}
-
+func (cl *cipherList) Update(src *list.List) {
 	cl.mu.Lock()
 	cl.list = src
-	cl.tcpTrialSize = maxRequired
 	cl.mu.Unlock()
-	return nil
 }

@@ -67,6 +67,24 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 	}
 }
 
+func TestCompatibleCiphers(t *testing.T) {
+	for _, cipherName := range ss.SupportedCipherNames() {
+		cipher, _ := ss.NewCipher(cipherName, "dummy secret")
+		// We need at least this many bytes to assess whether a TCP stream corresponds
+		// to this cipher.
+		requires := cipher.SaltSize() + 2 + cipher.TagSize()
+		if requires > bytesForKeyFinding {
+			t.Errorf("Cipher %v required %v bytes > bytesForKeyFinding (%v)", cipherName, requires, bytesForKeyFinding)
+		}
+		// Any TCP stream for this cipher will deliver at least this many bytes before
+		// requiring the proxy to act.
+		provides := requires + cipher.TagSize()
+		if provides < bytesForKeyFinding {
+			t.Errorf("Cipher %v provides %v bytes < bytesForKeyFinding (%v)", cipherName, provides, bytesForKeyFinding)
+		}
+	}
+}
+
 // Fake DuplexConn
 // 1-way pipe, representing the upstream flow as seen by the server.
 type conn struct {
@@ -134,7 +152,7 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		b.Fatal(err)
 	}
 	cipherEntries := [numCiphers]*CipherEntry{}
-	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	snapshot := cipherList.SnapshotForClientIP(nil)
 	for cipherNumber, element := range snapshot {
 		cipherEntries[cipherNumber] = element.Value.(*CipherEntry)
 	}
@@ -204,7 +222,7 @@ func TestReplayDefense(t *testing.T) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
-	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	snapshot := cipherList.SnapshotForClientIP(nil)
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
@@ -285,7 +303,7 @@ func TestReverseReplayDefense(t *testing.T) {
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
 	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
-	_, snapshot := cipherList.SnapshotForClientIP(nil)
+	snapshot := cipherList.SnapshotForClientIP(nil)
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()

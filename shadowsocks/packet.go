@@ -17,21 +17,16 @@ package shadowsocks
 import (
 	"errors"
 	"io"
-
-	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 )
 
 // ErrShortPacket is identical to shadowaead.ErrShortPacket
 var ErrShortPacket = errors.New("short packet")
 
-// This array must be at least service.maxNonceSize bytes.
-var zeroNonce [12]byte
-
 // Pack encrypts a Shadowsocks-UDP packet and returns a slice containing the encrypted packet.
 // dst must be big enough to hold the encrypted packet.
 // If plaintext and dst overlap but are not aligned for in-place encryption, this
 // function will panic.
-func Pack(dst, plaintext []byte, cipher shadowaead.Cipher) ([]byte, error) {
+func Pack(dst, plaintext []byte, cipher *Cipher) ([]byte, error) {
 	saltSize := cipher.SaltSize()
 	if len(dst) < saltSize {
 		return nil, io.ErrShortBuffer
@@ -41,7 +36,7 @@ func Pack(dst, plaintext []byte, cipher shadowaead.Cipher) ([]byte, error) {
 		return nil, err
 	}
 
-	aead, err := cipher.Encrypter(salt)
+	aead, err := cipher.NewAEAD(salt)
 	if err != nil {
 		return nil, err
 	}
@@ -57,24 +52,15 @@ func Pack(dst, plaintext []byte, cipher shadowaead.Cipher) ([]byte, error) {
 // If dst is nil, decryption proceeds in-place.
 // This function is needed because shadowaead.Unpack() embeds its own replay detection,
 // which we do not always want, especially on memory-constrained clients.
-func Unpack(dst, pkt []byte, cipher shadowaead.Cipher) ([]byte, error) {
+func Unpack(dst, pkt []byte, cipher *Cipher) ([]byte, error) {
 	saltSize := cipher.SaltSize()
 	if len(pkt) < saltSize {
 		return nil, ErrShortPacket
 	}
 	salt := pkt[:saltSize]
-	aead, err := cipher.Decrypter(salt)
-	if err != nil {
-		return nil, err
-	}
 	msg := pkt[saltSize:]
-	if len(msg) < aead.Overhead() {
-		return nil, ErrShortPacket
-	}
 	if dst == nil {
 		dst = msg
-	} else if len(msg)-aead.Overhead() > len(dst) {
-		return nil, io.ErrShortBuffer
 	}
-	return aead.Open(dst[:0], zeroNonce[:aead.NonceSize()], msg, nil)
+	return DecryptOnce(cipher, salt, dst[:0], msg)
 }

@@ -57,10 +57,16 @@ func debugTCP(cipherID, template string, val interface{}) {
 	}
 }
 
+// bytesForKeyFinding is the number of bytes to read for finding the AccessKey.
+// Is must satisfy provided >= bytesForKeyFinding >= required for every cipher in the list.
+// provided = saltSize + 2 + 2 * cipher.TagSize, the minimum number of bytes we will see in a valid connection
+// required = saltSize + 2 + cipher.TagSize, the number of bytes needed to authenticate the connection.
+const bytesForKeyFinding = 50
+
 func findAccessKey(clientReader io.Reader, clientIP net.IP, cipherList CipherList) (*CipherEntry, io.Reader, []byte, time.Duration, error) {
 	// We snapshot the list because it may be modified while we use it.
-	tcpTrialSize, ciphers := cipherList.SnapshotForClientIP(clientIP)
-	firstBytes := make([]byte, tcpTrialSize)
+	ciphers := cipherList.SnapshotForClientIP(clientIP)
+	firstBytes := make([]byte, bytesForKeyFinding)
 	if n, err := io.ReadFull(clientReader, firstBytes); err != nil {
 		return nil, clientReader, nil, 0, fmt.Errorf("Reading header failed after %d bytes: %v", n, err)
 	}
@@ -81,8 +87,6 @@ func findAccessKey(clientReader io.Reader, clientIP net.IP, cipherList CipherLis
 
 // Implements a trial decryption search.  This assumes that all ciphers are AEAD.
 func findEntry(firstBytes []byte, ciphers []*list.Element) (*CipherEntry, *list.Element) {
-	// Constant of zeroes to use as the start chunk count.
-	zeroCountBuf := [maxNonceSize]byte{}
 	// To hold the decrypted chunk length.
 	chunkLenBuf := [2]byte{}
 	for ci, elt := range ciphers {
@@ -90,14 +94,9 @@ func findEntry(firstBytes []byte, ciphers []*list.Element) (*CipherEntry, *list.
 		id, cipher := entry.ID, entry.Cipher
 		saltsize := cipher.SaltSize()
 		salt := firstBytes[:saltsize]
-		aead, err := cipher.Decrypter(salt)
-		if err != nil {
-			debugTCP(id, "Failed to create decrypter: %v", err)
-			continue
-		}
-		cipherTextLength := 2 + aead.Overhead()
+		cipherTextLength := 2 + cipher.TagSize()
 		cipherText := firstBytes[saltsize : saltsize+cipherTextLength]
-		_, err = aead.Open(chunkLenBuf[:0], zeroCountBuf[:aead.NonceSize()], cipherText, nil)
+		_, err := ss.DecryptOnce(cipher, salt, chunkLenBuf[:0], cipherText)
 		if err != nil {
 			debugTCP(id, "Failed to decrypt length: %v", err)
 			continue
