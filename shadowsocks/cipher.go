@@ -26,8 +26,8 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// SuportedCipherNames lists the names of the AEAD ciphers that are supported.
-func SuportedCipherNames() []string {
+// SupportedCipherNames lists the names of the AEAD ciphers that are supported.
+func SupportedCipherNames() []string {
 	names := make([]string, len(supportedAEADs))
 	for i, spec := range supportedAEADs {
 		names[i] = spec.name
