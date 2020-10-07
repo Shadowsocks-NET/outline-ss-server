@@ -15,36 +15,12 @@
 package service
 
 import (
-	"math"
 	"math/rand"
 	"net"
 	"testing"
 
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 )
-
-func TestCompatibleCiphers(t *testing.T) {
-	maxRequired := 0
-	minProvided := int(math.MaxInt32) // Very large initial value
-	for _, cipherName := range ss.SupportedCipherNames() {
-		cipher, _ := ss.NewCipher(cipherName, "dummy secret")
-		// We need at least this many bytes to assess whether a TCP stream corresponds
-		// to this cipher.
-		requires := cipher.SaltSize() + 2 + cipher.TagSize()
-		if requires > maxRequired {
-			maxRequired = requires
-		}
-		// Any TCP stream for this cipher will deliver at least this many bytes before
-		// requiring the proxy to act.
-		provides := requires + cipher.TagSize()
-		if provides < minProvided {
-			minProvided = provides
-		}
-	}
-	if maxRequired > minProvided {
-		t.Fatalf("Supported ciphers contains incompatible ciphers: %d > %d", maxRequired, minProvided)
-	}
-}
 
 func BenchmarkLocking(b *testing.B) {
 	var ip net.IP

@@ -57,23 +57,16 @@ func debugTCP(cipherID, template string, val interface{}) {
 	}
 }
 
-func calculateTCPTrialSize(ciphers []*list.Element) int {
-	minRequired := 0
-	for _, elt := range ciphers {
-		entry := elt.Value.(*CipherEntry)
-		cipher := entry.Cipher
-		requires := cipher.SaltSize() + 2 + cipher.TagSize()
-		if requires > minRequired {
-			minRequired = requires
-		}
-	}
-	return minRequired
-}
+// bytesForKeyFinding is the number of bytes to read for finding the AccessKey.
+// Is must satisfy provided >= bytesForKeyFinding >= required for every cipher in the list.
+// provided = saltSize + 2 + 2 * cipher.TagSize, the minimum number of bytes we will see in a valid connection
+// required = saltSize + 2 + cipher.TagSize, the number of bytes needed to authenticate the connection.
+const bytesForKeyFinding = 50
 
 func findAccessKey(clientReader io.Reader, clientIP net.IP, cipherList CipherList) (*CipherEntry, io.Reader, []byte, time.Duration, error) {
 	// We snapshot the list because it may be modified while we use it.
 	ciphers := cipherList.SnapshotForClientIP(clientIP)
-	firstBytes := make([]byte, calculateTCPTrialSize(ciphers))
+	firstBytes := make([]byte, bytesForKeyFinding)
 	if n, err := io.ReadFull(clientReader, firstBytes); err != nil {
 		return nil, clientReader, nil, 0, fmt.Errorf("Reading header failed after %d bytes: %v", n, err)
 	}
