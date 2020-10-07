@@ -171,14 +171,16 @@ func proxyConnection(clientSSConn onet.DuplexConn, tgtAddr socks.Addr, proxyMetr
 	fromClientErrCh := make(chan error)
 	go func() {
 		_, fromClientErr := clientSSConn.(io.WriterTo).WriteTo(tgtConn)
-		// Send FIN to target.
-		tgtConn.CloseWrite()
 		if fromClientErr != nil {
 			// Drain to prevent a close on cipher error.
 			// TODO: Need to drain the underlying connections instead.
 			clientSSConn.(io.WriterTo).WriteTo(ioutil.Discard)
 		}
 		clientSSConn.CloseRead()
+		// Send FIN to target.
+		// We must do this after the drain is completed, otherwise the target will close its
+		// connection with the proxy, which will, in turn, close the connection with the client.
+		tgtConn.CloseWrite()
 		fromClientErrCh <- fromClientErr
 	}()
 	_, fromTargetErr := clientSSConn.(io.ReaderFrom).ReadFrom(tgtConn)
