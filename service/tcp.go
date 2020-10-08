@@ -247,14 +247,14 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn *net.TCPCo
 
 		ssr := ss.NewShadowsocksReader(clientReader, cipherEntry.Cipher)
 		tgtAddr, err := socks.ReadAddr(ssr)
+		// Clear the deadline for the target address
+		clientTCPConn.SetReadDeadline(time.Time{})
 		if err != nil {
 			// Drain to prevent a close on cipher error.
 			io.Copy(ioutil.Discard, clientConn)
 			return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
 		}
 
-		// Clear the deadline for the target address
-		clientTCPConn.SetReadDeadline(time.Time{})
 		tgtConn, dialErr := dialTarget(tgtAddr, &proxyMetrics, s.targetIPValidator)
 		if dialErr != nil {
 			// We don't drain so dial errors and invalid addresses are communicated quickly.
