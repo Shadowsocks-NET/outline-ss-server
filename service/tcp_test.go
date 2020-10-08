@@ -227,13 +227,13 @@ func TestReplayDefense(t *testing.T) {
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
 	go ss.NewShadowsocksWriter(writer, cipher).Write([]byte{0})
-	preamble := make([]byte, 32+2+16)
+	preamble := make([]byte, cipher.SaltSize()+2+cipher.TagSize())
 	if _, err := io.ReadFull(reader, preamble); err != nil {
 		t.Fatal(err)
 	}
 
-	run := func() net.Conn {
-		conn, err := net.Dial(listener.Addr().Network(), listener.Addr().String())
+	run := func() *net.TCPConn {
+		conn, err := net.DialTCP(listener.Addr().Network(), nil, listener.Addr().(*net.TCPAddr))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,21 +248,18 @@ func TestReplayDefense(t *testing.T) {
 
 	// First run.
 	conn1 := run()
+	// Wait for the close.  This ensures that conn1 and conn2 can't be
+	// processed out of order at the proxy.
+	conn1.CloseWrite()
+	conn1.Read(make([]byte, 1))
 	if len(testMetrics.probeData) != 0 {
 		t.Errorf("First connection should not have triggered probe detection: %v", testMetrics.probeData[0])
 	}
-	if len(testMetrics.closeStatus) != 0 {
-		t.Errorf("First connection should not have been closed yet: %v", testMetrics.probeData[0])
-	}
-	// Write a minimal invalid chunk to trigger a cipher error and a proxy-driven close.
-	conn1.Write(make([]byte, 2+16))
-	// Wait for the close.  This ensures that conn1 and conn2 can't be
-	// processed out of order at the proxy.
-	conn1.Read(make([]byte, 1))
 
 	// Replay.
 	conn2 := run()
 	// Wait for the connection to be closed by the proxy after testTimeout.
+	conn2.CloseWrite()
 	conn2.Read(make([]byte, 1))
 
 	conn1.Close()
