@@ -28,12 +28,9 @@ import (
 // payloadSizeMask is the maximum size of payload in bytes.
 const payloadSizeMask = 0x3FFF // 16*1024 - 1
 
-// Maximum allowed cipher overhead
-const maxCipherOverhead = 16
-
 // Buffer pool used for encrypting and decrypting Shadowsocks streams.
 // The largest buffer we could need is for encrypting a max-length payload.
-var ssPool = slicepool.MakePool(payloadSizeMask + maxCipherOverhead)
+var ssPool = slicepool.MakePool(payloadSizeMask + maxCipherOverhead())
 
 // Writer is an io.Writer that also implements io.ReaderFrom to
 // allow for piping the data without extra allocations and copies.
@@ -310,9 +307,6 @@ func (cr *chunkReader) init() (err error) {
 		cr.aead, err = cr.ssCipher.NewAEAD(salt)
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
-		}
-		if cr.aead.Overhead() > maxCipherOverhead {
-			return fmt.Errorf("Excessive cipher overhead (%d)", cr.aead.Overhead())
 		}
 		cr.counter = make([]byte, cr.aead.NonceSize())
 		cr.size = make([]byte, 2+cr.aead.Overhead())
