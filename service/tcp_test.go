@@ -15,8 +15,11 @@
 package service
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"sync"
 	"testing"
@@ -26,6 +29,8 @@ import (
 	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
+	"github.com/shadowsocks/go-shadowsocks2/socks"
+	"github.com/stretchr/testify/require"
 )
 
 func init() {
@@ -209,11 +214,181 @@ func (m *probeTestMetrics) AddUDPPacketFromTarget(clientLocation, accessKey, sta
 func (m *probeTestMetrics) AddUDPNatEntry()    {}
 func (m *probeTestMetrics) RemoveUDPNatEntry() {}
 
-func TestReplayDefense(t *testing.T) {
+func makeLocalhostListener(t *testing.T) *net.TCPListener {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	require.Nil(t, err, "ListenTCP failed: %v", err)
+	return listener
+}
+
+func probe(serverAddr *net.TCPAddr, bytesToSend []byte) error {
+	conn, err := net.DialTCP("tcp", nil, serverAddr)
 	if err != nil {
-		t.Fatalf("ListenTCP failed: %v", err)
+		return fmt.Errorf("DialTCP failed: %w", err)
 	}
+
+	n, err := conn.Write(bytesToSend)
+	if err != nil || n != len(bytesToSend) {
+		return fmt.Errorf("Write failed. bytes written: %v, err: %w", n, err)
+	}
+	conn.CloseWrite()
+
+	nRead, err := conn.Read(make([]byte, 1))
+	if err != io.EOF || nRead != 0 {
+		return fmt.Errorf("Read not EOF. bytes read: %v, err: %w", nRead, err)
+	}
+	return nil
+}
+
+func TestProbeRandom(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	go s.Serve(listener)
+
+	buf := make([]byte, 92)
+	for numBytesToSend := 0; numBytesToSend < len(buf); numBytesToSend++ {
+		bytesToSend := buf[:numBytesToSend]
+		rand.Read(bytesToSend)
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed on byte %v: %v", numBytesToSend, err)
+	}
+	s.GracefulStop()
+	require.Equal(t, len(buf), len(testMetrics.probeData))
+}
+
+func makeClientBytesBasic(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
+	var buffer bytes.Buffer
+	socksTargetAddr := socks.ParseAddr(targetAddr)
+	require.Equal(t, 7, len(socksTargetAddr)) // 1 type + 4 IP + 2 Port
+	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
+	n, err := ssw.Write(socksTargetAddr)
+	require.Nil(t, err, "Write failed: %v", err)
+	require.Equal(t, len(socksTargetAddr), n, "Write failed: %v", err)
+	n, err = ssw.Write([]byte("initial data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	n, err = ssw.Write([]byte("more data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	return buffer.Bytes()
+}
+
+func makeClientBytesCoalesced(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
+	var buffer bytes.Buffer
+	socksTargetAddr := socks.ParseAddr(targetAddr)
+	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
+	n, err := ssw.LazyWrite(socksTargetAddr)
+	require.Nil(t, err, "LazyWrite failed: %v", err)
+	require.Equal(t, len(socksTargetAddr), n, "LazyWrite failed: %v", err)
+	n, err = ssw.Write([]byte("initial data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	n, err = ssw.Write([]byte("more data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	return buffer.Bytes()
+}
+
+func firstCipher(cipherList CipherList) *ss.Cipher {
+	snapshot := cipherList.SnapshotForClientIP(nil)
+	cipherEntry := snapshot[0].Value.(*CipherEntry)
+	return cipherEntry.Cipher
+}
+
+func TestProbeClientBytesBasicTruncated(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	cipher := firstCipher(cipherList)
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	go s.Serve(listener)
+
+	initialBytes := makeClientBytesBasic(t, cipher, "0.0.0.0:443")
+	for numBytesToSend := 0; numBytesToSend < len(initialBytes); numBytesToSend++ {
+		bytesToSend := initialBytes[:numBytesToSend]
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed for %v bytes sent: %v", numBytesToSend, err)
+	}
+	s.GracefulStop()
+	// We only count as probes failures in the first 50 bytes.
+	require.Equal(t, 50, len(testMetrics.probeData))
+}
+
+func makeServerBytes(t *testing.T, cipher *ss.Cipher) []byte {
+	var buffer bytes.Buffer
+	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
+	_, err := ssw.Write([]byte("initial data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	_, err = ssw.Write([]byte("more data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	return buffer.Bytes()
+}
+
+func TestProbeClientBytesBasicModified(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	cipher := firstCipher(cipherList)
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	go s.Serve(listener)
+
+	initialBytes := makeClientBytesBasic(t, cipher, "1.2.3.4:443")
+	bytesToSend := make([]byte, len(initialBytes))
+	for byteToModify := 0; byteToModify < len(initialBytes); byteToModify++ {
+		copy(bytesToSend, initialBytes)
+		bytesToSend[byteToModify] = 255 - bytesToSend[byteToModify]
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed modified byte %v: %v", byteToModify, err)
+	}
+
+	s.GracefulStop()
+	require.Equal(t, 50, len(testMetrics.probeData))
+}
+
+func TestProbeClientBytesCoalescedModified(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	cipher := firstCipher(cipherList)
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	go s.Serve(listener)
+
+	initialBytes := makeClientBytesCoalesced(t, cipher, "0.0.0.0:443")
+	bytesToSend := make([]byte, len(initialBytes))
+	for byteToModify := 0; byteToModify < len(initialBytes); byteToModify++ {
+		copy(bytesToSend, initialBytes)
+		bytesToSend[byteToModify] = 255 - bytesToSend[byteToModify]
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed modified byte %v: %v", byteToModify, err)
+	}
+	s.GracefulStop()
+	require.Equal(t, 50, len(testMetrics.probeData))
+}
+
+func TestProbeServerBytesModified(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	cipher := firstCipher(cipherList)
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	go s.Serve(listener)
+
+	initialBytes := makeServerBytes(t, cipher)
+	bytesToSend := make([]byte, len(initialBytes))
+	for byteToModify := 0; byteToModify < len(initialBytes); byteToModify++ {
+		copy(bytesToSend, initialBytes)
+		bytesToSend[byteToModify] = 255 - bytesToSend[byteToModify]
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed modified byte %v: %v", byteToModify, err)
+	}
+	s.GracefulStop()
+	require.Equal(t, 50, len(testMetrics.probeData))
+}
+
+func TestReplayDefense(t *testing.T) {
+	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
@@ -291,10 +466,7 @@ func TestReplayDefense(t *testing.T) {
 }
 
 func TestReverseReplayDefense(t *testing.T) {
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenTCP failed: %v", err)
-	}
+	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
 	if err != nil {
 		t.Fatal(err)
@@ -363,10 +535,7 @@ func TestTCPProbeTimeout(t *testing.T) {
 func probeExpectTimeout(t *testing.T, payloadSize int) {
 	const testTimeout = 200 * time.Millisecond
 
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenTCP failed: %v", err)
-	}
+	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(5))
 	if err != nil {
 		t.Fatal(err)
@@ -441,10 +610,7 @@ func TestTCPDoubleServe(t *testing.T) {
 
 	c := make(chan error)
 	for i := 0; i < 2; i++ {
-		listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-		if err != nil {
-			t.Fatalf("ListenTCP failed: %v", err)
-		}
+		listener := makeLocalhostListener(t)
 		go func() {
 			err := s.Serve(listener)
 			if err != nil {
@@ -477,10 +643,7 @@ func TestTCPEarlyStop(t *testing.T) {
 	if err := s.Stop(); err != nil {
 		t.Error(err)
 	}
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenTCP failed: %v", err)
-	}
+	listener := makeLocalhostListener(t)
 	if err := s.Serve(listener); err != nil {
 		t.Error(err)
 	}
