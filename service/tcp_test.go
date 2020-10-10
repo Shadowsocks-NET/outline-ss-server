@@ -356,16 +356,6 @@ func TestProbeClientBytesBasicTruncated(t *testing.T) {
 	discardWait.Wait()
 }
 
-func makeServerBytes(t *testing.T, cipher *ss.Cipher) []byte {
-	var buffer bytes.Buffer
-	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
-	_, err := ssw.Write([]byte("initial data"))
-	require.Nil(t, err, "Write failed: %v", err)
-	_, err = ssw.Write([]byte("more data"))
-	require.Nil(t, err, "Write failed: %v", err)
-	return buffer.Bytes()
-}
-
 func TestProbeClientBytesBasicModified(t *testing.T) {
 	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
@@ -417,6 +407,16 @@ func TestProbeClientBytesCoalescedModified(t *testing.T) {
 	require.Equal(t, 50, len(testMetrics.probeData))
 	discardListener.Close()
 	discardWait.Wait()
+}
+
+func makeServerBytes(t *testing.T, cipher *ss.Cipher) []byte {
+	var buffer bytes.Buffer
+	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
+	_, err := ssw.Write([]byte("initial data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	_, err = ssw.Write([]byte("more data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	return buffer.Bytes()
 }
 
 func TestProbeServerBytesModified(t *testing.T) {
