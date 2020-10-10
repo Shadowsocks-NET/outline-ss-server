@@ -250,6 +250,14 @@ func (m *probeTestMetrics) AddUDPPacketFromTarget(clientLocation, accessKey, sta
 func (m *probeTestMetrics) AddUDPNatEntry()    {}
 func (m *probeTestMetrics) RemoveUDPNatEntry() {}
 
+func (m *probeTestMetrics) countStatuses() map[string]int {
+	counts := make(map[string]int)
+	for _, status := range m.closeStatus {
+		counts[status] = counts[status] + 1
+	}
+	return counts
+}
+
 func probe(serverAddr *net.TCPAddr, bytesToSend []byte) error {
 	conn, err := net.DialTCP("tcp", nil, serverAddr)
 	if err != nil {
@@ -350,6 +358,11 @@ func TestProbeClientBytesBasicTruncated(t *testing.T) {
 		require.Nil(t, err, "Failed for %v bytes sent: %v", numBytesToSend, err)
 	}
 	s.GracefulStop()
+	statusCount := testMetrics.countStatuses()
+	require.Equal(t, 50, statusCount["ERR_CIPHER"])
+	require.Equal(t, 7+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, 2, statusCount["OK"]) // On the chunk boundaries.
+	require.Equal(t, len(initialBytes)-50-7-16-2, statusCount["ERR_RELAY_CLIENT"])
 	// We only count as probes failures in the first 50 bytes.
 	require.Equal(t, 50, len(testMetrics.probeData))
 	discardListener.Close()
@@ -378,6 +391,10 @@ func TestProbeClientBytesBasicModified(t *testing.T) {
 	}
 
 	s.GracefulStop()
+	statusCount := testMetrics.countStatuses()
+	require.Equal(t, 50, statusCount["ERR_CIPHER"])
+	require.Equal(t, 7+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, len(initialBytes)-50-7-16, statusCount["ERR_RELAY_CLIENT"])
 	require.Equal(t, 50, len(testMetrics.probeData))
 	discardListener.Close()
 	discardWait.Wait()
@@ -404,7 +421,9 @@ func TestProbeClientBytesCoalescedModified(t *testing.T) {
 		require.Nil(t, err, "Failed modified byte %v: %v", byteToModify, err)
 	}
 	s.GracefulStop()
-	require.Equal(t, 50, len(testMetrics.probeData))
+	statusCount := testMetrics.countStatuses()
+	require.Equal(t, 50, statusCount["ERR_CIPHER"])
+	require.Equal(t, len(initialBytes)-50, statusCount["ERR_READ_ADDRESS"]+statusCount["ERR_RELAY_CLIENT"])
 	discardListener.Close()
 	discardWait.Wait()
 }
@@ -437,6 +456,9 @@ func TestProbeServerBytesModified(t *testing.T) {
 		require.Nil(t, err, "Failed modified byte %v: %v", byteToModify, err)
 	}
 	s.GracefulStop()
+	statusCount := testMetrics.countStatuses()
+	require.Equal(t, 50, statusCount["ERR_CIPHER"])
+	require.Equal(t, len(initialBytes)-50, statusCount["ERR_READ_ADDRESS"])
 	require.Equal(t, 50, len(testMetrics.probeData))
 }
 
