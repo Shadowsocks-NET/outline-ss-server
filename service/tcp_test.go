@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math/rand"
 	"net"
 	"sync"
@@ -35,6 +36,41 @@ import (
 
 func init() {
 	logging.SetLevel(logging.INFO, "")
+}
+
+func allowAll(ip net.IP) *onet.ConnectionError {
+	// Allow access to localhost so that we can run integration tests with
+	// an actual destination server.
+	return nil
+}
+
+func makeLocalhostListener(t testing.TB) *net.TCPListener {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	require.Nil(t, err, "ListenTCP failed: %v", err)
+	return listener
+}
+
+func startDiscardServer(t testing.TB) (*net.TCPListener, *sync.WaitGroup) {
+	listener := makeLocalhostListener(t)
+	var running sync.WaitGroup
+	running.Add(1)
+	go func() {
+		defer running.Done()
+		for {
+			clientConn, err := listener.AcceptTCP()
+			if err != nil {
+				t.Logf("AcceptTCP failed: %v", err)
+				return
+			}
+			running.Add(1)
+			go func() {
+				defer running.Done()
+				io.Copy(ioutil.Discard, clientConn)
+				clientConn.Close()
+			}()
+		}
+	}()
+	return listener, &running
 }
 
 // Simulates receiving invalid TCP connection attempts on a server with 100 ciphers.
@@ -214,12 +250,6 @@ func (m *probeTestMetrics) AddUDPPacketFromTarget(clientLocation, accessKey, sta
 func (m *probeTestMetrics) AddUDPNatEntry()    {}
 func (m *probeTestMetrics) RemoveUDPNatEntry() {}
 
-func makeLocalhostListener(t *testing.T) *net.TCPListener {
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	require.Nil(t, err, "ListenTCP failed: %v", err)
-	return listener
-}
-
 func probe(serverAddr *net.TCPAddr, bytesToSend []byte) error {
 	conn, err := net.DialTCP("tcp", nil, serverAddr)
 	if err != nil {
@@ -228,13 +258,13 @@ func probe(serverAddr *net.TCPAddr, bytesToSend []byte) error {
 
 	n, err := conn.Write(bytesToSend)
 	if err != nil || n != len(bytesToSend) {
-		return fmt.Errorf("Write failed. bytes written: %v, err: %w", n, err)
+		return fmt.Errorf("Write failed. bytes written: %v, err: %v", n, err)
 	}
 	conn.CloseWrite()
 
 	nRead, err := conn.Read(make([]byte, 1))
 	if err != io.EOF || nRead != 0 {
-		return fmt.Errorf("Read not EOF. bytes read: %v, err: %w", nRead, err)
+		return fmt.Errorf("Read not EOF. bytes read: %v, err: %v", nRead, err)
 	}
 	return nil
 }
@@ -261,15 +291,21 @@ func TestProbeRandom(t *testing.T) {
 func makeClientBytesBasic(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
 	var buffer bytes.Buffer
 	socksTargetAddr := socks.ParseAddr(targetAddr)
-	require.Equal(t, 7, len(socksTargetAddr)) // 1 type + 4 IP + 2 Port
+	require.Equal(t, 1+4+2, len(socksTargetAddr))
 	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
 	n, err := ssw.Write(socksTargetAddr)
 	require.Nil(t, err, "Write failed: %v", err)
 	require.Equal(t, len(socksTargetAddr), n, "Write failed: %v", err)
+	require.Equal(t, 73, buffer.Len())
+
 	n, err = ssw.Write([]byte("initial data"))
 	require.Nil(t, err, "Write failed: %v", err)
+	require.Equal(t, 73+2+16+12+16, buffer.Len()) // 119
+
 	n, err = ssw.Write([]byte("more data"))
 	require.Nil(t, err, "Write failed: %v", err)
+	require.Equal(t, 119+2+16+9+16, buffer.Len()) // 162
+
 	return buffer.Bytes()
 }
 
@@ -282,6 +318,8 @@ func makeClientBytesCoalesced(t *testing.T, cipher *ss.Cipher, targetAddr string
 	require.Equal(t, len(socksTargetAddr), n, "LazyWrite failed: %v", err)
 	n, err = ssw.Write([]byte("initial data"))
 	require.Nil(t, err, "Write failed: %v", err)
+	require.Equal(t, 32+2+16+7+12+16, buffer.Len()) // 85
+
 	n, err = ssw.Write([]byte("more data"))
 	require.Nil(t, err, "Write failed: %v", err)
 	return buffer.Bytes()
@@ -300,10 +338,13 @@ func TestProbeClientBytesBasicTruncated(t *testing.T) {
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s.SetTargetIPValidator(allowAll)
 	go s.Serve(listener)
 
-	initialBytes := makeClientBytesBasic(t, cipher, "0.0.0.0:443")
+	discardListener, discardWait := startDiscardServer(t)
+	initialBytes := makeClientBytesBasic(t, cipher, discardListener.Addr().String())
 	for numBytesToSend := 0; numBytesToSend < len(initialBytes); numBytesToSend++ {
+		t.Logf("Sending %v bytes", numBytesToSend)
 		bytesToSend := initialBytes[:numBytesToSend]
 		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
 		require.Nil(t, err, "Failed for %v bytes sent: %v", numBytesToSend, err)
@@ -311,6 +352,8 @@ func TestProbeClientBytesBasicTruncated(t *testing.T) {
 	s.GracefulStop()
 	// We only count as probes failures in the first 50 bytes.
 	require.Equal(t, 50, len(testMetrics.probeData))
+	discardListener.Close()
+	discardWait.Wait()
 }
 
 func makeServerBytes(t *testing.T, cipher *ss.Cipher) []byte {
@@ -330,11 +373,14 @@ func TestProbeClientBytesBasicModified(t *testing.T) {
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s.SetTargetIPValidator(allowAll)
 	go s.Serve(listener)
 
-	initialBytes := makeClientBytesBasic(t, cipher, "1.2.3.4:443")
+	discardListener, discardWait := startDiscardServer(t)
+	initialBytes := makeClientBytesBasic(t, cipher, discardListener.Addr().String())
 	bytesToSend := make([]byte, len(initialBytes))
 	for byteToModify := 0; byteToModify < len(initialBytes); byteToModify++ {
+		t.Logf("Modifying byte %v", byteToModify)
 		copy(bytesToSend, initialBytes)
 		bytesToSend[byteToModify] = 255 - bytesToSend[byteToModify]
 		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
@@ -343,6 +389,8 @@ func TestProbeClientBytesBasicModified(t *testing.T) {
 
 	s.GracefulStop()
 	require.Equal(t, 50, len(testMetrics.probeData))
+	discardListener.Close()
+	discardWait.Wait()
 }
 
 func TestProbeClientBytesCoalescedModified(t *testing.T) {
@@ -352,11 +400,14 @@ func TestProbeClientBytesCoalescedModified(t *testing.T) {
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s.SetTargetIPValidator(allowAll)
 	go s.Serve(listener)
 
-	initialBytes := makeClientBytesCoalesced(t, cipher, "0.0.0.0:443")
+	discardListener, discardWait := startDiscardServer(t)
+	initialBytes := makeClientBytesCoalesced(t, cipher, discardListener.Addr().String())
 	bytesToSend := make([]byte, len(initialBytes))
 	for byteToModify := 0; byteToModify < len(initialBytes); byteToModify++ {
+		t.Logf("Modifying byte %v", byteToModify)
 		copy(bytesToSend, initialBytes)
 		bytesToSend[byteToModify] = 255 - bytesToSend[byteToModify]
 		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
@@ -364,6 +415,8 @@ func TestProbeClientBytesCoalescedModified(t *testing.T) {
 	}
 	s.GracefulStop()
 	require.Equal(t, 50, len(testMetrics.probeData))
+	discardListener.Close()
+	discardWait.Wait()
 }
 
 func TestProbeServerBytesModified(t *testing.T) {
