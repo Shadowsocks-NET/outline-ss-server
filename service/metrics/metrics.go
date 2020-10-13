@@ -120,7 +120,7 @@ func newShadowsocksMetrics(ipCountryDB *geoip2.Reader) *shadowsocksMetrics {
 		tcpProbes: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "shadowsocks",
 			Name:      "tcp_probes",
-			Buckets:   []float64{0, 48, 49, 50, 51, 52, 72, 73, 90, 91, 220, 221},
+			Buckets:   []float64{0, 49, 50, 51, 73, 91},
 			Help:      "Histogram of number of bytes from client to proxy, for detecting possible probes",
 		}, []string{"location", "port", "status", "error"}),
 		timeToCipherMs: prometheus.NewHistogramVec(
