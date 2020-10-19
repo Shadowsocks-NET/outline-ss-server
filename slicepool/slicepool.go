@@ -23,8 +23,8 @@ import (
 //
 // All copies of a Pool refer to the same underlying pool.
 //
-// "*[]byte" is used to avoid an allocation due to casting
-// []byte to interface{} when calling sync.Pool.Put.
+// "*[]byte" is used to avoid a heap allocation when passing a
+// []byte to sync.Pool.Put, which leaks its argument to the heap.
 type Pool struct {
 	pool *sync.Pool
 	len  int
@@ -36,6 +36,9 @@ func MakePool(sliceLen int) Pool {
 		pool: &sync.Pool{
 			New: func() interface{} {
 				slice := make([]byte, sliceLen)
+				// Return a *[]byte instead of []byte ensures that
+				// the []byte is not copied, which would cause a heap
+				// allocation on every call to sync.pool.Put
 				return &slice
 			},
 		},
