@@ -20,7 +20,7 @@ import (
 
 func TestPool(t *testing.T) {
 	pool := MakePool(10)
-	slice := pool.Slice()
+	slice := pool.LazySlice()
 	buf := slice.Acquire()
 	if len(buf) != 10 {
 		t.Errorf("Wrong slice length: %d", len(buf))
@@ -31,7 +31,7 @@ func TestPool(t *testing.T) {
 func BenchmarkPool(b *testing.B) {
 	pool := MakePool(10)
 	for i := 0; i < b.N; i++ {
-		slice := pool.Slice()
+		slice := pool.LazySlice()
 		slice.Acquire()
 		slice.Release()
 	}

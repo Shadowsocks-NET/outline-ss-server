@@ -19,7 +19,7 @@ import (
 )
 
 // Pool wraps a sync.Pool of *[]byte.  To encourage correct usage,
-// all public methods are on slicepool.Slice.
+// all public methods are on slicepool.LazySlice.
 //
 // All copies of a Pool refer to the same underlying pool.
 //
@@ -54,32 +54,32 @@ func (p *Pool) put(b *[]byte) {
 	p.pool.Put(b)
 }
 
-// Slice returns an empty Slice tied to this Pool.
-func (p *Pool) Slice() Slice {
-	return Slice{pool: p}
+// LazySlice returns an empty LazySlice tied to this Pool.
+func (p *Pool) LazySlice() LazySlice {
+	return LazySlice{pool: p}
 }
 
-// Slice holds 0 or 1 buffers from a particular Pool.
-type Slice struct {
-	buf  *[]byte
-	pool *Pool
+// LazySlice holds 0 or 1 slices from a particular Pool.
+type LazySlice struct {
+	slice *[]byte
+	pool  *Pool
 }
 
 // Acquire this slice from the pool and return it.
 // This slice must not already be acquired.
-func (b *Slice) Acquire() []byte {
-	if b.buf != nil {
+func (b *LazySlice) Acquire() []byte {
+	if b.slice != nil {
 		panic("buffer already acquired")
 	}
-	b.buf = b.pool.get()
-	return *b.buf
+	b.slice = b.pool.get()
+	return *b.slice
 }
 
 // Release the buffer back to the pool, unless the box is empty.
 // The caller must discard any references to the buffer.
-func (b *Slice) Release() {
-	if b.buf != nil {
-		b.pool.put(b.buf)
-		b.buf = nil
+func (b *LazySlice) Release() {
+	if b.slice != nil {
+		b.pool.put(b.slice)
+		b.slice = nil
 	}
 }

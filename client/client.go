@@ -109,9 +109,9 @@ func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	if socksTargetAddr == nil {
 		return 0, errors.New("Failed to parse target address")
 	}
-	box := udpPool.Slice()
-	cipherBuf := box.Acquire()
-	defer box.Release()
+	lazySlice := udpPool.LazySlice()
+	cipherBuf := lazySlice.Acquire()
+	defer lazySlice.Release()
 	saltSize := c.cipher.SaltSize()
 	// Copy the SOCKS target address and payload, reserving space for the generated salt to avoid
 	// partially overlapping the plaintext and cipher slices since `Pack` skips the salt when calling
@@ -127,9 +127,9 @@ func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 
 // ReadFrom reads from the embedded PacketConn and decrypts into `b`.
 func (c *packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
-	box := udpPool.Slice()
-	cipherBuf := box.Acquire()
-	defer box.Release()
+	lazySlice := udpPool.LazySlice()
+	cipherBuf := lazySlice.Acquire()
+	defer lazySlice.Release()
 	n, err := c.UDPConn.Read(cipherBuf)
 	if err != nil {
 		return 0, nil, err
