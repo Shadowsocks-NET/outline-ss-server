@@ -77,7 +77,7 @@ func newAesGCM(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(blk)
 }
 
-func maxCipherOverhead() int {
+func maxTagSize() int {
 	max := 0
 	for _, spec := range supportedAEADs {
 		if spec.tagSize > max {

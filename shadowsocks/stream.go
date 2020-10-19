@@ -30,7 +30,7 @@ const payloadSizeMask = 0x3FFF // 16*1024 - 1
 
 // Buffer pool used for encrypting and decrypting Shadowsocks streams.
 // The largest buffer we could need is for encrypting a max-length payload.
-var ssPool = slicepool.MakePool(payloadSizeMask + maxCipherOverhead())
+var ssPool = slicepool.MakePool(payloadSizeMask + maxTagSize())
 
 // Writer is an io.Writer that also implements io.ReaderFrom to
 // allow for piping the data without extra allocations and copies.
@@ -269,9 +269,9 @@ type chunkReader struct {
 	// Index of the next encrypted chunk to read.
 	counter []byte
 	// Buffer for the uint16 size and its AEAD tag.  Made in init().
-	size []byte
+	payloadSizeBuf []byte
 	// Holds a buffer for the payload and its AEAD tag, when needed.
-	payload slicepool.Slice
+	payload slicepool.LazySlice
 }
 
 // Reader is an io.Reader that also implements io.WriterTo to
@@ -288,7 +288,7 @@ func NewShadowsocksReader(reader io.Reader, ssCipher *Cipher) Reader {
 		cr: &chunkReader{
 			reader:   reader,
 			ssCipher: ssCipher,
-			payload:  ssPool.Slice(),
+			payload:  ssPool.LazySlice(),
 		},
 	}
 }
@@ -309,7 +309,7 @@ func (cr *chunkReader) init() (err error) {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
 		cr.counter = make([]byte, cr.aead.NonceSize())
-		cr.size = make([]byte, 2+cr.aead.Overhead())
+		cr.payloadSizeBuf = make([]byte, 2+cr.aead.Overhead())
 	}
 	return nil
 }
@@ -345,13 +345,13 @@ func (cr *chunkReader) ReadChunk() ([]byte, error) {
 	// encrypted messages.  The first message contains the payload length,
 	// and the second message is the payload.  Idle read threads will
 	// block here until the next chunk.
-	if err := cr.readMessage(cr.size); err != nil {
+	if err := cr.readMessage(cr.payloadSizeBuf); err != nil {
 		if err != io.EOF && err != io.ErrUnexpectedEOF {
 			err = fmt.Errorf("failed to read payload size: %v", err)
 		}
 		return nil, err
 	}
-	size := int(binary.BigEndian.Uint16(cr.size) & payloadSizeMask)
+	size := int(binary.BigEndian.Uint16(cr.payloadSizeBuf) & payloadSizeMask)
 	sizeWithTag := size + cr.aead.Overhead()
 	payloadBuf := cr.payload.Acquire()
 	if cap(payloadBuf) < sizeWithTag {
