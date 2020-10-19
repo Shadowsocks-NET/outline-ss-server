@@ -77,6 +77,16 @@ func newAesGCM(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(blk)
 }
 
+func maxTagSize() int {
+	max := 0
+	for _, spec := range supportedAEADs {
+		if spec.tagSize > max {
+			max = spec.tagSize
+		}
+	}
+	return max
+}
+
 // Cipher encapsulates a Shadowsocks AEAD spec and a secret
 type Cipher struct {
 	aead   aeadSpec
