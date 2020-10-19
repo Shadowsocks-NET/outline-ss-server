@@ -28,9 +28,9 @@ import (
 // payloadSizeMask is the maximum size of payload in bytes.
 const payloadSizeMask = 0x3FFF // 16*1024 - 1
 
-// Buffer pool used for encrypting and decrypting Shadowsocks streams.
-// The largest buffer we could need is for encrypting a max-length payload.
-var ssPool = slicepool.MakePool(payloadSizeMask + maxTagSize())
+// Buffer pool used for decrypting Shadowsocks streams.
+// The largest buffer we could need is for decrypting a max-length payload.
+var readBufPool = slicepool.MakePool(payloadSizeMask + maxTagSize())
 
 // Writer is an io.Writer that also implements io.ReaderFrom to
 // allow for piping the data without extra allocations and copies.
@@ -288,7 +288,7 @@ func NewShadowsocksReader(reader io.Reader, ssCipher *Cipher) Reader {
 		cr: &chunkReader{
 			reader:   reader,
 			ssCipher: ssCipher,
-			payload:  ssPool.LazySlice(),
+			payload:  readBufPool.LazySlice(),
 		},
 	}
 }
