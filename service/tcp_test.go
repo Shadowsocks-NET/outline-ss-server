@@ -15,8 +15,12 @@
 package service
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"io/ioutil"
+	"math/rand"
 	"net"
 	"sync"
 	"testing"
@@ -26,10 +30,47 @@ import (
 	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
+	"github.com/shadowsocks/go-shadowsocks2/socks"
+	"github.com/stretchr/testify/require"
 )
 
 func init() {
 	logging.SetLevel(logging.INFO, "")
+}
+
+func allowAll(ip net.IP) *onet.ConnectionError {
+	// Allow access to localhost so that we can run integration tests with
+	// an actual destination server.
+	return nil
+}
+
+func makeLocalhostListener(t testing.TB) *net.TCPListener {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	require.Nil(t, err, "ListenTCP failed: %v", err)
+	return listener
+}
+
+func startDiscardServer(t testing.TB) (*net.TCPListener, *sync.WaitGroup) {
+	listener := makeLocalhostListener(t)
+	var running sync.WaitGroup
+	running.Add(1)
+	go func() {
+		defer running.Done()
+		for {
+			clientConn, err := listener.AcceptTCP()
+			if err != nil {
+				t.Logf("AcceptTCP failed: %v", err)
+				return
+			}
+			running.Add(1)
+			go func() {
+				defer running.Done()
+				io.Copy(ioutil.Discard, clientConn)
+				clientConn.Close()
+			}()
+		}
+	}()
+	return listener, &running
 }
 
 // Simulates receiving invalid TCP connection attempts on a server with 100 ciphers.
@@ -209,15 +250,226 @@ func (m *probeTestMetrics) AddUDPPacketFromTarget(clientLocation, accessKey, sta
 func (m *probeTestMetrics) AddUDPNatEntry()    {}
 func (m *probeTestMetrics) RemoveUDPNatEntry() {}
 
-func TestReplayDefense(t *testing.T) {
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenTCP failed: %v", err)
+func (m *probeTestMetrics) countStatuses() map[string]int {
+	counts := make(map[string]int)
+	for _, status := range m.closeStatus {
+		counts[status] = counts[status] + 1
 	}
+	return counts
+}
+
+func probe(serverAddr *net.TCPAddr, bytesToSend []byte) error {
+	conn, err := net.DialTCP("tcp", nil, serverAddr)
+	if err != nil {
+		return fmt.Errorf("DialTCP failed: %w", err)
+	}
+
+	n, err := conn.Write(bytesToSend)
+	if err != nil || n != len(bytesToSend) {
+		return fmt.Errorf("Write failed. bytes written: %v, err: %v", n, err)
+	}
+	conn.CloseWrite()
+
+	nRead, err := conn.Read(make([]byte, 1))
+	if err != io.EOF || nRead != 0 {
+		return fmt.Errorf("Read not EOF. bytes read: %v, err: %v", nRead, err)
+	}
+	return nil
+}
+
+func TestProbeRandom(t *testing.T) {
+	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	if err != nil {
-		t.Fatal(err)
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	go s.Serve(listener)
+
+	// 221 is the largest random probe reported by https://gfw.report/blog/gfw_shadowsocks/
+	buf := make([]byte, 221)
+	for numBytesToSend := 0; numBytesToSend < len(buf); numBytesToSend++ {
+		bytesToSend := buf[:numBytesToSend]
+		rand.Read(bytesToSend)
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed on byte %v: %v", numBytesToSend, err)
 	}
+	s.GracefulStop()
+	require.Equal(t, len(buf), len(testMetrics.probeData))
+}
+
+func makeClientBytesBasic(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
+	var buffer bytes.Buffer
+	socksTargetAddr := socks.ParseAddr(targetAddr)
+	// Assumes IPv4, as that's the common case.
+	require.Equal(t, 1+4+2, len(socksTargetAddr))
+	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
+	n, err := ssw.Write(socksTargetAddr)
+	require.Nil(t, err, "Write failed: %v", err)
+	require.Equal(t, len(socksTargetAddr), n, "Write failed: %v", err)
+	require.Equal(t, 32+2+16+7+16, buffer.Len()) // 73
+
+	payload := make([]byte, 100)
+	rand.Read(payload)
+	n, err = ssw.Write(payload[:60])
+	require.Nil(t, err, "Write failed: %v", err)
+	require.Equal(t, 73+2+16+60+16, buffer.Len()) // 167
+
+	n, err = ssw.Write(payload[60:])
+	require.Nil(t, err, "Write failed: %v", err)
+	require.Equal(t, 167+2+16+40+16, buffer.Len()) // 241
+
+	return buffer.Bytes()
+}
+
+func makeClientBytesCoalesced(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
+	var buffer bytes.Buffer
+	socksTargetAddr := socks.ParseAddr(targetAddr)
+	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
+	n, err := ssw.LazyWrite(socksTargetAddr)
+	require.Nil(t, err, "LazyWrite failed: %v", err)
+	require.Equal(t, len(socksTargetAddr), n, "LazyWrite failed: %v", err)
+	n, err = ssw.Write([]byte("initial data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	require.Equal(t, 32+2+16+7+12+16, buffer.Len()) // 85
+
+	n, err = ssw.Write([]byte("more data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	return buffer.Bytes()
+}
+
+func firstCipher(cipherList CipherList) *ss.Cipher {
+	snapshot := cipherList.SnapshotForClientIP(nil)
+	cipherEntry := snapshot[0].Value.(*CipherEntry)
+	return cipherEntry.Cipher
+}
+
+func TestProbeClientBytesBasicTruncated(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	cipher := firstCipher(cipherList)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s.SetTargetIPValidator(allowAll)
+	go s.Serve(listener)
+
+	discardListener, discardWait := startDiscardServer(t)
+	initialBytes := makeClientBytesBasic(t, cipher, discardListener.Addr().String())
+	for numBytesToSend := 0; numBytesToSend < len(initialBytes); numBytesToSend++ {
+		t.Logf("Sending %v bytes", numBytesToSend)
+		bytesToSend := initialBytes[:numBytesToSend]
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed for %v bytes sent: %v", numBytesToSend, err)
+	}
+	s.GracefulStop()
+	statusCount := testMetrics.countStatuses()
+	require.Equal(t, 50, statusCount["ERR_CIPHER"])
+	require.Equal(t, 7+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, 2, statusCount["OK"]) // On the chunk boundaries.
+	require.Equal(t, len(initialBytes)-50-7-16-2, statusCount["ERR_RELAY_CLIENT"])
+	// We only count as probes failures in the first 50 bytes.
+	require.Equal(t, 50, len(testMetrics.probeData))
+	discardListener.Close()
+	discardWait.Wait()
+}
+
+func TestProbeClientBytesBasicModified(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	cipher := firstCipher(cipherList)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s.SetTargetIPValidator(allowAll)
+	go s.Serve(listener)
+
+	discardListener, discardWait := startDiscardServer(t)
+	initialBytes := makeClientBytesBasic(t, cipher, discardListener.Addr().String())
+	bytesToSend := make([]byte, len(initialBytes))
+	for byteToModify := 0; byteToModify < len(initialBytes); byteToModify++ {
+		t.Logf("Modifying byte %v", byteToModify)
+		copy(bytesToSend, initialBytes)
+		bytesToSend[byteToModify] = 255 - bytesToSend[byteToModify]
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed modified byte %v: %v", byteToModify, err)
+	}
+
+	s.GracefulStop()
+	statusCount := testMetrics.countStatuses()
+	require.Equal(t, 50, statusCount["ERR_CIPHER"])
+	require.Equal(t, 7+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, len(initialBytes)-50-7-16, statusCount["ERR_RELAY_CLIENT"])
+	require.Equal(t, 50, len(testMetrics.probeData))
+	discardListener.Close()
+	discardWait.Wait()
+}
+
+func TestProbeClientBytesCoalescedModified(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	cipher := firstCipher(cipherList)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s.SetTargetIPValidator(allowAll)
+	go s.Serve(listener)
+
+	discardListener, discardWait := startDiscardServer(t)
+	initialBytes := makeClientBytesCoalesced(t, cipher, discardListener.Addr().String())
+	bytesToSend := make([]byte, len(initialBytes))
+	for byteToModify := 0; byteToModify < len(initialBytes); byteToModify++ {
+		t.Logf("Modifying byte %v", byteToModify)
+		copy(bytesToSend, initialBytes)
+		bytesToSend[byteToModify] = 255 - bytesToSend[byteToModify]
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed modified byte %v: %v", byteToModify, err)
+	}
+	s.GracefulStop()
+	statusCount := testMetrics.countStatuses()
+	require.Equal(t, 50, statusCount["ERR_CIPHER"])
+	require.Equal(t, len(initialBytes)-50, statusCount["ERR_READ_ADDRESS"]+statusCount["ERR_RELAY_CLIENT"])
+	discardListener.Close()
+	discardWait.Wait()
+}
+
+func makeServerBytes(t *testing.T, cipher *ss.Cipher) []byte {
+	var buffer bytes.Buffer
+	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
+	_, err := ssw.Write([]byte("initial data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	_, err = ssw.Write([]byte("more data"))
+	require.Nil(t, err, "Write failed: %v", err)
+	return buffer.Bytes()
+}
+
+func TestProbeServerBytesModified(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	cipher := firstCipher(cipherList)
+	testMetrics := &probeTestMetrics{}
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	go s.Serve(listener)
+
+	initialBytes := makeServerBytes(t, cipher)
+	bytesToSend := make([]byte, len(initialBytes))
+	for byteToModify := 0; byteToModify < len(initialBytes); byteToModify++ {
+		copy(bytesToSend, initialBytes)
+		bytesToSend[byteToModify] = 255 - bytesToSend[byteToModify]
+		err := probe(listener.Addr().(*net.TCPAddr), bytesToSend)
+		require.Nil(t, err, "Failed modified byte %v: %v", byteToModify, err)
+	}
+	s.GracefulStop()
+	statusCount := testMetrics.countStatuses()
+	require.Equal(t, 50, statusCount["ERR_CIPHER"])
+	require.Equal(t, len(initialBytes)-50, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, 50, len(testMetrics.probeData))
+}
+
+func TestReplayDefense(t *testing.T) {
+	listener := makeLocalhostListener(t)
+	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
@@ -227,13 +479,13 @@ func TestReplayDefense(t *testing.T) {
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
 	go ss.NewShadowsocksWriter(writer, cipher).Write([]byte{0})
-	preamble := make([]byte, 32+2+16)
+	preamble := make([]byte, cipher.SaltSize()+2+cipher.TagSize())
 	if _, err := io.ReadFull(reader, preamble); err != nil {
 		t.Fatal(err)
 	}
 
-	run := func() net.Conn {
-		conn, err := net.Dial(listener.Addr().Network(), listener.Addr().String())
+	run := func() *net.TCPConn {
+		conn, err := net.DialTCP(listener.Addr().Network(), nil, listener.Addr().(*net.TCPAddr))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,21 +500,18 @@ func TestReplayDefense(t *testing.T) {
 
 	// First run.
 	conn1 := run()
+	// Wait for the close.  This ensures that conn1 and conn2 can't be
+	// processed out of order at the proxy.
+	conn1.CloseWrite()
+	conn1.Read(make([]byte, 1))
 	if len(testMetrics.probeData) != 0 {
 		t.Errorf("First connection should not have triggered probe detection: %v", testMetrics.probeData[0])
 	}
-	if len(testMetrics.closeStatus) != 0 {
-		t.Errorf("First connection should not have been closed yet: %v", testMetrics.probeData[0])
-	}
-	// Write a minimal invalid chunk to trigger a proxy-driven close.
-	conn1.Write(make([]byte, 2+16))
-	// Wait for the close.  This ensures that conn1 and conn2 can't be
-	// processed out of order at the proxy.
-	conn1.Read(make([]byte, 1))
 
 	// Replay.
 	conn2 := run()
 	// Wait for the connection to be closed by the proxy after testTimeout.
+	conn2.CloseWrite()
 	conn2.Read(make([]byte, 1))
 
 	conn1.Close()
@@ -291,14 +540,9 @@ func TestReplayDefense(t *testing.T) {
 }
 
 func TestReverseReplayDefense(t *testing.T) {
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenTCP failed: %v", err)
-	}
+	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
@@ -363,14 +607,9 @@ func TestTCPProbeTimeout(t *testing.T) {
 func probeExpectTimeout(t *testing.T, payloadSize int) {
 	const testTimeout = 200 * time.Millisecond
 
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenTCP failed: %v", err)
-	}
+	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(5))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, testTimeout)
 
@@ -431,9 +670,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 
 func TestTCPDoubleServe(t *testing.T) {
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
@@ -441,10 +678,7 @@ func TestTCPDoubleServe(t *testing.T) {
 
 	c := make(chan error)
 	for i := 0; i < 2; i++ {
-		listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-		if err != nil {
-			t.Fatalf("ListenTCP failed: %v", err)
-		}
+		listener := makeLocalhostListener(t)
 		go func() {
 			err := s.Serve(listener)
 			if err != nil {
@@ -466,9 +700,7 @@ func TestTCPDoubleServe(t *testing.T) {
 
 func TestTCPEarlyStop(t *testing.T) {
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
@@ -477,10 +709,7 @@ func TestTCPEarlyStop(t *testing.T) {
 	if err := s.Stop(); err != nil {
 		t.Error(err)
 	}
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenTCP failed: %v", err)
-	}
+	listener := makeLocalhostListener(t)
 	if err := s.Serve(listener); err != nil {
 		t.Error(err)
 	}
