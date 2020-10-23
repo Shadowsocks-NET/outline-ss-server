@@ -285,7 +285,8 @@ func TestProbeRandom(t *testing.T) {
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
 	go s.Serve(listener)
 
-	buf := make([]byte, 92)
+	// 221 is the largest random probe reported by https://gfw.report/blog/gfw_shadowsocks/
+	buf := make([]byte, 221)
 	for numBytesToSend := 0; numBytesToSend < len(buf); numBytesToSend++ {
 		bytesToSend := buf[:numBytesToSend]
 		rand.Read(bytesToSend)
@@ -299,20 +300,23 @@ func TestProbeRandom(t *testing.T) {
 func makeClientBytesBasic(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
 	var buffer bytes.Buffer
 	socksTargetAddr := socks.ParseAddr(targetAddr)
+	// Assumes IPv4, as that's the common case.
 	require.Equal(t, 1+4+2, len(socksTargetAddr))
 	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
 	n, err := ssw.Write(socksTargetAddr)
 	require.Nil(t, err, "Write failed: %v", err)
 	require.Equal(t, len(socksTargetAddr), n, "Write failed: %v", err)
-	require.Equal(t, 73, buffer.Len())
+	require.Equal(t, 32+2+16+7+16, buffer.Len()) // 73
 
-	n, err = ssw.Write([]byte("initial data"))
+	payload := make([]byte, 100)
+	rand.Read(payload)
+	n, err = ssw.Write(payload[:60])
 	require.Nil(t, err, "Write failed: %v", err)
-	require.Equal(t, 73+2+16+12+16, buffer.Len()) // 119
+	require.Equal(t, 73+2+16+60+16, buffer.Len()) // 167
 
-	n, err = ssw.Write([]byte("more data"))
+	n, err = ssw.Write(payload[60:])
 	require.Nil(t, err, "Write failed: %v", err)
-	require.Equal(t, 119+2+16+9+16, buffer.Len()) // 162
+	require.Equal(t, 167+2+16+40+16, buffer.Len()) // 241
 
 	return buffer.Bytes()
 }
@@ -342,8 +346,8 @@ func firstCipher(cipherList CipherList) *ss.Cipher {
 func TestProbeClientBytesBasicTruncated(t *testing.T) {
 	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	cipher := firstCipher(cipherList)
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
 	s.SetTargetIPValidator(allowAll)
@@ -372,8 +376,8 @@ func TestProbeClientBytesBasicTruncated(t *testing.T) {
 func TestProbeClientBytesBasicModified(t *testing.T) {
 	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	cipher := firstCipher(cipherList)
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
 	s.SetTargetIPValidator(allowAll)
@@ -403,8 +407,8 @@ func TestProbeClientBytesBasicModified(t *testing.T) {
 func TestProbeClientBytesCoalescedModified(t *testing.T) {
 	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	cipher := firstCipher(cipherList)
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
 	s.SetTargetIPValidator(allowAll)
@@ -441,8 +445,8 @@ func makeServerBytes(t *testing.T, cipher *ss.Cipher) []byte {
 func TestProbeServerBytesModified(t *testing.T) {
 	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	cipher := firstCipher(cipherList)
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
+	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
 	go s.Serve(listener)
@@ -465,9 +469,7 @@ func TestProbeServerBytesModified(t *testing.T) {
 func TestReplayDefense(t *testing.T) {
 	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
@@ -540,9 +542,7 @@ func TestReplayDefense(t *testing.T) {
 func TestReverseReplayDefense(t *testing.T) {
 	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
@@ -609,9 +609,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 
 	listener := makeLocalhostListener(t)
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(5))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, testTimeout)
 
@@ -672,9 +670,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 
 func TestTCPDoubleServe(t *testing.T) {
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
@@ -704,9 +700,7 @@ func TestTCPDoubleServe(t *testing.T) {
 
 func TestTCPEarlyStop(t *testing.T) {
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
