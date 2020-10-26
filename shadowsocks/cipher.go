@@ -17,6 +17,7 @@ package shadowsocks
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/md5"
 	"crypto/sha1"
 	"fmt"
 	"io"
@@ -115,13 +116,28 @@ func (c *Cipher) NewAEAD(salt []byte) (cipher.AEAD, error) {
 	return c.aead.newInstance(sessionKey)
 }
 
+// Function definition at https://www.openssl.org/docs/manmaster/man3/EVP_BytesToKey.html
+func simpleEVPBytesToKey(data []byte, keyLen int) []byte {
+	var derived, di []byte
+	h := md5.New()
+	for len(derived) < keyLen {
+		h.Write(di)
+		h.Write(data)
+		derived = h.Sum(derived)
+		di = derived[len(derived)-h.Size():]
+		h.Reset()
+	}
+	return derived[:keyLen]
+}
+
 // NewCipher creates a Cipher given a cipher name and a secret
 func NewCipher(cipherName string, secretText string) (*Cipher, error) {
-	secret := []byte(secretText)
 	aeadSpec, err := getAEADSpec(cipherName)
 	if err != nil {
 		return nil, err
 	}
+	// Key derivation as per https://shadowsocks.org/en/spec/AEAD-Ciphers.html
+	secret := simpleEVPBytesToKey([]byte(secretText), aeadSpec.keySize)
 	return &Cipher{*aeadSpec, secret}, nil
 }
 
