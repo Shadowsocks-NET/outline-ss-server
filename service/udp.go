@@ -169,7 +169,8 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 			}
 
 			cipherData := cipherBuf[:clientProxyBytes]
-			var textData []byte
+			var payload []byte
+			var tgtUDPAddr *net.UDPAddr
 			targetConn := nm.Get(clientAddr.String())
 			if targetConn == nil {
 				clientLocation, locErr := s.m.GetLocation(clientAddr)
@@ -179,6 +180,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				debugUDPAddr(clientAddr, "Got location \"%s\"", clientLocation)
 
 				ip := clientAddr.(*net.UDPAddr).IP
+				var textData []byte
 				var cipher *ss.Cipher
 				unpackStart := time.Now()
 				textData, keyID, cipher, err = findAccessKeyUDP(ip, textBuf, cipherData, s.ciphers)
@@ -188,6 +190,11 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack initial packet", err)
 				}
 
+				var onetErr *onet.ConnectionError
+				if payload, tgtUDPAddr, onetErr = s.parsePacket(textData); onetErr != nil {
+					return onetErr
+				}
+
 				udpConn, err := net.ListenPacket("udp", "")
 				if err != nil {
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
@@ -195,29 +202,20 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				targetConn = nm.Add(clientAddr, clientConn, cipher, udpConn, clientLocation, keyID)
 			} else {
 				unpackStart := time.Now()
-				textData, err = ss.Unpack(nil, cipherData, targetConn.cipher)
+				textData, err := ss.Unpack(nil, cipherData, targetConn.cipher)
 				timeToCipher = time.Now().Sub(unpackStart)
 				if err != nil {
 					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack data from client", err)
 				}
+
+				var onetErr *onet.ConnectionError
+				if payload, tgtUDPAddr, onetErr = s.parsePacket(textData); onetErr != nil {
+					return onetErr
+				}
 			}
 			clientLocation = targetConn.clientLocation
 
-			tgtAddr := socks.SplitAddr(textData)
-			if tgtAddr == nil {
-				return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", nil)
-			}
-
-			tgtUDPAddr, err := net.ResolveUDPAddr("udp", tgtAddr.String())
-			if err != nil {
-				return onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
-			}
-			if err := s.targetIPValidator(tgtUDPAddr.IP); err != nil {
-				return err
-			}
-
 			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
-			payload := textData[len(tgtAddr):]
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
 			if err != nil {
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to target", err)
@@ -226,6 +224,27 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 		}()
 	}
 	return nil
+}
+
+// Given the decrypted contents of a UDP packet, return
+// the payload and the destination address, or an error if
+// this packet cannot or should not be forwarded.
+func (s *udpService) parsePacket(textData []byte) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
+	tgtAddr := socks.SplitAddr(textData)
+	if tgtAddr == nil {
+		return nil, nil, onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", nil)
+	}
+
+	tgtUDPAddr, err := net.ResolveUDPAddr("udp", tgtAddr.String())
+	if err != nil {
+		return nil, nil, onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
+	}
+	if err := s.targetIPValidator(tgtUDPAddr.IP); err != nil {
+		return nil, nil, err
+	}
+
+	payload := textData[len(tgtAddr):]
+	return payload, tgtUDPAddr, nil
 }
 
 func (s *udpService) Stop() error {
