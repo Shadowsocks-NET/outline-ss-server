@@ -191,7 +191,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				}
 
 				var onetErr *onet.ConnectionError
-				if payload, tgtUDPAddr, onetErr = s.parsePacket(textData); onetErr != nil {
+				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData); onetErr != nil {
 					return onetErr
 				}
 
@@ -209,7 +209,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				}
 
 				var onetErr *onet.ConnectionError
-				if payload, tgtUDPAddr, onetErr = s.parsePacket(textData); onetErr != nil {
+				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData); onetErr != nil {
 					return onetErr
 				}
 			}
@@ -229,7 +229,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 // Given the decrypted contents of a UDP packet, return
 // the payload and the destination address, or an error if
 // this packet cannot or should not be forwarded.
-func (s *udpService) parsePacket(textData []byte) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
+func (s *udpService) validatePacket(textData []byte) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
 	tgtAddr := socks.SplitAddr(textData)
 	if tgtAddr == nil {
 		return nil, nil, onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", nil)
