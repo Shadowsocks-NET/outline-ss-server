@@ -27,6 +27,7 @@ import (
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
+	"github.com/stretchr/testify/assert"
 )
 
 const timeout = 5 * time.Minute
@@ -158,29 +159,17 @@ func TestIPFilter(t *testing.T) {
 
 	t.Run("Localhost allowed", func(t *testing.T) {
 		metrics := sendToDiscard(payloads, allowAll)
-		if metrics.natEntriesAdded != 1 {
-			t.Errorf("Expected 1 NAT entry, not %d", metrics.natEntriesAdded)
-		}
+		assert.Equal(t, metrics.natEntriesAdded, 1, "Expected 1 NAT entry, not %d", metrics.natEntriesAdded)
 	})
 
 	t.Run("Localhost not allowed", func(t *testing.T) {
 		metrics := sendToDiscard(payloads, onet.RequirePublicIP)
-		if metrics.natEntriesAdded != 0 {
-			t.Error("Unexpected NAT entry on rejected packet")
-		}
-		if len(metrics.upstreamPackets) != 2 {
-			t.Errorf("Expected 2 reports, not %v", metrics.upstreamPackets)
-		}
+		assert.Equal(t, 0, metrics.natEntriesAdded, "Unexpected NAT entry on rejected packet")
+		assert.Equal(t, 2, len(metrics.upstreamPackets), "Expected 2 reports, not %v", metrics.upstreamPackets)
 		for _, report := range metrics.upstreamPackets {
-			if report.clientProxyBytes == 0 {
-				t.Error("Expected nonzero input packet size")
-			}
-			if report.proxyTargetBytes != 0 {
-				t.Error("No bytes should be sent due to a disallowed packet")
-			}
-			if report.accessKey != "id-0" {
-				t.Errorf("Unexpected access key: %s", report.accessKey)
-			}
+			assert.Greater(t, report.clientProxyBytes, 0, "Expected nonzero input packet size")
+			assert.Equal(t, 0, report.proxyTargetBytes, "No bytes should be sent due to a disallowed packet")
+			assert.Equal(t, report.accessKey, "id-0", "Unexpected access key: %s", report.accessKey)
 		}
 	})
 }
@@ -195,22 +184,12 @@ func TestUpstreamMetrics(t *testing.T) {
 
 	metrics := sendToDiscard(payloads, allowAll)
 
-	if len(metrics.upstreamPackets) != N {
-		t.Errorf("Expected %d reports, not %v", N, metrics.upstreamPackets)
-	}
+	assert.Equal(t, N, len(metrics.upstreamPackets), "Expected %d reports, not %v", N, metrics.upstreamPackets)
 	for i, report := range metrics.upstreamPackets {
-		if report.proxyTargetBytes != i+1 {
-			t.Errorf("Expected %d payload bytes, not %d", i, report.proxyTargetBytes)
-		}
-		if report.clientProxyBytes <= report.proxyTargetBytes {
-			t.Errorf("Expected nonzero input overhead (%d > %d)", report.clientProxyBytes, report.proxyTargetBytes)
-		}
-		if report.accessKey != "id-0" {
-			t.Errorf("Unexpected access key name: %s", report.accessKey)
-		}
-		if report.status != "OK" {
-			t.Errorf("Wrong status: %s", report.status)
-		}
+		assert.Equal(t, i+1, report.proxyTargetBytes, "Expected %d payload bytes, not %d", i+1, report.proxyTargetBytes)
+		assert.Greater(t, report.clientProxyBytes, report.proxyTargetBytes, "Expected nonzero input overhead (%d > %d)", report.clientProxyBytes, report.proxyTargetBytes)
+		assert.Equal(t, "id-0", report.accessKey, "Unexpected access key name: %s", report.accessKey)
+		assert.Equal(t, "OK", report.status, "Wrong status: %s", report.status)
 	}
 }
 
