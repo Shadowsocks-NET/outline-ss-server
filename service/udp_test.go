@@ -27,6 +27,7 @@ import (
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
+	"github.com/stretchr/testify/assert"
 )
 
 const timeout = 5 * time.Minute
@@ -89,10 +90,16 @@ func (conn *fakePacketConn) Close() error {
 	return nil
 }
 
+type udpReport struct {
+	clientLocation, accessKey, status  string
+	clientProxyBytes, proxyTargetBytes int
+}
+
 // Stub metrics implementation for testing NAT behaviors.
 type natTestMetrics struct {
 	metrics.ShadowsocksMetrics
 	natEntriesAdded int
+	upstreamPackets []udpReport
 }
 
 func (m *natTestMetrics) AddTCPProbe(clientLocation, status, drainResult string, port int, data metrics.ProxyMetrics) {
@@ -107,6 +114,7 @@ func (m *natTestMetrics) SetNumAccessKeys(numKeys int, numPorts int) {
 func (m *natTestMetrics) AddOpenTCPConnection(clientLocation string) {
 }
 func (m *natTestMetrics) AddUDPPacketFromClient(clientLocation, accessKey, status string, clientProxyBytes, proxyTargetBytes int, timeToCipher time.Duration) {
+	m.upstreamPackets = append(m.upstreamPackets, udpReport{clientLocation, accessKey, status, clientProxyBytes, proxyTargetBytes})
 }
 func (m *natTestMetrics) AddUDPPacketFromTarget(clientLocation, accessKey, status string, targetProxyBytes, proxyClientBytes int) {
 }
@@ -115,21 +123,20 @@ func (m *natTestMetrics) AddUDPNatEntry() {
 }
 func (m *natTestMetrics) RemoveUDPNatEntry() {}
 
-func TestIPFilter(t *testing.T) {
-	// Takes a validation policy, and returns the metrics it
-	// generates when localhost access is attempted
-	checkLocalhost := func(validator onet.TargetIPValidator) *natTestMetrics {
-		ciphers, _ := MakeTestCiphers([]string{"asdf"})
-		cipher := ciphers.SnapshotForClientIP(nil)[0].Value.(*CipherEntry).Cipher
-		clientConn := makePacketConn()
-		metrics := &natTestMetrics{}
-		service := NewUDPService(timeout, ciphers, metrics)
-		service.SetTargetIPValidator(validator)
-		go service.Serve(clientConn)
+// Takes a validation policy, and returns the metrics it
+// generates when localhost access is attempted
+func sendToDiscard(payloads [][]byte, validator onet.TargetIPValidator) *natTestMetrics {
+	ciphers, _ := MakeTestCiphers([]string{"asdf"})
+	cipher := ciphers.SnapshotForClientIP(nil)[0].Value.(*CipherEntry).Cipher
+	clientConn := makePacketConn()
+	metrics := &natTestMetrics{}
+	service := NewUDPService(timeout, ciphers, metrics)
+	service.SetTargetIPValidator(validator)
+	go service.Serve(clientConn)
 
-		// Send one packet to the "discard" port on localhost
-		targetAddr := socks.ParseAddr("127.0.0.1:9")
-		payload := []byte("payload")
+	// Send one packet to the "discard" port on localhost
+	targetAddr := socks.ParseAddr("127.0.0.1:9")
+	for _, payload := range payloads {
 		plaintext := append(targetAddr, payload...)
 		ciphertext := make([]byte, cipher.SaltSize()+len(plaintext)+cipher.TagSize())
 		ss.Pack(ciphertext, plaintext, cipher)
@@ -140,24 +147,50 @@ func TestIPFilter(t *testing.T) {
 			},
 			payload: ciphertext,
 		}
-
-		service.GracefulStop()
-		return metrics
 	}
 
+	service.GracefulStop()
+	return metrics
+}
+
+func TestIPFilter(t *testing.T) {
+	// Test both the first-packet and subsequent-packet cases.
+	payloads := [][]byte{[]byte("payload1"), []byte("payload2")}
+
 	t.Run("Localhost allowed", func(t *testing.T) {
-		metrics := checkLocalhost(allowAll)
-		if metrics.natEntriesAdded != 1 {
-			t.Errorf("Expected 1 NAT entry, not %d", metrics.natEntriesAdded)
-		}
+		metrics := sendToDiscard(payloads, allowAll)
+		assert.Equal(t, metrics.natEntriesAdded, 1, "Expected 1 NAT entry, not %d", metrics.natEntriesAdded)
 	})
 
 	t.Run("Localhost not allowed", func(t *testing.T) {
-		metrics := checkLocalhost(onet.RequirePublicIP)
-		if metrics.natEntriesAdded != 0 {
-			t.Error("Unexpected NAT entry on rejected packet")
+		metrics := sendToDiscard(payloads, onet.RequirePublicIP)
+		assert.Equal(t, 0, metrics.natEntriesAdded, "Unexpected NAT entry on rejected packet")
+		assert.Equal(t, 2, len(metrics.upstreamPackets), "Expected 2 reports, not %v", metrics.upstreamPackets)
+		for _, report := range metrics.upstreamPackets {
+			assert.Greater(t, report.clientProxyBytes, 0, "Expected nonzero input packet size")
+			assert.Equal(t, 0, report.proxyTargetBytes, "No bytes should be sent due to a disallowed packet")
+			assert.Equal(t, report.accessKey, "id-0", "Unexpected access key: %s", report.accessKey)
 		}
 	})
+}
+
+func TestUpstreamMetrics(t *testing.T) {
+	// Test both the first-packet and subsequent-packet cases.
+	const N = 10
+	payloads := make([][]byte, 0)
+	for i := 1; i <= N; i++ {
+		payloads = append(payloads, make([]byte, i))
+	}
+
+	metrics := sendToDiscard(payloads, allowAll)
+
+	assert.Equal(t, N, len(metrics.upstreamPackets), "Expected %d reports, not %v", N, metrics.upstreamPackets)
+	for i, report := range metrics.upstreamPackets {
+		assert.Equal(t, i+1, report.proxyTargetBytes, "Expected %d payload bytes, not %d", i+1, report.proxyTargetBytes)
+		assert.Greater(t, report.clientProxyBytes, report.proxyTargetBytes, "Expected nonzero input overhead (%d > %d)", report.clientProxyBytes, report.proxyTargetBytes)
+		assert.Equal(t, "id-0", report.accessKey, "Unexpected access key name: %s", report.accessKey)
+		assert.Equal(t, "OK", report.status, "Wrong status: %s", report.status)
+	}
 }
 
 func assertAlmostEqual(t *testing.T, a, b time.Time) {

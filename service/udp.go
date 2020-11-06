@@ -173,7 +173,8 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 			var tgtUDPAddr *net.UDPAddr
 			targetConn := nm.Get(clientAddr.String())
 			if targetConn == nil {
-				clientLocation, locErr := s.m.GetLocation(clientAddr)
+				var locErr error
+				clientLocation, locErr = s.m.GetLocation(clientAddr)
 				if locErr != nil {
 					logger.Warningf("Failed location lookup: %v", locErr)
 				}
@@ -201,6 +202,8 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				}
 				targetConn = nm.Add(clientAddr, clientConn, cipher, udpConn, clientLocation, keyID)
 			} else {
+				clientLocation = targetConn.clientLocation
+
 				unpackStart := time.Now()
 				textData, err := ss.Unpack(nil, cipherData, targetConn.cipher)
 				timeToCipher = time.Now().Sub(unpackStart)
@@ -208,12 +211,14 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack data from client", err)
 				}
 
+				// The key ID is known with confidence once decryption succeeds.
+				keyID = targetConn.keyID
+
 				var onetErr *onet.ConnectionError
 				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData); onetErr != nil {
 					return onetErr
 				}
 			}
-			clientLocation = targetConn.clientLocation
 
 			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
 			proxyTargetBytes, err = targetConn.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
@@ -271,6 +276,7 @@ func isDNS(addr net.Addr) bool {
 type natconn struct {
 	net.PacketConn
 	cipher *ss.Cipher
+	keyID  string
 	// We store the client location in the NAT map to avoid recomputing it
 	// for every downstream packet in a UDP-based connection.
 	clientLocation string
@@ -351,10 +357,11 @@ func (m *natmap) Get(key string) *natconn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) set(key string, pc net.PacketConn, cipher *ss.Cipher, clientLocation string) *natconn {
+func (m *natmap) set(key string, pc net.PacketConn, cipher *ss.Cipher, keyID, clientLocation string) *natconn {
 	entry := &natconn{
 		PacketConn:     pc,
 		cipher:         cipher,
+		keyID:          keyID,
 		clientLocation: clientLocation,
 		defaultTimeout: m.timeout,
 	}
@@ -379,7 +386,7 @@ func (m *natmap) del(key string) net.PacketConn {
 }
 
 func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher *ss.Cipher, targetConn net.PacketConn, clientLocation, keyID string) *natconn {
-	entry := m.set(clientAddr.String(), targetConn, cipher, clientLocation)
+	entry := m.set(clientAddr.String(), targetConn, cipher, keyID, clientLocation)
 
 	m.metrics.AddUDPNatEntry()
 	m.running.Add(1)
