@@ -149,17 +149,14 @@ func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 }
 
 func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator) (onet.DuplexConn, *onet.ConnectionError) {
-	tgtTCPAddr, err := net.ResolveTCPAddr("tcp", tgtAddr.String())
-	if err != nil {
-		return nil, onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
-	}
-	if err := targetIPValidator(tgtTCPAddr.IP); err != nil {
-		return nil, err
-	}
-
-	tgtTCPConn, err := net.DialTCP("tcp", nil, tgtTCPAddr)
+	tgtConn, err := net.Dial("tcp", tgtAddr.String())
 	if err != nil {
 		return nil, onet.NewConnectionError("ERR_CONNECT", "Failed to connect to target", err)
+	}
+	tgtTCPConn := tgtConn.(*net.TCPConn)
+	if err := targetIPValidator(tgtTCPConn.RemoteAddr().(*net.TCPAddr).IP); err != nil {
+		tgtTCPConn.Close()
+		return nil, err
 	}
 	tgtTCPConn.SetKeepAlive(true)
 	return metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy), nil
