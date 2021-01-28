@@ -166,11 +166,14 @@ func TestTCPEcho(t *testing.T) {
 
 type statusMetrics struct {
 	metrics.NoOpMetrics
+	sync.Mutex
 	statuses []string
 }
 
 func (m *statusMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data metrics.ProxyMetrics, timeToCipher, duration time.Duration) {
+	m.Lock()
 	m.statuses = append(m.statuses, status)
+	m.Unlock()
 }
 
 func TestRestrictedAddresses(t *testing.T) {
