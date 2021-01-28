@@ -203,6 +203,13 @@ func TestRestrictedAddresses(t *testing.T) {
 		"[fc00::1]:54321",
 	}
 
+	expectedStatus := []string{
+		"ERR_ADDRESS_INVALID",
+		"ERR_ADDRESS_INVALID",
+		"ERR_ADDRESS_PRIVATE",
+		"ERR_ADDRESS_PRIVATE",
+	}
+
 	for _, address := range addresses {
 		conn, err := client.DialTCP(nil, address)
 		require.NoError(t, err, "Failed to dial %v", address)
@@ -213,13 +220,7 @@ func TestRestrictedAddresses(t *testing.T) {
 	}
 
 	proxy.GracefulStop()
-
-	assert.ElementsMatch(t, testMetrics.statuses, []string{
-		"ERR_ADDRESS_INVALID",
-		"ERR_ADDRESS_INVALID",
-		"ERR_ADDRESS_PRIVATE",
-		"ERR_ADDRESS_PRIVATE",
-	})
+	assert.ElementsMatch(t, testMetrics.statuses, expectedStatus)
 }
 
 // Metrics about one UDP packet.
