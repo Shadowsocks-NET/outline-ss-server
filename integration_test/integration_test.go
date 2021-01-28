@@ -29,6 +29,8 @@ import (
 	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
 	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const maxUDPPacketSize = 64 * 1024
@@ -160,6 +162,65 @@ func TestTCPEcho(t *testing.T) {
 	proxy.Stop()
 	echoListener.Close()
 	echoRunning.Wait()
+}
+
+type statusMetrics struct {
+	metrics.NoOpMetrics
+	sync.Mutex
+	statuses []string
+}
+
+func (m *statusMetrics) AddClosedTCPConnection(clientLocation, accessKey, status string, data metrics.ProxyMetrics, timeToCipher, duration time.Duration) {
+	m.Lock()
+	m.statuses = append(m.statuses, status)
+	m.Unlock()
+}
+
+func TestRestrictedAddresses(t *testing.T) {
+	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	require.NoError(t, err, "ListenTCP failed: %v", err)
+	secrets := ss.MakeTestSecrets(1)
+	cipherList, err := service.MakeTestCiphers(secrets)
+	require.NoError(t, err)
+	const testTimeout = 200 * time.Millisecond
+	testMetrics := &statusMetrics{}
+	proxy := service.NewTCPService(cipherList, nil, testMetrics, testTimeout)
+	go proxy.Serve(proxyListener)
+
+	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
+	require.NoError(t, err)
+	portNum, err := strconv.Atoi(proxyPort)
+	require.NoError(t, err)
+	client, err := client.NewClient(proxyHost, portNum, secrets[0], ss.TestCipher)
+	require.NoError(t, err, "Failed to create ShadowsocksClient")
+
+	buf := make([]byte, 10)
+
+	addresses := []string{
+		"localhost:9999",
+		"[::1]:80",
+		"10.0.0.1:1234",
+		"[fc00::1]:54321",
+	}
+
+	expectedStatus := []string{
+		"ERR_ADDRESS_INVALID",
+		"ERR_ADDRESS_INVALID",
+		"ERR_ADDRESS_PRIVATE",
+		"ERR_ADDRESS_PRIVATE",
+	}
+
+	for _, address := range addresses {
+		conn, err := client.DialTCP(nil, address)
+		require.NoError(t, err, "Failed to dial %v", address)
+		n, err := conn.Read(buf)
+		assert.Equal(t, 0, n, "Server should close without replying on rejected address")
+		assert.Equal(t, io.EOF, err)
+		conn.Close()
+	}
+
+	proxy.GracefulStop()
+	assert.ElementsMatch(t, testMetrics.statuses, expectedStatus)
 }
 
 // Metrics about one UDP packet.

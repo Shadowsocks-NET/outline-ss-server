@@ -23,6 +23,7 @@ import (
 	"io/ioutil"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
@@ -149,18 +150,22 @@ func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 }
 
 func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator) (onet.DuplexConn, *onet.ConnectionError) {
-	tgtTCPAddr, err := net.ResolveTCPAddr("tcp", tgtAddr.String())
-	if err != nil {
-		return nil, onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr.String()), err)
-	}
-	if err := targetIPValidator(tgtTCPAddr.IP); err != nil {
-		return nil, err
-	}
-
-	tgtTCPConn, err := net.DialTCP("tcp", nil, tgtTCPAddr)
-	if err != nil {
+	var ipError *onet.ConnectionError
+	dialer := net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
+		ip, _, _ := net.SplitHostPort(address)
+		ipError = targetIPValidator(net.ParseIP(ip))
+		if ipError != nil {
+			return errors.New(ipError.Message)
+		}
+		return nil
+	}}
+	tgtConn, err := dialer.Dial("tcp", tgtAddr.String())
+	if ipError != nil {
+		return nil, ipError
+	} else if err != nil {
 		return nil, onet.NewConnectionError("ERR_CONNECT", "Failed to connect to target", err)
 	}
+	tgtTCPConn := tgtConn.(*net.TCPConn)
 	tgtTCPConn.SetKeepAlive(true)
 	return metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy), nil
 }
