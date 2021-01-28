@@ -23,6 +23,7 @@ import (
 	"io/ioutil"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	onet "github.com/Jigsaw-Code/outline-ss-server/net"
@@ -149,15 +150,22 @@ func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 }
 
 func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator) (onet.DuplexConn, *onet.ConnectionError) {
-	tgtConn, err := net.Dial("tcp", tgtAddr.String())
-	if err != nil {
+	var ipError *onet.ConnectionError
+	dialer := net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
+		ip, _, _ := net.SplitHostPort(address)
+		ipError = targetIPValidator(net.ParseIP(ip))
+		if ipError != nil {
+			return errors.New(ipError.Message)
+		}
+		return nil
+	}}
+	tgtConn, err := dialer.Dial("tcp", tgtAddr.String())
+	if ipError != nil {
+		return nil, ipError
+	} else if err != nil {
 		return nil, onet.NewConnectionError("ERR_CONNECT", "Failed to connect to target", err)
 	}
 	tgtTCPConn := tgtConn.(*net.TCPConn)
-	if err := targetIPValidator(tgtTCPConn.RemoteAddr().(*net.TCPAddr).IP); err != nil {
-		tgtTCPConn.Close()
-		return nil, err
-	}
 	tgtTCPConn.SetKeepAlive(true)
 	return metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy), nil
 }
