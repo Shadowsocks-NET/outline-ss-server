@@ -87,6 +87,12 @@ func Relay(leftConn, rightConn DuplexConn) (int64, int64, error) {
 	return n, rs.N, err
 }
 
+type UDPPacketConn interface {
+	net.PacketConn
+	ReadMsgUDP(b, oob []byte) (n, oobn, flags int, addr *net.UDPAddr, err error)
+	WriteMsgUDP(b, oob []byte, addr *net.UDPAddr) (n, oobn int, err error)
+}
+
 type ConnectionError struct {
 	// TODO: create status enums and move to metrics.go
 	Status  string

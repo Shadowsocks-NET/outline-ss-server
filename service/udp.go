@@ -71,7 +71,7 @@ func findAccessKeyUDP(clientIP net.IP, dst, src []byte, cipherList CipherList) (
 
 type udpService struct {
 	mu                sync.RWMutex // Protects .clientConn and .stopped
-	clientConn        net.PacketConn
+	clientConn        onet.UDPPacketConn
 	stopped           bool
 	natTimeout        time.Duration
 	ciphers           CipherList
@@ -90,7 +90,7 @@ type UDPService interface {
 	// SetTargetIPValidator sets the function to be used to validate the target IP addresses.
 	SetTargetIPValidator(targetIPValidator onet.TargetIPValidator)
 	// Serve adopts the clientConn, and will not return until it is closed by Stop().
-	Serve(clientConn net.PacketConn) error
+	Serve(clientConn onet.UDPPacketConn) error
 	// Stop closes the clientConn and prevents further forwarding of packets.
 	Stop() error
 	// GracefulStop calls Stop(), and then blocks until all resources have been cleaned up.
@@ -103,7 +103,7 @@ func (s *udpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 
 // Listen on addr for encrypted packets and basically do UDP NAT.
 // We take the ciphers as a pointer because it gets replaced on config updates.
-func (s *udpService) Serve(clientConn net.PacketConn) error {
+func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 	s.mu.Lock()
 	if s.clientConn != nil {
 		s.mu.Unlock()
@@ -122,6 +122,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 	nm := newNATmap(s.natTimeout, s.m, &s.running)
 	defer nm.Close()
 	cipherBuf := make([]byte, serverUDPBufferSize)
+	oobBuf := make([]byte, 0x10+0x14) // unix.SizeofCmsghdr + unix.SizeofInet6Pktinfo
 	textBuf := make([]byte, serverUDPBufferSize)
 
 	stopped := false
@@ -135,7 +136,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 			}()
 
 			// Attempt to read an upstream packet.
-			clientProxyBytes, clientAddr, err := clientConn.ReadFrom(cipherBuf)
+			clientProxyBytes, clientConnOobBytes, _, clientAddr, err := clientConn.ReadMsgUDP(cipherBuf, oobBuf)
 			if err != nil {
 				s.mu.RLock()
 				stopped = s.stopped
@@ -173,6 +174,9 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 			var tgtUDPAddr *net.UDPAddr
 			targetConn := nm.Get(clientAddr.String())
 			if targetConn == nil {
+				clientConnOob := oobBuf[:clientConnOobBytes]
+				oobCache := getOobForCache(clientConnOob)
+
 				var locErr error
 				clientLocation, locErr = s.m.GetLocation(clientAddr)
 				if locErr != nil {
@@ -180,7 +184,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				}
 				debugUDPAddr(clientAddr, "Got location \"%s\"", clientLocation)
 
-				ip := clientAddr.(*net.UDPAddr).IP
+				ip := clientAddr.IP
 				var textData []byte
 				var cipher *ss.Cipher
 				unpackStart := time.Now()
@@ -200,7 +204,7 @@ func (s *udpService) Serve(clientConn net.PacketConn) error {
 				if err != nil {
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
-				targetConn = nm.Add(clientAddr, clientConn, cipher, udpConn, clientLocation, keyID)
+				targetConn = nm.Add(clientAddr, clientConn, oobCache, cipher, udpConn, clientLocation, keyID)
 			} else {
 				clientLocation = targetConn.clientLocation
 
@@ -288,6 +292,9 @@ type natconn struct {
 	// If the connection has only sent one DNS query, it will close
 	// if it receives a DNS response.
 	fastClose sync.Once
+	// oobCache stores the interface index and IP where the requests are received from the client.
+	// This is used to send UDP packets from the correct interface and IP.
+	oobCache []byte
 }
 
 func (c *natconn) onWrite(addr net.Addr) {
@@ -357,13 +364,14 @@ func (m *natmap) Get(key string) *natconn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) set(key string, pc net.PacketConn, cipher *ss.Cipher, keyID, clientLocation string) *natconn {
+func (m *natmap) set(key string, pc net.PacketConn, cipher *ss.Cipher, keyID, clientLocation string, oobCache []byte) *natconn {
 	entry := &natconn{
 		PacketConn:     pc,
 		cipher:         cipher,
 		keyID:          keyID,
 		clientLocation: clientLocation,
 		defaultTimeout: m.timeout,
+		oobCache:       oobCache,
 	}
 
 	m.Lock()
@@ -385,13 +393,13 @@ func (m *natmap) del(key string) net.PacketConn {
 	return nil
 }
 
-func (m *natmap) Add(clientAddr net.Addr, clientConn net.PacketConn, cipher *ss.Cipher, targetConn net.PacketConn, clientLocation, keyID string) *natconn {
-	entry := m.set(clientAddr.String(), targetConn, cipher, keyID, clientLocation)
+func (m *natmap) Add(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte, cipher *ss.Cipher, targetConn net.PacketConn, clientLocation, keyID string) *natconn {
+	entry := m.set(clientAddr.String(), targetConn, cipher, keyID, clientLocation, oobCache)
 
 	m.metrics.AddUDPNatEntry()
 	m.running.Add(1)
 	go func() {
-		timedCopy(clientAddr, clientConn, entry, keyID, m.metrics)
+		timedCopy(clientAddr, clientConn, oobCache, entry, keyID, m.metrics)
 		m.metrics.RemoveUDPNatEntry()
 		if pc := m.del(clientAddr.String()); pc != nil {
 			pc.Close()
@@ -420,8 +428,8 @@ func (m *natmap) Close() error {
 var maxAddrLen int = len(socks.ParseAddr("[2001:db8::1]:12345"))
 
 // copy from target to client until read timeout
-func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, targetConn *natconn,
-	keyID string, sm metrics.ShadowsocksMetrics) {
+func timedCopy(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte,
+	targetConn *natconn, keyID string, sm metrics.ShadowsocksMetrics) {
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
 	// [padding?][salt][address][body][tag][extra]
 	// Padding is only used if the address is IPv4.
@@ -475,7 +483,7 @@ func timedCopy(clientAddr net.Addr, clientConn net.PacketConn, targetConn *natco
 			if err != nil {
 				return onet.NewConnectionError("ERR_PACK", "Failed to pack data to client", err)
 			}
-			proxyClientBytes, err = clientConn.WriteTo(buf, clientAddr)
+			proxyClientBytes, _, err = clientConn.WriteMsgUDP(buf, oobCache, clientAddr)
 			if err != nil {
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to client", err)
 			}

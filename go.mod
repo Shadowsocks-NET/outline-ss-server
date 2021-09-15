@@ -8,6 +8,7 @@ require (
 	github.com/shadowsocks/go-shadowsocks2 v0.1.4-0.20201002022019-75d43273f5a5
 	github.com/stretchr/testify v1.6.1
 	golang.org/x/crypto v0.0.0-20201016220609-9e8e0b390897
+	golang.org/x/sys v0.0.0-20210915083310-ed5796bab164 // indirect
 	gopkg.in/yaml.v2 v2.3.0
 )
 

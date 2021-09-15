@@ -79,7 +79,7 @@ func (s *SSServer) startPort(portNum int) error {
 	if err != nil {
 		return fmt.Errorf("Failed to start TCP on port %v: %v", portNum, err)
 	}
-	packetConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: portNum})
+	udpPacketConn, err := service.ListenUDP("udp", &net.UDPAddr{Port: portNum})
 	if err != nil {
 		return fmt.Errorf("Failed to start UDP on port %v: %v", portNum, err)
 	}
@@ -90,7 +90,7 @@ func (s *SSServer) startPort(portNum int) error {
 	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m)
 	s.ports[portNum] = port
 	go port.tcpService.Serve(listener)
-	go port.udpService.Serve(packetConn)
+	go port.udpService.Serve(udpPacketConn)
 	return nil
 }
 

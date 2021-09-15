@@ -49,7 +49,7 @@ type packet struct {
 }
 
 type fakePacketConn struct {
-	net.PacketConn
+	onet.UDPPacketConn
 	send     chan packet
 	recv     chan packet
 	deadline time.Time
@@ -212,7 +212,7 @@ func setupNAT() (*fakePacketConn, *fakePacketConn, *natconn) {
 	nat := newNATmap(timeout, &natTestMetrics{}, &sync.WaitGroup{})
 	clientConn := makePacketConn()
 	targetConn := makePacketConn()
-	nat.Add(&clientAddr, clientConn, natCipher, targetConn, "ZZ", "key id")
+	nat.Add(&clientAddr, clientConn, nil, natCipher, targetConn, "ZZ", "key id")
 	entry := nat.Get(clientAddr.String())
 	return clientConn, targetConn, entry
 }
