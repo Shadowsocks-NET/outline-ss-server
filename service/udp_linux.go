@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"golang.org/x/sys/unix"
 )
 

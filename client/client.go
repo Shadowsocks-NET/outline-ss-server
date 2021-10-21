@@ -6,9 +6,9 @@ import (
 	"net"
 	"time"
 
-	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
-	"github.com/Jigsaw-Code/outline-ss-server/slicepool"
+	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
+	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
+	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -85,7 +85,7 @@ func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string) (onet.DuplexConn, e
 		ssw.Flush()
 	})
 	ssr := ss.NewShadowsocksReader(proxyConn, c.cipher)
-	return onet.WrapConn(proxyConn, ssr, ssw), nil
+	return onet.WrapDuplexConn(proxyConn, ssr, ssw), nil
 }
 
 func (c *ssClient) ListenUDP(laddr *net.UDPAddr) (net.PacketConn, error) {

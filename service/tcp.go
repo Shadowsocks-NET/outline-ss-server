@@ -26,9 +26,9 @@ import (
 	"syscall"
 	"time"
 
-	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
-	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
+	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
+	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
+	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	logging "github.com/op/go-logging"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )

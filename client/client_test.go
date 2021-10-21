@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	onet "github.com/Jigsaw-Code/outline-ss-server/net"
-	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
+	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
+	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -225,7 +225,7 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Lis
 				defer clientConn.Close()
 				ssr := ss.NewShadowsocksReader(clientConn, cipher)
 				ssw := ss.NewShadowsocksWriter(clientConn, cipher)
-				ssClientConn := onet.WrapConn(clientConn, ssr, ssw)
+				ssClientConn := onet.WrapDuplexConn(clientConn, ssr, ssw)
 
 				tgtAddr, err := socks.ReadAddr(ssClientConn)
 				if err != nil {

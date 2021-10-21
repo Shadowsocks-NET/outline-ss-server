@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-ss-server/service/metrics"
+	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

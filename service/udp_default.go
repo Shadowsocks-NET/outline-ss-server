@@ -20,7 +20,7 @@ package service
 import (
 	"net"
 
-	onet "github.com/Jigsaw-Code/outline-ss-server/net"
+	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 )
 
 func ListenUDP(network string, laddr *net.UDPAddr) (onet.UDPPacketConn, error) {

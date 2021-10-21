@@ -19,7 +19,7 @@ import (
 	"net"
 	"testing"
 
-	ss "github.com/Jigsaw-Code/outline-ss-server/shadowsocks"
+	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 )
 
 func BenchmarkLocking(b *testing.B) {

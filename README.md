@@ -122,14 +122,14 @@ go test -v ./...
 
 You can benchmark the cipher finding code with
 ```
-go test -cpuprofile cpu.prof -memprofile mem.prof -bench . -benchmem -run=^$ github.com/Jigsaw-Code/outline-ss-server/shadowsocks
+go test -cpuprofile cpu.prof -memprofile mem.prof -bench . -benchmem -run=^$ github.com/Shadowsocks-NET/outline-ss-server/shadowsocks
 ```
 
 You can inspect the CPU or memory profiles with `go tool pprof cpu.prof` or `go tool pprof mem.prof`, and then enter `web` on the prompt.
 
 ## Release
 
-We use [GoReleaser](https://goreleaser.com/) to build and upload binaries to our [GitHub releases](https://github.com/Jigsaw-Code/outline-ss-server/releases).
+We use [GoReleaser](https://goreleaser.com/) to build and upload binaries to our [GitHub releases](https://github.com/Shadowsocks-NET/outline-ss-server/releases).
 
 Summary:
 - [Install GoReleaser](https://goreleaser.com/install/).
@@ -150,6 +150,6 @@ Summary:
   ```bash
   goreleaser
   ```
-- Go to https://github.com/Jigsaw-Code/outline-ss-server/releases, review and publish the release.
+- Go to https://github.com/Shadowsocks-NET/outline-ss-server/releases, review and publish the release.
 
 Full instructions in [GoReleaser's Quick Start](https://goreleaser.com/quick-start) (jump to the section starting "You’ll need to export a GITHUB_TOKEN environment variable").
