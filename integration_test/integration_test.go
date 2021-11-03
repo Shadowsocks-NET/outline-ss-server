@@ -111,7 +111,7 @@ func TestTCPEcho(t *testing.T) {
 	}
 	replayCache := service.NewReplayCache(5)
 	const testTimeout = 200 * time.Millisecond
-	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout)
+	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout, false)
 	proxy.SetTargetIPValidator(allowAll)
 	go proxy.Serve(proxyListener)
 
@@ -184,7 +184,7 @@ func TestRestrictedAddresses(t *testing.T) {
 	require.NoError(t, err)
 	const testTimeout = 200 * time.Millisecond
 	testMetrics := &statusMetrics{}
-	proxy := service.NewTCPService(cipherList, nil, testMetrics, testTimeout)
+	proxy := service.NewTCPService(cipherList, nil, testMetrics, testTimeout, false)
 	go proxy.Serve(proxyListener)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -363,7 +363,7 @@ func BenchmarkTCPThroughput(b *testing.B) {
 		b.Fatal(err)
 	}
 	const testTimeout = 200 * time.Millisecond
-	proxy := service.NewTCPService(cipherList, nil, &metrics.NoOpMetrics{}, testTimeout)
+	proxy := service.NewTCPService(cipherList, nil, &metrics.NoOpMetrics{}, testTimeout, false)
 	proxy.SetTargetIPValidator(allowAll)
 	go proxy.Serve(proxyListener)
 
@@ -430,7 +430,7 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 	}
 	replayCache := service.NewReplayCache(service.MaxCapacity)
 	const testTimeout = 200 * time.Millisecond
-	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout)
+	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout, false)
 	proxy.SetTargetIPValidator(allowAll)
 	go proxy.Serve(proxyListener)
 

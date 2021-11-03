@@ -282,7 +282,7 @@ func TestProbeRandom(t *testing.T) {
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(1))
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	testMetrics := &probeTestMetrics{}
-	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond, false)
 	go s.Serve(listener)
 
 	// 221 is the largest random probe reported by https://gfw.report/blog/gfw_shadowsocks/
@@ -349,7 +349,7 @@ func TestProbeClientBytesBasicTruncated(t *testing.T) {
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
-	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond, false)
 	s.SetTargetIPValidator(allowAll)
 	go s.Serve(listener)
 
@@ -379,7 +379,7 @@ func TestProbeClientBytesBasicModified(t *testing.T) {
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
-	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond, false)
 	s.SetTargetIPValidator(allowAll)
 	go s.Serve(listener)
 
@@ -410,7 +410,7 @@ func TestProbeClientBytesCoalescedModified(t *testing.T) {
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
-	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond, false)
 	s.SetTargetIPValidator(allowAll)
 	go s.Serve(listener)
 
@@ -448,7 +448,7 @@ func TestProbeServerBytesModified(t *testing.T) {
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
-	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond)
+	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond, false)
 	go s.Serve(listener)
 
 	initialBytes := makeServerBytes(t, cipher)
@@ -473,7 +473,7 @@ func TestReplayDefense(t *testing.T) {
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
+	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout, false)
 	snapshot := cipherList.SnapshotForClientIP(nil)
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
@@ -546,7 +546,7 @@ func TestReverseReplayDefense(t *testing.T) {
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
+	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout, false)
 	snapshot := cipherList.SnapshotForClientIP(nil)
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
@@ -611,7 +611,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(5))
 	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
 	testMetrics := &probeTestMetrics{}
-	s := NewTCPService(cipherList, nil, testMetrics, testTimeout)
+	s := NewTCPService(cipherList, nil, testMetrics, testTimeout, false)
 
 	testPayload := ss.MakeTestPayload(payloadSize)
 	done := make(chan bool)
@@ -674,7 +674,7 @@ func TestTCPDoubleServe(t *testing.T) {
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
+	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout, false)
 
 	c := make(chan error)
 	for i := 0; i < 2; i++ {
@@ -704,7 +704,7 @@ func TestTCPEarlyStop(t *testing.T) {
 	replayCache := NewReplayCache(5)
 	testMetrics := &probeTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout)
+	s := NewTCPService(cipherList, &replayCache, testMetrics, testTimeout, false)
 
 	if err := s.Stop(); err != nil {
 		t.Error(err)

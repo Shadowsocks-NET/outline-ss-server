@@ -16,6 +16,7 @@ package main
 
 import (
 	"container/list"
+	"context"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -31,6 +32,7 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
+	"github.com/database64128/tfo-go"
 	"github.com/op/go-logging"
 	"github.com/oschwald/geoip2-golang"
 	"github.com/prometheus/client_golang/prometheus"
@@ -72,10 +74,15 @@ type SSServer struct {
 	m           metrics.ShadowsocksMetrics
 	replayCache service.ReplayCache
 	ports       map[int]*ssPort
+	listenerTFO bool
+	dialerTFO   bool
 }
 
-func (s *SSServer) startPort(portNum int) error {
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: portNum})
+func (s *SSServer) startPort(portNum int) (err error) {
+	lc := tfo.TFOListenConfig{
+		DisableTFO: !s.listenerTFO,
+	}
+	listener, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", portNum))
 	if err != nil {
 		return fmt.Errorf("Failed to start TCP on port %v: %v", portNum, err)
 	}
@@ -86,10 +93,10 @@ func (s *SSServer) startPort(portNum int) error {
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &ssPort{cipherList: service.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
-	port.tcpService = service.NewTCPService(port.cipherList, &s.replayCache, s.m, tcpReadTimeout)
+	port.tcpService = service.NewTCPService(port.cipherList, &s.replayCache, s.m, tcpReadTimeout, s.dialerTFO)
 	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m)
 	s.ports[portNum] = port
-	go port.tcpService.Serve(listener)
+	go port.tcpService.Serve(listener.(*net.TCPListener))
 	go port.udpService.Serve(udpPacketConn)
 	return nil
 }
@@ -167,12 +174,14 @@ func (s *SSServer) Stop() error {
 }
 
 // RunSSServer starts a shadowsocks server running, and returns the server or an error.
-func RunSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int) (*SSServer, error) {
+func RunSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int, listenerTFO, dialerTFO bool) (*SSServer, error) {
 	server := &SSServer{
 		natTimeout:  natTimeout,
 		m:           sm,
 		replayCache: service.NewReplayCache(replayHistory),
 		ports:       make(map[int]*ssPort),
+		listenerTFO: listenerTFO,
+		dialerTFO:   dialerTFO,
 	}
 	err := server.loadConfig(filename)
 	if err != nil {
@@ -217,6 +226,9 @@ func main() {
 		IPCountryDB   string
 		natTimeout    time.Duration
 		replayHistory int
+		TCPFastOpen   bool
+		ListenerTFO   bool
+		DialerTFO     bool
 		Verbose       bool
 		Version       bool
 	}
@@ -225,6 +237,9 @@ func main() {
 	flag.StringVar(&flags.IPCountryDB, "ip_country_db", "", "Path to the ip-to-country mmdb file")
 	flag.DurationVar(&flags.natTimeout, "udptimeout", defaultNatTimeout, "UDP tunnel timeout")
 	flag.IntVar(&flags.replayHistory, "replay_history", 0, "Replay buffer size (# of handshakes)")
+	flag.BoolVar(&flags.TCPFastOpen, "tfo", false, "Enables TFO for both TCP listener and dialer")
+	flag.BoolVar(&flags.ListenerTFO, "tfo_listener", false, "Enables TFO for TCP listener")
+	flag.BoolVar(&flags.DialerTFO, "tfo_dialer", false, "Enables TFO for TCP dialer")
 	flag.BoolVar(&flags.Verbose, "verbose", false, "Enables verbose logging output")
 	flag.BoolVar(&flags.Version, "version", false, "The version of the server")
 
@@ -266,7 +281,13 @@ func main() {
 	}
 	m := metrics.NewPrometheusShadowsocksMetrics(ipCountryDB, prometheus.DefaultRegisterer)
 	m.SetBuildInfo(version)
-	_, err = RunSSServer(flags.ConfigFile, flags.natTimeout, m, flags.replayHistory)
+
+	if flags.TCPFastOpen {
+		flags.ListenerTFO = true
+		flags.DialerTFO = true
+	}
+
+	_, err = RunSSServer(flags.ConfigFile, flags.natTimeout, m, flags.replayHistory, flags.ListenerTFO, flags.DialerTFO)
 	if err != nil {
 		logger.Fatal(err)
 	}

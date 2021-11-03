@@ -29,6 +29,7 @@ import (
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
+	"github.com/database64128/tfo-go"
 	logging "github.com/op/go-logging"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
@@ -111,6 +112,7 @@ func findEntry(firstBytes []byte, ciphers []*list.Element) (*CipherEntry, *list.
 type tcpService struct {
 	mu          sync.RWMutex // Protects .listeners and .stopped
 	listener    *net.TCPListener
+	dialerTFO   bool
 	stopped     bool
 	ciphers     CipherList
 	m           metrics.ShadowsocksMetrics
@@ -123,8 +125,9 @@ type tcpService struct {
 
 // NewTCPService creates a TCPService
 // `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
-func NewTCPService(ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration) TCPService {
+func NewTCPService(ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration, dialerTFO bool) TCPService {
 	return &tcpService{
+		dialerTFO:         dialerTFO,
 		ciphers:           ciphers,
 		m:                 m,
 		readTimeout:       timeout,
@@ -149,16 +152,21 @@ func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 	s.targetIPValidator = targetIPValidator
 }
 
-func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator) (onet.DuplexConn, *onet.ConnectionError) {
+func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator, dialerTFO bool) (onet.DuplexConn, *onet.ConnectionError) {
 	var ipError *onet.ConnectionError
-	dialer := net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
-		ip, _, _ := net.SplitHostPort(address)
-		ipError = targetIPValidator(net.ParseIP(ip))
-		if ipError != nil {
-			return errors.New(ipError.Message)
+	dialer := tfo.TFODialer{
+		DisableTFO: !dialerTFO,
+	}
+	if targetIPValidator != nil {
+		dialer.Control = func(network, address string, c syscall.RawConn) error {
+			ip, _, _ := net.SplitHostPort(address)
+			ipError = targetIPValidator(net.ParseIP(ip))
+			if ipError != nil {
+				return errors.New(ipError.Message)
+			}
+			return nil
 		}
-		return nil
-	}}
+	}
 	tgtConn, err := dialer.Dial("tcp", tgtAddr.String())
 	if ipError != nil {
 		return nil, ipError
@@ -166,7 +174,6 @@ func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIP
 		return nil, onet.NewConnectionError("ERR_CONNECT", "Failed to connect to target", err)
 	}
 	tgtTCPConn := tgtConn.(*net.TCPConn)
-	tgtTCPConn.SetKeepAlive(true)
 	return metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy), nil
 }
 
@@ -260,7 +267,7 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn *net.TCPCo
 			return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
 		}
 
-		tgtConn, dialErr := dialTarget(tgtAddr, &proxyMetrics, s.targetIPValidator)
+		tgtConn, dialErr := dialTarget(tgtAddr, &proxyMetrics, s.targetIPValidator, s.dialerTFO)
 		if dialErr != nil {
 			// We don't drain so dial errors and invalid addresses are communicated quickly.
 			return dialErr
