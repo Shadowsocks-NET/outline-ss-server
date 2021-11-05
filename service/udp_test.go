@@ -158,7 +158,7 @@ func TestIPFilter(t *testing.T) {
 	payloads := [][]byte{[]byte("payload1"), []byte("payload2")}
 
 	t.Run("Localhost allowed", func(t *testing.T) {
-		metrics := sendToDiscard(payloads, allowAll)
+		metrics := sendToDiscard(payloads, nil)
 		assert.Equal(t, metrics.natEntriesAdded, 1, "Expected 1 NAT entry, not %d", metrics.natEntriesAdded)
 	})
 
@@ -182,7 +182,7 @@ func TestUpstreamMetrics(t *testing.T) {
 		payloads = append(payloads, make([]byte, i))
 	}
 
-	metrics := sendToDiscard(payloads, allowAll)
+	metrics := sendToDiscard(payloads, nil)
 
 	assert.Equal(t, N, len(metrics.upstreamPackets), "Expected %d reports, not %v", N, metrics.upstreamPackets)
 	for i, report := range metrics.upstreamPackets {

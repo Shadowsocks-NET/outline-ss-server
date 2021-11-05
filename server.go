@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
@@ -70,12 +71,13 @@ type ssPort struct {
 }
 
 type SSServer struct {
-	natTimeout  time.Duration
-	m           metrics.ShadowsocksMetrics
-	replayCache service.ReplayCache
-	ports       map[int]*ssPort
-	listenerTFO bool
-	dialerTFO   bool
+	natTimeout      time.Duration
+	m               metrics.ShadowsocksMetrics
+	replayCache     service.ReplayCache
+	ports           map[int]*ssPort
+	blockPrivateNet bool
+	listenerTFO     bool
+	dialerTFO       bool
 }
 
 func (s *SSServer) startPort(portNum int) (err error) {
@@ -95,6 +97,10 @@ func (s *SSServer) startPort(portNum int) (err error) {
 	// TODO: Register initial data metrics at zero.
 	port.tcpService = service.NewTCPService(port.cipherList, &s.replayCache, s.m, tcpReadTimeout, s.dialerTFO)
 	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m)
+	if s.blockPrivateNet {
+		port.tcpService.SetTargetIPValidator(onet.RequirePublicIP)
+		port.udpService.SetTargetIPValidator(onet.RequirePublicIP)
+	}
 	s.ports[portNum] = port
 	go port.tcpService.Serve(listener.(*net.TCPListener))
 	go port.udpService.Serve(udpPacketConn)
@@ -174,14 +180,15 @@ func (s *SSServer) Stop() error {
 }
 
 // RunSSServer starts a shadowsocks server running, and returns the server or an error.
-func RunSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int, listenerTFO, dialerTFO bool) (*SSServer, error) {
+func RunSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int, blockPrivateNet, listenerTFO, dialerTFO bool) (*SSServer, error) {
 	server := &SSServer{
-		natTimeout:  natTimeout,
-		m:           sm,
-		replayCache: service.NewReplayCache(replayHistory),
-		ports:       make(map[int]*ssPort),
-		listenerTFO: listenerTFO,
-		dialerTFO:   dialerTFO,
+		natTimeout:      natTimeout,
+		m:               sm,
+		replayCache:     service.NewReplayCache(replayHistory),
+		ports:           make(map[int]*ssPort),
+		blockPrivateNet: blockPrivateNet,
+		listenerTFO:     listenerTFO,
+		dialerTFO:       dialerTFO,
 	}
 	err := server.loadConfig(filename)
 	if err != nil {
@@ -221,22 +228,24 @@ func readConfig(filename string) (*Config, error) {
 
 func main() {
 	var flags struct {
-		ConfigFile    string
-		MetricsAddr   string
-		IPCountryDB   string
-		natTimeout    time.Duration
-		replayHistory int
-		TCPFastOpen   bool
-		ListenerTFO   bool
-		DialerTFO     bool
-		Verbose       bool
-		Version       bool
+		ConfigFile      string
+		MetricsAddr     string
+		IPCountryDB     string
+		natTimeout      time.Duration
+		replayHistory   int
+		BlockPrivateNet bool
+		TCPFastOpen     bool
+		ListenerTFO     bool
+		DialerTFO       bool
+		Verbose         bool
+		Version         bool
 	}
 	flag.StringVar(&flags.ConfigFile, "config", "", "Configuration filename")
 	flag.StringVar(&flags.MetricsAddr, "metrics", "", "Address for the Prometheus metrics")
 	flag.StringVar(&flags.IPCountryDB, "ip_country_db", "", "Path to the ip-to-country mmdb file")
 	flag.DurationVar(&flags.natTimeout, "udptimeout", defaultNatTimeout, "UDP tunnel timeout")
 	flag.IntVar(&flags.replayHistory, "replay_history", 0, "Replay buffer size (# of handshakes)")
+	flag.BoolVar(&flags.BlockPrivateNet, "block_private_net", false, "Block access to private IP addresses")
 	flag.BoolVar(&flags.TCPFastOpen, "tfo", false, "Enables TFO for both TCP listener and dialer")
 	flag.BoolVar(&flags.ListenerTFO, "tfo_listener", false, "Enables TFO for TCP listener")
 	flag.BoolVar(&flags.DialerTFO, "tfo_dialer", false, "Enables TFO for TCP dialer")
@@ -287,7 +296,7 @@ func main() {
 		flags.DialerTFO = true
 	}
 
-	_, err = RunSSServer(flags.ConfigFile, flags.natTimeout, m, flags.replayHistory, flags.ListenerTFO, flags.DialerTFO)
+	_, err = RunSSServer(flags.ConfigFile, flags.natTimeout, m, flags.replayHistory, flags.BlockPrivateNet, flags.ListenerTFO, flags.DialerTFO)
 	if err != nil {
 		logger.Fatal(err)
 	}

@@ -82,7 +82,7 @@ type udpService struct {
 
 // NewUDPService creates a UDPService
 func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, targetIPValidator: onet.RequirePublicIP}
+	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m}
 }
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.

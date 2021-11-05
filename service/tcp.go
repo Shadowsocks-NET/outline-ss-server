@@ -127,12 +127,11 @@ type tcpService struct {
 // `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
 func NewTCPService(ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration, dialerTFO bool) TCPService {
 	return &tcpService{
-		dialerTFO:         dialerTFO,
-		ciphers:           ciphers,
-		m:                 m,
-		readTimeout:       timeout,
-		replayCache:       replayCache,
-		targetIPValidator: onet.RequirePublicIP,
+		dialerTFO:   dialerTFO,
+		ciphers:     ciphers,
+		m:           m,
+		readTimeout: timeout,
+		replayCache: replayCache,
 	}
 }
 

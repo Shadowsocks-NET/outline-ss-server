@@ -38,12 +38,6 @@ func init() {
 	logging.SetLevel(logging.INFO, "")
 }
 
-func allowAll(ip net.IP) *onet.ConnectionError {
-	// Allow access to localhost so that we can run integration tests with
-	// an actual destination server.
-	return nil
-}
-
 func makeLocalhostListener(t testing.TB) *net.TCPListener {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	require.Nil(t, err, "ListenTCP failed: %v", err)
@@ -350,7 +344,6 @@ func TestProbeClientBytesBasicTruncated(t *testing.T) {
 	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond, false)
-	s.SetTargetIPValidator(allowAll)
 	go s.Serve(listener)
 
 	discardListener, discardWait := startDiscardServer(t)
@@ -380,7 +373,6 @@ func TestProbeClientBytesBasicModified(t *testing.T) {
 	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond, false)
-	s.SetTargetIPValidator(allowAll)
 	go s.Serve(listener)
 
 	discardListener, discardWait := startDiscardServer(t)
@@ -411,7 +403,6 @@ func TestProbeClientBytesCoalescedModified(t *testing.T) {
 	cipher := firstCipher(cipherList)
 	testMetrics := &probeTestMetrics{}
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond, false)
-	s.SetTargetIPValidator(allowAll)
 	go s.Serve(listener)
 
 	discardListener, discardWait := startDiscardServer(t)

@@ -24,7 +24,7 @@ import (
 
 func TestRunSSServer(t *testing.T) {
 	m := metrics.NewPrometheusShadowsocksMetrics(nil, prometheus.DefaultRegisterer)
-	server, err := RunSSServer("config_example.yml", 30*time.Second, m, 10000, false, false)
+	server, err := RunSSServer("config_example.yml", 30*time.Second, m, 10000, false, false, false)
 	if err != nil {
 		t.Fatalf("RunSSServer() error = %v", err)
 	}

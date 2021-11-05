@@ -39,12 +39,6 @@ func init() {
 	logging.SetLevel(logging.INFO, "")
 }
 
-func allowAll(ip net.IP) *onet.ConnectionError {
-	// Allow access to localhost so that we can run integration tests with
-	// an actual destination server.
-	return nil
-}
-
 func startTCPEchoServer(t testing.TB) (*net.TCPListener, *sync.WaitGroup) {
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
@@ -112,7 +106,6 @@ func TestTCPEcho(t *testing.T) {
 	replayCache := service.NewReplayCache(5)
 	const testTimeout = 200 * time.Millisecond
 	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout, false)
-	proxy.SetTargetIPValidator(allowAll)
 	go proxy.Serve(proxyListener)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -185,6 +178,7 @@ func TestRestrictedAddresses(t *testing.T) {
 	const testTimeout = 200 * time.Millisecond
 	testMetrics := &statusMetrics{}
 	proxy := service.NewTCPService(cipherList, nil, testMetrics, testTimeout, false)
+	proxy.SetTargetIPValidator(onet.RequirePublicIP)
 	go proxy.Serve(proxyListener)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -267,7 +261,6 @@ func TestUDPEcho(t *testing.T) {
 	}
 	testMetrics := &fakeUDPMetrics{fakeLocation: "QQ"}
 	proxy := service.NewUDPService(time.Hour, cipherList, testMetrics)
-	proxy.SetTargetIPValidator(allowAll)
 	go proxy.Serve(proxyConn)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
@@ -364,7 +357,6 @@ func BenchmarkTCPThroughput(b *testing.B) {
 	}
 	const testTimeout = 200 * time.Millisecond
 	proxy := service.NewTCPService(cipherList, nil, &metrics.NoOpMetrics{}, testTimeout, false)
-	proxy.SetTargetIPValidator(allowAll)
 	go proxy.Serve(proxyListener)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -431,7 +423,6 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 	replayCache := service.NewReplayCache(service.MaxCapacity)
 	const testTimeout = 200 * time.Millisecond
 	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout, false)
-	proxy.SetTargetIPValidator(allowAll)
 	go proxy.Serve(proxyListener)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
@@ -506,7 +497,6 @@ func BenchmarkUDPEcho(b *testing.B) {
 		b.Fatal(err)
 	}
 	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{})
-	proxy.SetTargetIPValidator(allowAll)
 	go proxy.Serve(proxyConn)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
@@ -555,7 +545,6 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 		b.Fatal(err)
 	}
 	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{})
-	proxy.SetTargetIPValidator(allowAll)
 	go proxy.Serve(proxyConn)
 
 	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
