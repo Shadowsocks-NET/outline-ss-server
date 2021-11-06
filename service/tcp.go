@@ -291,17 +291,17 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.TFOCon
 					io.Copy(io.Discard, clientConn)
 				}
 			}
-			clientConn.CloseRead()
 			// Send FIN to target.
 			// We must do this after the drain is completed, otherwise the target will close its
 			// connection with the proxy, which will, in turn, close the connection with the client.
 			tgtConn.CloseWrite()
+			logger.Debugf("closed write on target conn to %s", tgtConn.RemoteAddr().String())
 			fromClientErrCh <- fromClientErr
 		}()
 		_, fromTargetErr := ssw.ReadFrom(tgtConn)
 		// Send FIN to client.
 		clientConn.CloseWrite()
-		tgtConn.CloseRead()
+		logger.Debugf("closed write on client conn from %s", clientConn.RemoteAddr().String())
 
 		fromClientErr := <-fromClientErrCh
 		if fromClientErr != nil {

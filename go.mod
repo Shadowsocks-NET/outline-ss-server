@@ -3,7 +3,7 @@ module github.com/Shadowsocks-NET/outline-ss-server
 go 1.17
 
 require (
-	github.com/database64128/tfo-go v0.0.0-20211104163403-23a93d2b7f86
+	github.com/database64128/tfo-go v0.0.0-20211106123838-d61a4d5cc984
 	github.com/op/go-logging v0.0.0-20160315200505-970db520ece7
 	github.com/oschwald/geoip2-golang v1.5.0
 	github.com/prometheus/client_golang v1.11.0
