@@ -72,6 +72,11 @@ func (conn *fakePacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) 
 	return len(payload), nil
 }
 
+func (conn *fakePacketConn) WriteMsgUDP(b, oob []byte, addr *net.UDPAddr) (n, oobn int, err error) {
+	conn.send <- packet{addr, b, nil}
+	return len(b), 0, nil
+}
+
 func (conn *fakePacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 	pkt, ok := <-conn.recv
 	if !ok {
@@ -82,6 +87,18 @@ func (conn *fakePacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		return n, pkt.addr, errors.New("Buffer was too short")
 	}
 	return n, pkt.addr, pkt.err
+}
+
+func (conn *fakePacketConn) ReadMsgUDP(b, oob []byte) (n, oobn, flags int, addr *net.UDPAddr, err error) {
+	pkt, ok := <-conn.recv
+	if !ok {
+		return 0, 0, 0, nil, errors.New("Receive closed")
+	}
+	n = copy(b, pkt.payload)
+	if n < len(pkt.payload) {
+		return n, 0, 0, pkt.addr.(*net.UDPAddr), errors.New("Buffer was too short")
+	}
+	return n, 0, 0, pkt.addr.(*net.UDPAddr), pkt.err
 }
 
 func (conn *fakePacketConn) Close() error {
