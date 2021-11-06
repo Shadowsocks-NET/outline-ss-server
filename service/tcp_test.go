@@ -423,10 +423,13 @@ func TestProbeClientBytesCoalescedModified(t *testing.T) {
 	discardWait.Wait()
 }
 
-func makeServerBytes(t *testing.T, cipher *ss.Cipher) []byte {
+func makeServerBytes(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
 	var buffer bytes.Buffer
+	socksTargetAddr := socks.ParseAddr(targetAddr)
 	ssw := ss.NewShadowsocksWriter(&buffer, cipher)
-	_, err := ssw.Write([]byte("initial data"))
+	_, err := ssw.Write(socksTargetAddr)
+	require.Nil(t, err, "Write failed: %v", err)
+	_, err = ssw.Write([]byte("initial data"))
 	require.Nil(t, err, "Write failed: %v", err)
 	_, err = ssw.Write([]byte("more data"))
 	require.Nil(t, err, "Write failed: %v", err)
@@ -442,7 +445,8 @@ func TestProbeServerBytesModified(t *testing.T) {
 	s := NewTCPService(cipherList, nil, testMetrics, 200*time.Millisecond, false)
 	go s.Serve(listener)
 
-	initialBytes := makeServerBytes(t, cipher)
+	discardListener, discardWait := startDiscardServer(t)
+	initialBytes := makeServerBytes(t, cipher, discardListener.Addr().String())
 	bytesToSend := make([]byte, len(initialBytes))
 	for byteToModify := 0; byteToModify < len(initialBytes); byteToModify++ {
 		copy(bytesToSend, initialBytes)
@@ -453,8 +457,10 @@ func TestProbeServerBytesModified(t *testing.T) {
 	s.GracefulStop()
 	statusCount := testMetrics.countStatuses()
 	require.Equal(t, 50, statusCount["ERR_CIPHER"])
-	require.Equal(t, len(initialBytes)-50, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, 7+16, statusCount["ERR_READ_ADDRESS"])
 	require.Equal(t, 50, len(testMetrics.probeData))
+	discardListener.Close()
+	discardWait.Wait()
 }
 
 func TestReplayDefense(t *testing.T) {
