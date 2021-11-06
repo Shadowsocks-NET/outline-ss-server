@@ -32,6 +32,13 @@ const payloadSizeMask = 0x3FFF // 16*1024 - 1
 // The largest buffer we could need is for decrypting a max-length payload.
 var readBufPool = slicepool.MakePool(payloadSizeMask + maxTagSize())
 
+type DecryptionErr struct {
+	Err error
+}
+
+func (e *DecryptionErr) Unwrap() error { return e.Err }
+func (e *DecryptionErr) Error() string { return "failed to decrypt: " + e.Err.Error() }
+
 // Writer is an io.Writer that also implements io.ReaderFrom to
 // allow for piping the data without extra allocations and copies.
 // The LazyWrite and Flush methods allow a header to be
@@ -75,11 +82,11 @@ func (sw *Writer) init() (err error) {
 	if sw.aead == nil {
 		salt := make([]byte, sw.ssCipher.SaltSize())
 		if err := sw.saltGenerator.GetSalt(salt); err != nil {
-			return fmt.Errorf("failed to generate salt: %v", err)
+			return fmt.Errorf("failed to generate salt: %w", err)
 		}
 		sw.aead, err = sw.ssCipher.NewAEAD(salt)
 		if err != nil {
-			return fmt.Errorf("failed to create AEAD: %v", err)
+			return fmt.Errorf("failed to create AEAD: %w", err)
 		}
 		sw.saltGenerator = nil // No longer needed, so release reference.
 		sw.counter = make([]byte, sw.aead.NonceSize())
@@ -215,7 +222,7 @@ func (sw *Writer) ReadFrom(r io.Reader) (int64, error) {
 	if err == io.EOF { // ignore EOF as per io.ReaderFrom contract
 		return written, nil
 	}
-	return written, fmt.Errorf("Failed to read payload: %v", err)
+	return written, fmt.Errorf("Failed to read payload: %w", err)
 }
 
 // Adds as much of `plaintext` into the buffer as will fit, and increases
@@ -300,13 +307,13 @@ func (cr *chunkReader) init() (err error) {
 		salt := make([]byte, cr.ssCipher.SaltSize())
 		if _, err := io.ReadFull(cr.reader, salt); err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				err = fmt.Errorf("failed to read salt: %v", err)
+				err = fmt.Errorf("failed to read salt: %w", err)
 			}
 			return err
 		}
 		cr.aead, err = cr.ssCipher.NewAEAD(salt)
 		if err != nil {
-			return fmt.Errorf("failed to create AEAD: %v", err)
+			return fmt.Errorf("failed to create AEAD: %w", err)
 		}
 		cr.counter = make([]byte, cr.aead.NonceSize())
 		cr.payloadSizeBuf = make([]byte, 2+cr.aead.Overhead())
@@ -326,7 +333,7 @@ func (cr *chunkReader) readMessage(buf []byte) error {
 	_, err = cr.aead.Open(buf[:0], cr.counter, buf, nil)
 	increment(cr.counter)
 	if err != nil {
-		return fmt.Errorf("failed to decrypt: %v", err)
+		return &DecryptionErr{Err: err}
 	}
 	return nil
 }
@@ -347,7 +354,7 @@ func (cr *chunkReader) ReadChunk() ([]byte, error) {
 	// block here until the next chunk.
 	if err := cr.readMessage(cr.payloadSizeBuf); err != nil {
 		if err != io.EOF && err != io.ErrUnexpectedEOF {
-			err = fmt.Errorf("failed to read payload size: %v", err)
+			err = fmt.Errorf("failed to read payload size: %w", err)
 		}
 		return nil, err
 	}

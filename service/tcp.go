@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"sync"
 	"syscall"
@@ -261,8 +260,12 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.TFOCon
 		// Clear the deadline for the target address
 		clientTCPConn.SetReadDeadline(time.Time{})
 		if err != nil {
-			// Drain to prevent a close on cipher error.
-			io.Copy(ioutil.Discard, clientConn)
+			target := &ss.DecryptionErr{}
+			if errors.As(err, &target) {
+				// Drain to prevent a close on cipher error.
+				logger.Debugf("draining client conn from %s", clientConn.RemoteAddr().String())
+				io.Copy(io.Discard, clientConn)
+			}
 			return onet.NewConnectionError("ERR_READ_ADDRESS", "Failed to get target address", err)
 		}
 
@@ -281,8 +284,12 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.TFOCon
 		go func() {
 			_, fromClientErr := ssr.WriteTo(tgtConn)
 			if fromClientErr != nil {
-				// Drain to prevent a close in the case of a cipher error.
-				io.Copy(ioutil.Discard, clientConn)
+				target := &ss.DecryptionErr{}
+				if errors.As(fromClientErr, &target) {
+					// Drain to prevent a close in the case of a cipher error.
+					logger.Debugf("draining client conn from %s", clientConn.RemoteAddr().String())
+					io.Copy(io.Discard, clientConn)
+				}
 			}
 			clientConn.CloseRead()
 			// Send FIN to target.
@@ -324,7 +331,7 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.TFOCon
 // Keep the connection open until we hit the authentication deadline to protect against probing attacks
 // `proxyMetrics` is a pointer because its value is being mutated by `clientConn`.
 func (s *tcpService) absorbProbe(listenerPort int, clientConn io.ReadCloser, clientLocation, status string, proxyMetrics *metrics.ProxyMetrics) {
-	_, drainErr := io.Copy(ioutil.Discard, clientConn) // drain socket
+	_, drainErr := io.Copy(io.Discard, clientConn) // drain socket
 	drainResult := drainErrToString(drainErr)
 	logger.Debugf("Drain error: %v, drain result: %v", drainErr, drainResult)
 	s.m.AddTCPProbe(clientLocation, status, drainResult, listenerPort, *proxyMetrics)
