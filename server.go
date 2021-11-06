@@ -81,7 +81,7 @@ type SSServer struct {
 }
 
 func (s *SSServer) startPort(portNum int) (err error) {
-	lc := tfo.TFOListenConfig{
+	lc := tfo.ListenConfig{
 		DisableTFO: !s.listenerTFO,
 	}
 	listener, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", portNum))

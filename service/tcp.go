@@ -152,7 +152,7 @@ func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 
 func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator, dialerTFO bool) (onet.DuplexConn, *onet.ConnectionError) {
 	var ipError *onet.ConnectionError
-	dialer := tfo.TFODialer{
+	dialer := tfo.Dialer{
 		DisableTFO: !dialerTFO,
 	}
 	if targetIPValidator != nil {
@@ -171,7 +171,7 @@ func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIP
 	} else if err != nil {
 		return nil, onet.NewConnectionError("ERR_CONNECT", "Failed to connect to target", err)
 	}
-	tgtTCPConn := tgtConn.(tfo.TFOConn)
+	tgtTCPConn := tgtConn.(tfo.Conn)
 	return metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy), nil
 }
 
@@ -217,7 +217,7 @@ func (s *tcpService) Serve(listener *net.TCPListener) error {
 	}
 }
 
-func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.TFOConn) {
+func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.Conn) {
 	clientLocation, err := s.m.GetLocation(clientTCPConn.RemoteAddr())
 	if err != nil {
 		logger.Warningf("Failed location lookup: %v", err)
