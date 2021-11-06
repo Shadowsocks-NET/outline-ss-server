@@ -172,7 +172,7 @@ func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIP
 	} else if err != nil {
 		return nil, onet.NewConnectionError("ERR_CONNECT", "Failed to connect to target", err)
 	}
-	tgtTCPConn := tgtConn.(*net.TCPConn)
+	tgtTCPConn := tgtConn.(tfo.TFOConn)
 	return metrics.MeasureConn(tgtTCPConn, &proxyMetrics.ProxyTarget, &proxyMetrics.TargetProxy), nil
 }
 
@@ -218,7 +218,7 @@ func (s *tcpService) Serve(listener *net.TCPListener) error {
 	}
 }
 
-func (s *tcpService) handleConnection(listenerPort int, clientTCPConn *net.TCPConn) {
+func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.TFOConn) {
 	clientLocation, err := s.m.GetLocation(clientTCPConn.RemoteAddr())
 	if err != nil {
 		logger.Warningf("Failed location lookup: %v", err)

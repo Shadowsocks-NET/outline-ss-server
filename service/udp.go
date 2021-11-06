@@ -248,8 +248,10 @@ func (s *udpService) validatePacket(textData []byte) ([]byte, *net.UDPAddr, *one
 	if err != nil {
 		return nil, nil, onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", tgtAddr), err)
 	}
-	if err := s.targetIPValidator(tgtUDPAddr.IP); err != nil {
-		return nil, nil, err
+	if s.targetIPValidator != nil {
+		if err := s.targetIPValidator(tgtUDPAddr.IP); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	payload := textData[len(tgtAddr):]
