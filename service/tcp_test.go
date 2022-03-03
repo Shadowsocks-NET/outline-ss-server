@@ -83,14 +83,20 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 	}
 	testPayload := ss.MakeTestPayload(50)
 	for n := 0; n < b.N; n++ {
+		ch := make(chan error, 1)
 		go func() {
 			conn, err := net.Dial("tcp", listener.Addr().String())
 			if err != nil {
-				b.Fatalf("Failed to dial %v: %v", listener.Addr(), err)
+				ch <- err
+				return
 			}
 			conn.Write(testPayload)
 			conn.Close()
 		}()
+		err := <-ch
+		if err != nil {
+			b.Fatalf("Failed to dial %v: %v", listener.Addr(), err)
+		}
 		clientConn, err := listener.AcceptTCP()
 		if err != nil {
 			b.Fatalf("AcceptTCP failed: %v", err)
@@ -612,12 +618,13 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 
 	testPayload := ss.MakeTestPayload(payloadSize)
 	done := make(chan bool)
+	ch := make(chan error, 1)
 	go func() {
 		defer func() { done <- true }()
 		timerStart := time.Now()
 		conn, err := net.Dial("tcp", listener.Addr().String())
 		if err != nil {
-			t.Fatalf("Failed to dial %v: %v", listener.Addr(), err)
+			ch <- fmt.Errorf("Failed to dial %v: %v", listener.Addr(), err)
 		}
 		conn.Write(testPayload)
 		buf := make([]byte, 1024)
@@ -625,15 +632,19 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 		elapsedTime := time.Since(timerStart)
 		switch {
 		case err != io.EOF:
-			t.Fatalf("Expected error EOF, got %v", err)
+			ch <- fmt.Errorf("Expected error EOF, got %v", err)
 		case bytesRead > 0:
-			t.Fatalf("Expected to read 0 bytes, got %v bytes", bytesRead)
+			ch <- fmt.Errorf("Expected to read 0 bytes, got %v bytes", bytesRead)
 		case elapsedTime < testTimeout || elapsedTime > testTimeout+10*time.Millisecond:
-			t.Fatalf("Expected elapsed time close to %v, got %v", testTimeout, elapsedTime)
+			ch <- fmt.Errorf("Expected elapsed time close to %v, got %v", testTimeout, elapsedTime)
 		default:
 			// ok
 		}
 	}()
+	err = <-ch
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	go s.Serve(listener)
 	<-done

@@ -158,15 +158,20 @@ func TestEndToEnd(t *testing.T) {
 	writer := NewShadowsocksWriter(connWriter, cipher)
 	reader := NewShadowsocksReader(connReader, cipher)
 	expected := "Test"
+	ch := make(chan error, 1)
 	go func() {
 		defer connWriter.Close()
 		_, err := writer.Write([]byte(expected))
 		if err != nil {
-			t.Fatalf("Failed Write: %v", err)
+			ch <- err
 		}
 	}()
+	err := <-ch
+	if err != nil {
+		t.Fatalf("Failed Write: %v", err)
+	}
 	var output bytes.Buffer
-	_, err := reader.WriteTo(&output)
+	_, err = reader.WriteTo(&output)
 	if err != nil {
 		t.Fatalf("Failed WriteTo: %v", err)
 	}
