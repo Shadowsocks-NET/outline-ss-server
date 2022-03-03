@@ -467,7 +467,7 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	plaintext := ss.MakeTestPayload(50)
 	snapshot := cipherList.SnapshotForClientIP(nil)
 	cipher := snapshot[0].Value.(*CipherEntry).Cipher
-	packet, err := ss.Pack(make([]byte, serverUDPBufferSize), plaintext, cipher)
+	packet, _ := ss.Pack(make([]byte, serverUDPBufferSize), plaintext, cipher)
 
 	const numIPs = 100 // Must be <256
 	ips := [numIPs]net.IP{}

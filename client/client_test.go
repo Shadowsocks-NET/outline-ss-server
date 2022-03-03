@@ -2,10 +2,8 @@ package client
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"net"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -22,15 +20,11 @@ const (
 
 func TestShadowsocksClient_DialTCP(t *testing.T) {
 	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, t)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxy.Addr().String())
-	if err != nil {
-		t.Fatalf("Failed to parse proxy address: %v", err)
-	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
+	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
-	conn, err := d.DialTCP(nil, testTargetAddr)
+	conn, err := d.DialTCP(nil, testTargetAddr, false)
 	if err != nil {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -44,15 +38,11 @@ func TestShadowsocksClient_DialTCP(t *testing.T) {
 
 func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
 	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, t)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxy.Addr().String())
-	if err != nil {
-		t.Fatalf("Failed to parse proxy address: %v", err)
-	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
+	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
-	conn, err := d.DialTCP(nil, testTargetAddr)
+	conn, err := d.DialTCP(nil, testTargetAddr, false)
 	if err != nil {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -89,16 +79,12 @@ func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
 		close(done)
 	}()
 
-	proxyHost, proxyPort, err := splitHostPortNumber(listener.Addr().String())
-	if err != nil {
-		t.Fatalf("Failed to parse proxy address: %v", err)
-	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
+	d, err := NewClient(listener.Addr().String(), ss.TestCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
 
-	conn, err := d.DialTCP(nil, testTargetAddr)
+	conn, err := d.DialTCP(nil, testTargetAddr, false)
 	if err != nil {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -114,11 +100,7 @@ func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
 
 func TestShadowsocksClient_ListenUDP(t *testing.T) {
 	proxy, running := startShadowsocksUDPEchoServer(testTargetAddr, t)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxy.LocalAddr().String())
-	if err != nil {
-		t.Fatalf("Failed to parse proxy address: %v", err)
-	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
+	d, err := NewClient(proxy.LocalAddr().String(), ss.TestCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -140,15 +122,11 @@ func BenchmarkShadowsocksClient_DialTCP(b *testing.B) {
 	b.ResetTimer()
 
 	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, b)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxy.Addr().String())
-	if err != nil {
-		b.Fatalf("Failed to parse proxy address: %v", err)
-	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
+	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
-	conn, err := d.DialTCP(nil, testTargetAddr)
+	conn, err := d.DialTCP(nil, testTargetAddr, false)
 	if err != nil {
 		b.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -171,11 +149,7 @@ func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 	b.ResetTimer()
 
 	proxy, running := startShadowsocksUDPEchoServer(testTargetAddr, b)
-	proxyHost, proxyPort, err := splitHostPortNumber(proxy.LocalAddr().String())
-	if err != nil {
-		b.Fatalf("Failed to parse proxy address: %v", err)
-	}
-	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
+	d, err := NewClient(proxy.LocalAddr().String(), ss.TestCipher, testPassword)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -321,28 +295,10 @@ func expectEchoPayload(conn io.ReadWriter, payload, buf []byte, t testing.TB) {
 	}
 }
 
-// splitHostPortNumber parses the host and port from `address`, which has the form `host:port`,
-// validating that the port is a number.
-func splitHostPortNumber(address string) (host string, port int, err error) {
-	host, portStr, err := net.SplitHostPort(address)
-	if err != nil {
-		err = errors.New("Failed to split host and port")
-		return
-	}
-	port, err = strconv.Atoi(portStr)
-	if err != nil {
-		err = errors.New("Invalid non-numeric port")
-		return
-	}
-	return
-}
-
 // Sends UDP packets into a black hole as fast as possible, in order to
 // benchmark the CPU and memory cost of encrypting and sending UDP packes.
 func BenchmarkShadowsocksClient_UDPWrite(b *testing.B) {
-	proxyHost := "192.0.2.1"
-	proxyPort := 1
-	d, err := NewClient(proxyHost, proxyPort, testPassword, ss.TestCipher)
+	d, err := NewClient("192.0.2.1:1", ss.TestCipher, testPassword)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}

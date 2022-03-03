@@ -189,7 +189,7 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 				var cipher *ss.Cipher
 				unpackStart := time.Now()
 				textData, keyID, cipher, err = findAccessKeyUDP(ip, textBuf, cipherData, s.ciphers)
-				timeToCipher = time.Now().Sub(unpackStart)
+				timeToCipher = time.Since(unpackStart)
 
 				if err != nil {
 					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack initial packet", err)
@@ -210,7 +210,7 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 
 				unpackStart := time.Now()
 				textData, err := ss.Unpack(nil, cipherData, targetConn.cipher)
-				timeToCipher = time.Now().Sub(unpackStart)
+				timeToCipher = time.Since(unpackStart)
 				if err != nil {
 					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack data from client", err)
 				}

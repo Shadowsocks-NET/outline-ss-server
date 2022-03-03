@@ -310,11 +310,11 @@ func makeClientBytesBasic(t *testing.T, cipher *ss.Cipher, targetAddr string) []
 
 	payload := make([]byte, 100)
 	rand.Read(payload)
-	n, err = ssw.Write(payload[:60])
+	_, err = ssw.Write(payload[:60])
 	require.Nil(t, err, "Write failed: %v", err)
 	require.Equal(t, 73+2+16+60+16, buffer.Len()) // 167
 
-	n, err = ssw.Write(payload[60:])
+	_, err = ssw.Write(payload[60:])
 	require.Nil(t, err, "Write failed: %v", err)
 	require.Equal(t, 167+2+16+40+16, buffer.Len()) // 241
 
@@ -328,11 +328,11 @@ func makeClientBytesCoalesced(t *testing.T, cipher *ss.Cipher, targetAddr string
 	n, err := ssw.LazyWrite(socksTargetAddr)
 	require.Nil(t, err, "LazyWrite failed: %v", err)
 	require.Equal(t, len(socksTargetAddr), n, "LazyWrite failed: %v", err)
-	n, err = ssw.Write([]byte("initial data"))
+	_, err = ssw.Write([]byte("initial data"))
 	require.Nil(t, err, "Write failed: %v", err)
 	require.Equal(t, 32+2+16+7+12+16, buffer.Len()) // 85
 
-	n, err = ssw.Write([]byte("more data"))
+	_, err = ssw.Write([]byte("more data"))
 	require.Nil(t, err, "Write failed: %v", err)
 	return buffer.Bytes()
 }

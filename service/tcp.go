@@ -68,15 +68,15 @@ func findAccessKey(clientReader io.Reader, clientIP net.IP, cipherList CipherLis
 	ciphers := cipherList.SnapshotForClientIP(clientIP)
 	firstBytes := make([]byte, bytesForKeyFinding)
 	if n, err := io.ReadFull(clientReader, firstBytes); err != nil {
-		return nil, clientReader, nil, 0, fmt.Errorf("Reading header failed after %d bytes: %v", n, err)
+		return nil, clientReader, nil, 0, fmt.Errorf("reading header failed after %d bytes: %v", n, err)
 	}
 
 	findStartTime := time.Now()
 	entry, elt := findEntry(firstBytes, ciphers)
-	timeToCipher := time.Now().Sub(findStartTime)
+	timeToCipher := time.Since(findStartTime)
 	if entry == nil {
 		// TODO: Ban and log client IPs with too many failures too quick to protect against DoS.
-		return nil, clientReader, nil, timeToCipher, fmt.Errorf("Could not find valid TCP cipher")
+		return nil, clientReader, nil, timeToCipher, fmt.Errorf("could not find valid TCP cipher")
 	}
 
 	// Move the active cipher to the front, so that the search is quicker next time.
@@ -313,7 +313,7 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.Conn) 
 		return nil
 	}()
 
-	connDuration := time.Now().Sub(connStart)
+	connDuration := time.Since(connStart)
 	status := "OK"
 	if connError != nil {
 		logger.Debugf("TCP Error: %v: %v", connError.Message, connError.Cause)

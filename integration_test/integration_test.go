@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"io"
 	"net"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -108,19 +107,11 @@ func TestTCPEcho(t *testing.T) {
 	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout, false)
 	go proxy.Serve(proxyListener)
 
-	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	portNum, err := strconv.Atoi(proxyPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, err := client.NewClient(proxyHost, portNum, secrets[0], ss.TestCipher)
+	client, err := client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[0])
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
-	conn, err := client.DialTCP(nil, echoListener.Addr().String())
+	conn, err := client.DialTCP(nil, echoListener.Addr().String(), false)
 	if err != nil {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -181,11 +172,7 @@ func TestRestrictedAddresses(t *testing.T) {
 	proxy.SetTargetIPValidator(onet.RequirePublicIP)
 	go proxy.Serve(proxyListener)
 
-	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
-	require.NoError(t, err)
-	portNum, err := strconv.Atoi(proxyPort)
-	require.NoError(t, err)
-	client, err := client.NewClient(proxyHost, portNum, secrets[0], ss.TestCipher)
+	client, err := client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[0])
 	require.NoError(t, err, "Failed to create ShadowsocksClient")
 
 	buf := make([]byte, 10)
@@ -205,7 +192,7 @@ func TestRestrictedAddresses(t *testing.T) {
 	}
 
 	for _, address := range addresses {
-		conn, err := client.DialTCP(nil, address)
+		conn, err := client.DialTCP(nil, address, false)
 		require.NoError(t, err, "Failed to dial %v", address)
 		n, err := conn.Read(buf)
 		assert.Equal(t, 0, n, "Server should close without replying on rejected address")
@@ -263,15 +250,7 @@ func TestUDPEcho(t *testing.T) {
 	proxy := service.NewUDPService(time.Hour, cipherList, testMetrics)
 	go proxy.Serve(proxyConn)
 
-	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	portNum, err := strconv.Atoi(proxyPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, err := client.NewClient(proxyHost, portNum, secrets[0], ss.TestCipher)
+	client, err := client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[0])
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -359,19 +338,11 @@ func BenchmarkTCPThroughput(b *testing.B) {
 	proxy := service.NewTCPService(cipherList, nil, &metrics.NoOpMetrics{}, testTimeout, false)
 	go proxy.Serve(proxyListener)
 
-	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
-	if err != nil {
-		b.Fatal(err)
-	}
-	portNum, err := strconv.Atoi(proxyPort)
-	if err != nil {
-		b.Fatal(err)
-	}
-	client, err := client.NewClient(proxyHost, portNum, secrets[0], ss.TestCipher)
+	client, err := client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[0])
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
-	conn, err := client.DialTCP(nil, echoListener.Addr().String())
+	conn, err := client.DialTCP(nil, echoListener.Addr().String(), false)
 	if err != nil {
 		b.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -395,7 +366,7 @@ func BenchmarkTCPThroughput(b *testing.B) {
 		conn.Read(down)
 	}
 	b.StopTimer()
-	elapsed := time.Now().Sub(start)
+	elapsed := time.Since(start)
 
 	megabits := float64(8*1000*b.N) / 1e6
 	b.ReportMetric(megabits/elapsed.Seconds(), "mbps")
@@ -425,18 +396,9 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout, false)
 	go proxy.Serve(proxyListener)
 
-	proxyHost, proxyPort, err := net.SplitHostPort(proxyListener.Addr().String())
-	if err != nil {
-		b.Fatal(err)
-	}
-	portNum, err := strconv.Atoi(proxyPort)
-	if err != nil {
-		b.Fatal(err)
-	}
-
 	var clients [numKeys]client.Client
 	for i := 0; i < numKeys; i++ {
-		clients[i], err = client.NewClient(proxyHost, portNum, secrets[i], ss.TestCipher)
+		clients[i], err = client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[i])
 		if err != nil {
 			b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 		}
@@ -454,14 +416,14 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < k; i++ {
-				conn, err := client.DialTCP(nil, echoListener.Addr().String())
+				conn, err := client.DialTCP(nil, echoListener.Addr().String(), false)
 				if err != nil {
 					b.Errorf("ShadowsocksClient.DialTCP failed: %v", err)
 				}
 
 				const N = 1000
 				buf := make([]byte, N)
-				n, err := conn.Write(buf)
+				n, _ := conn.Write(buf)
 				if n != N {
 					b.Errorf("Tried to upload %d bytes, but only sent %d", N, n)
 				}
@@ -499,15 +461,7 @@ func BenchmarkUDPEcho(b *testing.B) {
 	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{})
 	go proxy.Serve(proxyConn)
 
-	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
-	if err != nil {
-		b.Fatal(err)
-	}
-	portNum, err := strconv.Atoi(proxyPort)
-	if err != nil {
-		b.Fatal(err)
-	}
-	client, err := client.NewClient(proxyHost, portNum, secrets[0], ss.TestCipher)
+	client, err := client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[0])
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -547,17 +501,9 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{})
 	go proxy.Serve(proxyConn)
 
-	proxyHost, proxyPort, err := net.SplitHostPort(proxyConn.LocalAddr().String())
-	if err != nil {
-		b.Fatal(err)
-	}
-	portNum, err := strconv.Atoi(proxyPort)
-	if err != nil {
-		b.Fatal(err)
-	}
 	var clients [numKeys]client.Client
 	for i := 0; i < numKeys; i++ {
-		clients[i], err = client.NewClient(proxyHost, portNum, secrets[i], ss.TestCipher)
+		clients[i], err = client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[i])
 		if err != nil {
 			b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 		}
