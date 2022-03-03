@@ -86,8 +86,8 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 		ch := make(chan error, 1)
 		go func() {
 			conn, err := net.Dial("tcp", listener.Addr().String())
+			ch <- err
 			if err != nil {
-				ch <- err
 				return
 			}
 			conn.Write(testPayload)
@@ -625,6 +625,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 		conn, err := net.Dial("tcp", listener.Addr().String())
 		if err != nil {
 			ch <- fmt.Errorf("Failed to dial %v: %v", listener.Addr(), err)
+			return
 		}
 		conn.Write(testPayload)
 		buf := make([]byte, 1024)
@@ -639,6 +640,7 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 			ch <- fmt.Errorf("Expected elapsed time close to %v, got %v", testTimeout, elapsedTime)
 		default:
 			// ok
+			ch <- nil
 		}
 	}()
 	err = <-ch

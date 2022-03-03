@@ -162,9 +162,7 @@ func TestEndToEnd(t *testing.T) {
 	go func() {
 		defer connWriter.Close()
 		_, err := writer.Write([]byte(expected))
-		if err != nil {
-			ch <- err
-		}
+		ch <- err
 	}()
 	err := <-ch
 	if err != nil {

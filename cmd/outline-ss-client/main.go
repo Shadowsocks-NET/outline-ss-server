@@ -33,8 +33,8 @@ func main() {
 
 	flag.StringVar(&tunnelListenAddress, "tunnelListenAddress", "", "shadowsocks tunnel local listen address")
 	flag.StringVar(&tunnelRemoteAddress, "tunnelRemoteAddress", "", "shadowsocks tunnel remote address")
-	flag.BoolVar(&tunnelTCP, "tunnelTCP", true, "Whether to tunnel TCP traffic")
-	flag.BoolVar(&tunnelUDP, "tunnelUDP", true, "Whether to tunnel UDP traffic")
+	flag.BoolVar(&tunnelTCP, "tunnelTCP", false, "Whether to tunnel TCP traffic")
+	flag.BoolVar(&tunnelUDP, "tunnelUDP", false, "Whether to tunnel UDP traffic")
 
 	flag.BoolVar(&TCPFastOpen, "tfo", false, "Enables TFO for both TCP listener and dialer")
 	flag.BoolVar(&listenerTFO, "tfo_listener", false, "Enables TFO for TCP listener")
