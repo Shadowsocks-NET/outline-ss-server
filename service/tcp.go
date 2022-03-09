@@ -30,7 +30,6 @@ import (
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/database64128/tfo-go"
 	logging "github.com/op/go-logging"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
 func remoteIP(conn net.Conn) net.IP {
@@ -119,18 +118,20 @@ type tcpService struct {
 	readTimeout time.Duration
 	// `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
 	replayCache       *ReplayCache
+	saltPool          *SaltPool
 	targetIPValidator onet.TargetIPValidator
 }
 
 // NewTCPService creates a TCPService
 // `replayCache` is a pointer to SSServer.replayCache, to share the cache among all ports.
-func NewTCPService(ciphers CipherList, replayCache *ReplayCache, m metrics.ShadowsocksMetrics, timeout time.Duration, dialerTFO bool) TCPService {
+func NewTCPService(ciphers CipherList, replayCache *ReplayCache, saltPool *SaltPool, m metrics.ShadowsocksMetrics, timeout time.Duration, dialerTFO bool) TCPService {
 	return &tcpService{
 		dialerTFO:   dialerTFO,
 		ciphers:     ciphers,
 		m:           m,
 		readTimeout: timeout,
 		replayCache: replayCache,
+		saltPool:    saltPool,
 	}
 }
 
@@ -150,7 +151,7 @@ func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 	s.targetIPValidator = targetIPValidator
 }
 
-func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator, dialerTFO bool) (onet.DuplexConn, *onet.ConnectionError) {
+func dialTarget(address string, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator, dialerTFO bool) (onet.DuplexConn, *onet.ConnectionError) {
 	var ipError *onet.ConnectionError
 	dialer := tfo.Dialer{
 		DisableTFO: !dialerTFO,
@@ -165,7 +166,7 @@ func dialTarget(tgtAddr socks.Addr, proxyMetrics *metrics.ProxyMetrics, targetIP
 			return nil
 		}
 	}
-	tgtConn, err := dialer.Dial("tcp", tgtAddr.String())
+	tgtConn, err := dialer.Dial("tcp", address)
 	if ipError != nil {
 		return nil, ipError
 	} else if err != nil {
@@ -241,22 +242,32 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.Conn) 
 			return onet.NewConnectionError(status, "Failed to find a valid cipher", keyErr)
 		}
 
-		isServerSalt := cipherEntry.SaltGenerator.IsServerSalt(clientSalt)
-		// Only check the cache if findAccessKey succeeded and the salt is unrecognized.
-		if isServerSalt || !s.replayCache.Add(cipherEntry.ID, clientSalt) {
-			var status string
-			if isServerSalt {
-				status = "ERR_REPLAY_SERVER"
-			} else {
-				status = "ERR_REPLAY_CLIENT"
+		// For the new spec, salt check is performed after header decoding.
+		if !cipherEntry.Cipher.Config().IsSpec2022 {
+			isServerSalt := cipherEntry.SaltGenerator.IsServerSalt(clientSalt)
+			// Only check the cache if findAccessKey succeeded and the salt is unrecognized.
+			if isServerSalt || !s.replayCache.Add(cipherEntry.ID, clientSalt) {
+				var status string
+				if isServerSalt {
+					status = "ERR_REPLAY_SERVER"
+				} else {
+					status = "ERR_REPLAY_CLIENT"
+				}
+				s.absorbProbe(listenerPort, clientConn, clientLocation, status, &proxyMetrics)
+				logger.Debugf(status+": %v in %s sent %d bytes", clientTCPConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
+				return onet.NewConnectionError(status, "Replay detected", nil)
 			}
-			s.absorbProbe(listenerPort, clientConn, clientLocation, status, &proxyMetrics)
-			logger.Debugf(status+": %v in %s sent %d bytes", clientTCPConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
-			return onet.NewConnectionError(status, "Replay detected", nil)
 		}
 
 		ssr := ss.NewShadowsocksReader(clientReader, cipherEntry.Cipher)
-		tgtAddr, err := socks.ReadAddr(ssr)
+		tgtAddr, err := ss.ParseTCPReqHeader(ssr, cipherEntry.Cipher.Config(), ss.HeaderTypeClientStream)
+
+		// 2022 spec: check salt
+		if cipherEntry.Cipher.Config().IsSpec2022 && !s.saltPool.Add(*(*[32]byte)(clientSalt)) {
+			s.absorbProbe(listenerPort, clientConn, clientLocation, "ERR_REPEATED_SALT", &proxyMetrics)
+			logger.Debugf("ERR_REPEATED_SALT: %v in %s sent %d bytes", clientTCPConn.RemoteAddr(), clientLocation, proxyMetrics.ClientProxy)
+		}
+
 		// Clear the deadline for the target address
 		clientTCPConn.SetReadDeadline(time.Time{})
 		if err != nil {
@@ -277,8 +288,13 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.Conn) 
 		defer tgtConn.Close()
 
 		logger.Debugf("proxy %s <-> %s", clientTCPConn.RemoteAddr().String(), tgtConn.RemoteAddr().String())
-		ssw := ss.NewShadowsocksWriter(clientConn, cipherEntry.Cipher)
+		ssw := ss.NewShadowsocksWriter(clientConn, cipherEntry.Cipher, false)
 		ssw.SetSaltGenerator(cipherEntry.SaltGenerator)
+
+		err = ss.LazyWriteTCPRespHeader(clientSalt, ssw)
+		if err != nil {
+			return onet.NewConnectionError("ERR_WRITE_RESP_HEADER", "Failed to lazy-write response header", err)
+		}
 
 		fromClientErrCh := make(chan error)
 		go func() {

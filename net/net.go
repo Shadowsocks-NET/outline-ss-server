@@ -26,18 +26,23 @@ type duplexConnAdaptor struct {
 func (dc *duplexConnAdaptor) Read(b []byte) (int, error) {
 	return dc.r.Read(b)
 }
+
 func (dc *duplexConnAdaptor) WriteTo(w io.Writer) (int64, error) {
 	return io.Copy(w, dc.r)
 }
+
 func (dc *duplexConnAdaptor) CloseRead() error {
 	return dc.DuplexConn.CloseRead()
 }
+
 func (dc *duplexConnAdaptor) Write(b []byte) (int, error) {
 	return dc.w.Write(b)
 }
+
 func (dc *duplexConnAdaptor) ReadFrom(r io.Reader) (int64, error) {
 	return io.Copy(dc.w, r)
 }
+
 func (dc *duplexConnAdaptor) CloseWrite() error {
 	return dc.DuplexConn.CloseWrite()
 }

@@ -19,12 +19,13 @@ import (
 	"crypto/cipher"
 	"crypto/md5"
 	"crypto/sha1"
+	"encoding/base64"
 	"fmt"
 	"io"
-	"strings"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
+	"lukechampine.com/blake3"
 )
 
 // SupportedCipherNames lists the names of the AEAD ciphers that are supported.
@@ -46,7 +47,7 @@ type aeadSpec struct {
 
 // List of supported AEAD ciphers, as specified at https://shadowsocks.org/en/spec/AEAD-Ciphers.html
 var supportedAEADs = [...]aeadSpec{
-	newAEADSpec("chacha20-ietf-poly1305", chacha20poly1305.New, chacha20poly1305.KeySize, 32),
+	newAEADSpec("chacha20-poly1305", chacha20poly1305.New, chacha20poly1305.KeySize, 32),
 	newAEADSpec("aes-256-gcm", newAesGCM, 32, 32),
 	newAEADSpec("aes-192-gcm", newAesGCM, 24, 24),
 	newAEADSpec("aes-128-gcm", newAesGCM, 16, 16),
@@ -58,16 +59,6 @@ func newAEADSpec(name string, newInstance func(key []byte) (cipher.AEAD, error),
 		panic(fmt.Sprintf("Failed to initialize AEAD %v", name))
 	}
 	return aeadSpec{name, newInstance, keySize, saltSize, dummyAead.Overhead()}
-}
-
-func getAEADSpec(name string) (*aeadSpec, error) {
-	name = strings.ToLower(name)
-	for _, aeadSpec := range supportedAEADs {
-		if aeadSpec.name == name {
-			return &aeadSpec, nil
-		}
-	}
-	return nil, fmt.Errorf("Unknown cipher %v", name)
 }
 
 func newAesGCM(key []byte) (cipher.AEAD, error) {
@@ -88,10 +79,15 @@ func maxTagSize() int {
 	return max
 }
 
+type CipherConfig struct {
+	IsSpec2022 bool
+}
+
 // Cipher encapsulates a Shadowsocks AEAD spec and a secret
 type Cipher struct {
 	aead   aeadSpec
 	secret []byte
+	config CipherConfig
 }
 
 // SaltSize is the size of the salt for this Cipher
@@ -104,14 +100,23 @@ func (c *Cipher) TagSize() int {
 	return c.aead.tagSize
 }
 
-var subkeyInfo = []byte("ss-subkey")
+func (c *Cipher) Config() CipherConfig {
+	return c.config
+}
 
 // NewAEAD creates the AEAD for this cipher
 func (c *Cipher) NewAEAD(salt []byte) (cipher.AEAD, error) {
 	sessionKey := make([]byte, c.aead.keySize)
-	r := hkdf.New(sha1.New, c.secret, salt, subkeyInfo)
-	if _, err := io.ReadFull(r, sessionKey); err != nil {
-		return nil, err
+	if c.config.IsSpec2022 {
+		keyMaterial := make([]byte, len(c.secret)+len(salt))
+		copy(keyMaterial, c.secret)
+		copy(keyMaterial[len(c.secret):], salt)
+		blake3.DeriveKey(sessionKey, "shadowsocks 2022 session subkey", keyMaterial)
+	} else {
+		r := hkdf.New(sha1.New, c.secret, salt, []byte("ss-subkey"))
+		if _, err := io.ReadFull(r, sessionKey); err != nil {
+			return nil, err
+		}
 	}
 	return c.aead.newInstance(sessionKey)
 }
@@ -132,13 +137,37 @@ func simpleEVPBytesToKey(data []byte, keyLen int) []byte {
 
 // NewCipher creates a Cipher given a cipher name and a secret
 func NewCipher(cipherName string, secretText string) (*Cipher, error) {
-	aeadSpec, err := getAEADSpec(cipherName)
-	if err != nil {
-		return nil, err
+	var cipher Cipher
+
+	switch cipherName {
+	case "aes-128-gcm", "AEAD_AES_128_GCM":
+		cipher.aead = supportedAEADs[3]
+	case "aes-192-gcm", "AEAD_AES_192_GCM":
+		cipher.aead = supportedAEADs[2]
+	case "2022-blake3-aes-256-gcm", "aes-256-gcm", "AEAD_AES_256_GCM":
+		cipher.aead = supportedAEADs[1]
+	case "chacha20-poly1305", "chacha20-ietf-poly1305":
+		cipher.aead = supportedAEADs[0]
+	default:
+		return nil, fmt.Errorf("unknown method %s", cipherName)
 	}
-	// Key derivation as per https://shadowsocks.org/en/spec/AEAD-Ciphers.html
-	secret := simpleEVPBytesToKey([]byte(secretText), aeadSpec.keySize)
-	return &Cipher{*aeadSpec, secret}, nil
+
+	switch cipherName {
+	case "aes-128-gcm", "AEAD_AES_128_GCM", "aes-192-gcm", "AEAD_AES_192_GCM", "aes-256-gcm", "AEAD_AES_256_GCM", "chacha20-poly1305", "chacha20-ietf-poly1305":
+		cipher.secret = simpleEVPBytesToKey([]byte(secretText), cipher.aead.keySize)
+	case "2022-blake3-aes-256-gcm":
+		key, err := base64.StdEncoding.DecodeString(secretText)
+		if err != nil {
+			return nil, fmt.Errorf("invalid key %s", secretText)
+		}
+		if len(key) != cipher.aead.keySize {
+			return nil, fmt.Errorf("bad key length %d", len(key))
+		}
+		cipher.secret = key
+		cipher.config.IsSpec2022 = true
+	}
+
+	return &cipher, nil
 }
 
 // Assumes all ciphers have NonceSize() <= 12.

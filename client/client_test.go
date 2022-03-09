@@ -20,7 +20,7 @@ const (
 
 func TestShadowsocksClient_DialTCP(t *testing.T) {
 	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, t)
-	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword)
+	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword, nil)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestShadowsocksClient_DialTCP(t *testing.T) {
 
 func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
 	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, t)
-	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword)
+	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword, nil)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
 		close(done)
 	}()
 
-	d, err := NewClient(listener.Addr().String(), ss.TestCipher, testPassword)
+	d, err := NewClient(listener.Addr().String(), ss.TestCipher, testPassword, nil)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
 
 func TestShadowsocksClient_ListenUDP(t *testing.T) {
 	proxy, running := startShadowsocksUDPEchoServer(testTargetAddr, t)
-	d, err := NewClient(proxy.LocalAddr().String(), ss.TestCipher, testPassword)
+	d, err := NewClient(proxy.LocalAddr().String(), ss.TestCipher, testPassword, nil)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -122,7 +122,7 @@ func BenchmarkShadowsocksClient_DialTCP(b *testing.B) {
 	b.ResetTimer()
 
 	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, b)
-	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword)
+	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword, nil)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -149,7 +149,7 @@ func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 	b.ResetTimer()
 
 	proxy, running := startShadowsocksUDPEchoServer(testTargetAddr, b)
-	d, err := NewClient(proxy.LocalAddr().String(), ss.TestCipher, testPassword)
+	d, err := NewClient(proxy.LocalAddr().String(), ss.TestCipher, testPassword, nil)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -198,7 +198,7 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Lis
 				defer running.Done()
 				defer clientConn.Close()
 				ssr := ss.NewShadowsocksReader(clientConn, cipher)
-				ssw := ss.NewShadowsocksWriter(clientConn, cipher)
+				ssw := ss.NewShadowsocksWriter(clientConn, cipher, cipher.Config().IsSpec2022)
 				ssClientConn := onet.WrapDuplexConn(clientConn, ssr, ssw)
 
 				tgtAddr, err := socks.ReadAddr(ssClientConn)
@@ -298,7 +298,7 @@ func expectEchoPayload(conn io.ReadWriter, payload, buf []byte, t testing.TB) {
 // Sends UDP packets into a black hole as fast as possible, in order to
 // benchmark the CPU and memory cost of encrypting and sending UDP packes.
 func BenchmarkShadowsocksClient_UDPWrite(b *testing.B) {
-	d, err := NewClient("192.0.2.1:1", ss.TestCipher, testPassword)
+	d, err := NewClient("192.0.2.1:1", ss.TestCipher, testPassword, nil)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}

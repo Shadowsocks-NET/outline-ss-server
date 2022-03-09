@@ -17,6 +17,7 @@ package service
 import (
 	"encoding/binary"
 	"sync"
+	"time"
 )
 
 // MaxCapacity is the largest allowed size of ReplayCache.
@@ -99,4 +100,45 @@ func (c *ReplayCache) Add(id string, salt []byte) bool {
 	}
 	c.active[hash] = empty{}
 	return !inArchive
+}
+
+type SaltPool struct {
+	mu   sync.Mutex
+	pool map[[32]byte]int64
+}
+
+// Add cleans the pool, checks if the salt already exists in the pool,
+// and adds the salt to the pool if the salt is not already in the pool.
+// Server time, instead of the header timestamp, is used, to prevent potential issues when cleaning up.
+func (p *SaltPool) Add(salt [32]byte) bool {
+	if p == nil {
+		return true
+	}
+
+	nowEpoch := time.Now().Unix()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Clean the pool
+	for salt, epoch := range p.pool {
+		if nowEpoch-epoch > 30*int64(time.Second) {
+			delete(p.pool, salt)
+		}
+	}
+
+	// Test existence
+	if _, ok := p.pool[salt]; ok {
+		return false
+	}
+
+	// Add to pool
+	p.pool[salt] = nowEpoch
+	return true
+}
+
+func NewSaltPool() *SaltPool {
+	return &SaltPool{
+		pool: make(map[[32]byte]int64),
+	}
 }

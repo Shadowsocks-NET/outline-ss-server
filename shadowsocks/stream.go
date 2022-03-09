@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand"
 	"sync"
 
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
@@ -50,10 +51,13 @@ type Writer struct {
 	// else while needFlush could be true.
 	mu sync.Mutex
 	// Indicates that a concurrent flush is currently allowed.
-	needFlush     bool
-	writer        io.Writer
-	ssCipher      *Cipher
-	saltGenerator SaltGenerator
+	needFlush bool
+	// Controls whether to add a random padding and set the padding length
+	// when Flush() (not flush()) is called.
+	addPaddingOnFlush bool
+	writer            io.Writer
+	ssCipher          *Cipher
+	saltGenerator     SaltGenerator
 	// Wrapper for input that arrives as a slice.
 	byteWrapper bytes.Reader
 	// Number of plaintext bytes that are currently buffered.
@@ -67,8 +71,8 @@ type Writer struct {
 
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksWriter(writer io.Writer, ssCipher *Cipher) *Writer {
-	return &Writer{writer: writer, ssCipher: ssCipher, saltGenerator: RandomSaltGenerator}
+func NewShadowsocksWriter(writer io.Writer, ssCipher *Cipher, addPaddingOnFlush bool) *Writer {
+	return &Writer{writer: writer, ssCipher: ssCipher, saltGenerator: RandomSaltGenerator, addPaddingOnFlush: addPaddingOnFlush}
 }
 
 // SetSaltGenerator sets the salt generator to be used. Must be called before the first write.
@@ -99,6 +103,13 @@ func (sw *Writer) init() (err error) {
 		copy(sw.buf, salt)
 	}
 	return nil
+}
+
+func (sw *Writer) Salt() []byte {
+	if sw.buf == nil {
+		return nil
+	}
+	return sw.buf[:sw.ssCipher.SaltSize()]
 }
 
 // encryptBlock encrypts `plaintext` in-place.  The slice must have enough capacity
@@ -144,12 +155,27 @@ func (sw *Writer) LazyWrite(p []byte) (int, error) {
 	}
 }
 
-// Flush sends the pending data, if any.  This method is thread-safe.
+// Flush sends the pending data, if any. This method is thread-safe.
 func (sw *Writer) Flush() error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	if !sw.needFlush {
 		return nil
+	}
+	if sw.addPaddingOnFlush {
+		if sw.pending <= 1+8+2 {
+			return fmt.Errorf("called Flush() with unexpected sw.pending=%d", sw.pending)
+		}
+		_, payloadBuf := sw.buffers()
+		remainingLen := len(payloadBuf) - sw.pending
+		maxPaddingLen := MaxPaddingLength
+		if remainingLen < maxPaddingLen {
+			maxPaddingLen = remainingLen
+		}
+		n := rand.Intn(maxPaddingLen + 1)
+		binary.BigEndian.PutUint16(payloadBuf[sw.pending-2:], uint16(n))
+		sw.pending += n
+		sw.addPaddingOnFlush = false
 	}
 	return sw.flush()
 }
@@ -190,7 +216,6 @@ func (sw *Writer) ReadFrom(r io.Reader) (int64, error) {
 	if sw.needFlush {
 		pending := sw.pending
 
-		sw.mu.Unlock()
 		saltsize := sw.ssCipher.SaltSize()
 		overhead := sw.aead.Overhead()
 		// The first pending+overhead bytes of payloadBuf are potentially
@@ -200,7 +225,6 @@ func (sw *Writer) ReadFrom(r io.Reader) (int64, error) {
 		var plaintextSize int
 		plaintextSize, err = r.Read(readBuf)
 		written = int64(plaintextSize)
-		sw.mu.Lock()
 
 		sw.enqueue(readBuf[:plaintextSize])
 		if flushErr := sw.flush(); flushErr != nil {
@@ -222,7 +246,7 @@ func (sw *Writer) ReadFrom(r io.Reader) (int64, error) {
 	if err == io.EOF { // ignore EOF as per io.ReaderFrom contract
 		return written, nil
 	}
-	return written, fmt.Errorf("Failed to read payload: %w", err)
+	return written, fmt.Errorf("failed to read payload: %w", err)
 }
 
 // Adds as much of `plaintext` into the buffer as will fit, and increases
@@ -266,12 +290,15 @@ type ChunkReader interface {
 	// complete its use of the returned buffer before the next call.
 	// The buffer is nil iff there is an error.  io.EOF indicates a close.
 	ReadChunk() ([]byte, error)
+
+	Salt() []byte
 }
 
 type chunkReader struct {
 	reader   io.Reader
 	ssCipher *Cipher
 	// These are lazily initialized:
+	salt []byte
 	aead cipher.AEAD
 	// Index of the next encrypted chunk to read.
 	counter []byte
@@ -286,6 +313,8 @@ type chunkReader struct {
 type Reader interface {
 	io.Reader
 	io.WriterTo
+
+	Salt() []byte
 }
 
 // NewShadowsocksReader creates a Reader that decrypts the given Reader using
@@ -304,14 +333,14 @@ func NewShadowsocksReader(reader io.Reader, ssCipher *Cipher) Reader {
 func (cr *chunkReader) init() (err error) {
 	if cr.aead == nil {
 		// For chacha20-poly1305, SaltSize is 32, NonceSize is 12 and Overhead is 16.
-		salt := make([]byte, cr.ssCipher.SaltSize())
-		if _, err := io.ReadFull(cr.reader, salt); err != nil {
+		cr.salt = make([]byte, cr.ssCipher.SaltSize())
+		if _, err := io.ReadFull(cr.reader, cr.salt); err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
 				err = fmt.Errorf("failed to read salt: %w", err)
 			}
 			return err
 		}
-		cr.aead, err = cr.ssCipher.NewAEAD(salt)
+		cr.aead, err = cr.ssCipher.NewAEAD(cr.salt)
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %w", err)
 		}
@@ -375,11 +404,19 @@ func (cr *chunkReader) ReadChunk() ([]byte, error) {
 	return payloadBuf[:size], nil
 }
 
+func (cr *chunkReader) Salt() []byte {
+	return cr.salt
+}
+
 // readConverter adapts from ChunkReader, with source-controlled
 // chunk sizes, to Go-style IO.
 type readConverter struct {
 	cr       ChunkReader
 	leftover []byte
+}
+
+func (c *readConverter) Salt() []byte {
+	return c.cr.Salt()
 }
 
 func (c *readConverter) Read(b []byte) (int, error) {

@@ -37,7 +37,7 @@ func TestCompatibility(t *testing.T) {
 	go func() {
 		cipher, err := NewCipher(cipherName, secret)
 		require.Nil(t, err, "NewCipher failed: %v", err)
-		ssWriter := NewShadowsocksWriter(left, cipher)
+		ssWriter := NewShadowsocksWriter(left, cipher, cipher.config.IsSpec2022)
 		ssWriter.Write([]byte(toRight))
 
 		ssReader := NewShadowsocksReader(left, cipher)

@@ -3,15 +3,16 @@ module github.com/Shadowsocks-NET/outline-ss-server
 go 1.17
 
 require (
-	github.com/database64128/tfo-go v1.0.0
+	github.com/database64128/tfo-go v1.0.2
 	github.com/op/go-logging v0.0.0-20160315200505-970db520ece7
-	github.com/oschwald/geoip2-golang v1.5.0
-	github.com/prometheus/client_golang v1.11.0
+	github.com/oschwald/geoip2-golang v1.6.1
+	github.com/prometheus/client_golang v1.12.1
 	github.com/shadowsocks/go-shadowsocks2 v0.1.5
 	github.com/stretchr/testify v1.7.0
-	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519
-	golang.org/x/sys v0.0.0-20211025201205-69cdffdb9359
+	golang.org/x/crypto v0.0.0-20220307211146-efcb8507fb70
+	golang.org/x/sys v0.0.0-20220307203707-22a9840ba4d7
 	gopkg.in/yaml.v2 v2.4.0
+	lukechampine.com/blake3 v1.1.7
 )
 
 require (
@@ -19,6 +20,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.1.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
+	github.com/klauspost/cpuid/v2 v2.0.11 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.1 // indirect
 	github.com/oschwald/maxminddb-golang v1.8.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
+	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
 	"github.com/database64128/tfo-go"
@@ -20,8 +21,8 @@ const clientUDPBufferSize = 16 * 1024
 var (
 	UDPPool            = slicepool.MakePool(clientUDPBufferSize)
 	ErrParseTargetAddr = errors.New("failed to parse target address")
-	ErrWriteTargetAddr = errors.New("failed to write target address")
 	ErrReadSourceAddr  = errors.New("failed to read source address")
+	ErrRepeatedSalt    = errors.New("server stream has repeated salt")
 )
 
 // Client is a client for Shadowsocks TCP and UDP connections.
@@ -39,21 +40,23 @@ type Client interface {
 // NewClient creates a client that routes connections to a Shadowsocks proxy listening at
 // `host:port`, with authentication parameters `cipher` (AEAD) and `password`.
 // TODO: add a dialer argument to support proxy chaining and transport changes.
-func NewClient(address, method, password string) (Client, error) {
+func NewClient(address, method, password string, saltPool *service.SaltPool) (Client, error) {
 	cipher, err := ss.NewCipher(method, password)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ssClient{
-		address: address,
-		cipher:  cipher,
+		address:  address,
+		cipher:   cipher,
+		saltPool: saltPool,
 	}, nil
 }
 
 type ssClient struct {
-	address string
-	cipher  *ss.Cipher
+	address  string
+	cipher   *ss.Cipher
+	saltPool *service.SaltPool
 }
 
 // This code contains an optimization to send the initial client payload along with
@@ -69,11 +72,6 @@ type ssClient struct {
 const helloWait = 10 * time.Millisecond
 
 func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string, dialerTFO bool) (onet.DuplexConn, error) {
-	socksTargetAddr := socks.ParseAddr(raddr)
-	if socksTargetAddr == nil {
-		return nil, ErrParseTargetAddr
-	}
-
 	dialer := tfo.Dialer{
 		DisableTFO: !dialerTFO,
 	}
@@ -83,17 +81,91 @@ func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string, dialerTFO bool) (on
 		return nil, err
 	}
 
-	ssw := ss.NewShadowsocksWriter(proxyConn, c.cipher)
-	_, err = ssw.LazyWrite(socksTargetAddr)
+	ssw := ss.NewShadowsocksWriter(proxyConn, c.cipher, c.cipher.Config().IsSpec2022)
+	err = ss.LazyWriteTCPReqHeader(raddr, ssw)
 	if err != nil {
 		proxyConn.Close()
-		return nil, ErrWriteTargetAddr
+		return nil, err
 	}
 	time.AfterFunc(helloWait, func() {
 		ssw.Flush()
 	})
+
 	ssr := ss.NewShadowsocksReader(proxyConn, c.cipher)
-	return onet.WrapDuplexConn(proxyConn.(onet.DuplexConn), ssr, ssw), nil
+
+	return &duplexConnAdaptor{
+		DuplexConn:   proxyConn.(onet.DuplexConn),
+		r:            ssr,
+		w:            ssw,
+		cipherConfig: c.cipher.Config(),
+		saltPool:     c.saltPool,
+	}, nil
+}
+
+type duplexConnAdaptor struct {
+	onet.DuplexConn
+	r                 ss.Reader
+	w                 *ss.Writer
+	cipherConfig      ss.CipherConfig
+	isHeaderProcessed bool
+	saltPool          *service.SaltPool
+}
+
+func (dc *duplexConnAdaptor) readHeader() error {
+	err := ss.ParseTCPRespHeader(dc.r, dc.w.Salt(), dc.cipherConfig)
+	if err != nil {
+		dc.Close()
+		return err
+	}
+
+	// 2022 spec: check salt
+	if dc.cipherConfig.IsSpec2022 && !dc.saltPool.Add(*(*[32]byte)(dc.r.Salt())) {
+		io.Copy(io.Discard, dc.r)
+		dc.Close()
+		return ErrRepeatedSalt
+	}
+
+	return nil
+}
+
+func (dc *duplexConnAdaptor) Read(b []byte) (int, error) {
+	if !dc.isHeaderProcessed {
+		err := dc.readHeader()
+		if err != nil {
+			return 0, err
+		}
+		dc.isHeaderProcessed = true
+	}
+
+	return dc.r.Read(b)
+}
+
+func (dc *duplexConnAdaptor) WriteTo(w io.Writer) (int64, error) {
+	if !dc.isHeaderProcessed {
+		err := dc.readHeader()
+		if err != nil {
+			return 0, err
+		}
+		dc.isHeaderProcessed = true
+	}
+
+	return io.Copy(w, dc.r)
+}
+
+func (dc *duplexConnAdaptor) CloseRead() error {
+	return dc.DuplexConn.CloseRead()
+}
+
+func (dc *duplexConnAdaptor) Write(b []byte) (int, error) {
+	return dc.w.Write(b)
+}
+
+func (dc *duplexConnAdaptor) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(dc.w, r)
+}
+
+func (dc *duplexConnAdaptor) CloseWrite() error {
+	return dc.DuplexConn.CloseWrite()
 }
 
 func (c *ssClient) ListenUDP(laddr *net.UDPAddr) (net.PacketConn, error) {

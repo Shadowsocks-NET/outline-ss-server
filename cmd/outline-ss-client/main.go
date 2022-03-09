@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"io"
 	"log"
@@ -10,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/Shadowsocks-NET/outline-ss-server/client"
+	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	"github.com/database64128/tfo-go"
 )
 
@@ -47,7 +50,9 @@ func main() {
 		dialerTFO = true
 	}
 
-	c, err := client.NewClient(address, method, password)
+	saltPool := service.NewSaltPool()
+
+	c, err := client.NewClient(address, method, password, saltPool)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -56,7 +61,7 @@ func main() {
 		lc := tfo.ListenConfig{
 			DisableTFO: !listenerTFO,
 		}
-		l, err := lc.Listen(nil, "tcp", tunnelListenAddress)
+		l, err := lc.Listen(context.Background(), "tcp", tunnelListenAddress)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -66,6 +71,9 @@ func main() {
 			for {
 				clientconn, err := l.(*net.TCPListener).AcceptTCP()
 				if err != nil {
+					if errors.Is(err, net.ErrClosed) {
+						return
+					}
 					log.Print(err)
 					continue
 				}

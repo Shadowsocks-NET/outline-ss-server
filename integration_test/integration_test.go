@@ -103,11 +103,12 @@ func TestTCPEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	replayCache := service.NewReplayCache(5)
+	saltPool := service.NewSaltPool()
 	const testTimeout = 200 * time.Millisecond
-	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout, false)
+	proxy := service.NewTCPService(cipherList, &replayCache, saltPool, &metrics.NoOpMetrics{}, testTimeout, false)
 	go proxy.Serve(proxyListener)
 
-	client, err := client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[0])
+	client, err := client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[0], nil)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -168,11 +169,11 @@ func TestRestrictedAddresses(t *testing.T) {
 	require.NoError(t, err)
 	const testTimeout = 200 * time.Millisecond
 	testMetrics := &statusMetrics{}
-	proxy := service.NewTCPService(cipherList, nil, testMetrics, testTimeout, false)
+	proxy := service.NewTCPService(cipherList, nil, nil, testMetrics, testTimeout, false)
 	proxy.SetTargetIPValidator(onet.RequirePublicIP)
 	go proxy.Serve(proxyListener)
 
-	client, err := client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[0])
+	client, err := client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[0], nil)
 	require.NoError(t, err, "Failed to create ShadowsocksClient")
 
 	buf := make([]byte, 10)
@@ -247,10 +248,11 @@ func TestUDPEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	testMetrics := &fakeUDPMetrics{fakeLocation: "QQ"}
-	proxy := service.NewUDPService(time.Hour, cipherList, testMetrics)
+	saltPool := service.NewSaltPool()
+	proxy := service.NewUDPService(time.Hour, cipherList, testMetrics, saltPool)
 	go proxy.Serve(proxyConn)
 
-	client, err := client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[0])
+	client, err := client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[0], nil)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -335,10 +337,10 @@ func BenchmarkTCPThroughput(b *testing.B) {
 		b.Fatal(err)
 	}
 	const testTimeout = 200 * time.Millisecond
-	proxy := service.NewTCPService(cipherList, nil, &metrics.NoOpMetrics{}, testTimeout, false)
+	proxy := service.NewTCPService(cipherList, nil, nil, &metrics.NoOpMetrics{}, testTimeout, false)
 	go proxy.Serve(proxyListener)
 
-	client, err := client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[0])
+	client, err := client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[0], nil)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -392,13 +394,14 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 		b.Fatal(err)
 	}
 	replayCache := service.NewReplayCache(service.MaxCapacity)
+	saltPool := service.NewSaltPool()
 	const testTimeout = 200 * time.Millisecond
-	proxy := service.NewTCPService(cipherList, &replayCache, &metrics.NoOpMetrics{}, testTimeout, false)
+	proxy := service.NewTCPService(cipherList, &replayCache, saltPool, &metrics.NoOpMetrics{}, testTimeout, false)
 	go proxy.Serve(proxyListener)
 
 	var clients [numKeys]client.Client
 	for i := 0; i < numKeys; i++ {
-		clients[i], err = client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[i])
+		clients[i], err = client.NewClient(proxyListener.Addr().String(), ss.TestCipher, secrets[i], nil)
 		if err != nil {
 			b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 		}
@@ -458,10 +461,11 @@ func BenchmarkUDPEcho(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{})
+	saltPool := service.NewSaltPool()
+	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{}, saltPool)
 	go proxy.Serve(proxyConn)
 
-	client, err := client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[0])
+	client, err := client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[0], nil)
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
@@ -498,12 +502,13 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{})
+	saltPool := service.NewSaltPool()
+	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{}, saltPool)
 	go proxy.Serve(proxyConn)
 
 	var clients [numKeys]client.Client
 	for i := 0; i < numKeys; i++ {
-		clients[i], err = client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[i])
+		clients[i], err = client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[i], nil)
 		if err != nil {
 			b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 		}

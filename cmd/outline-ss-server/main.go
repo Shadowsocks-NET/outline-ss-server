@@ -64,6 +64,7 @@ type SSServer struct {
 	natTimeout      time.Duration
 	m               metrics.ShadowsocksMetrics
 	replayCache     service.ReplayCache
+	saltPool        *service.SaltPool
 	ports           map[int]*ssPort
 	blockPrivateNet bool
 	listenerTFO     bool
@@ -85,8 +86,8 @@ func (s *SSServer) startPort(portNum int) (err error) {
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &ssPort{cipherList: service.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
-	port.tcpService = service.NewTCPService(port.cipherList, &s.replayCache, s.m, tcpReadTimeout, s.dialerTFO)
-	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m)
+	port.tcpService = service.NewTCPService(port.cipherList, &s.replayCache, s.saltPool, s.m, tcpReadTimeout, s.dialerTFO)
+	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m, s.saltPool)
 	if s.blockPrivateNet {
 		port.tcpService.SetTargetIPValidator(onet.RequirePublicIP)
 		port.udpService.SetTargetIPValidator(onet.RequirePublicIP)
@@ -175,6 +176,7 @@ func RunSSServer(filename string, natTimeout time.Duration, sm metrics.Shadowsoc
 		natTimeout:      natTimeout,
 		m:               sm,
 		replayCache:     service.NewReplayCache(replayHistory),
+		saltPool:        service.NewSaltPool(),
 		ports:           make(map[int]*ssPort),
 		blockPrivateNet: blockPrivateNet,
 		listenerTFO:     listenerTFO,

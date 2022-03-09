@@ -155,7 +155,7 @@ func TestEndToEnd(t *testing.T) {
 	cipher := newTestCipher(t)
 
 	connReader, connWriter := io.Pipe()
-	writer := NewShadowsocksWriter(connWriter, cipher)
+	writer := NewShadowsocksWriter(connWriter, cipher, false)
 	reader := NewShadowsocksReader(connReader, cipher)
 	expected := "Test"
 	ch := make(chan error, 1)
@@ -181,7 +181,7 @@ func TestEndToEnd(t *testing.T) {
 func TestLazyWriteFlush(t *testing.T) {
 	cipher := newTestCipher(t)
 	buf := new(bytes.Buffer)
-	writer := NewShadowsocksWriter(buf, cipher)
+	writer := NewShadowsocksWriter(buf, cipher, false)
 	header := []byte{1, 2, 3, 4}
 	n, err := writer.LazyWrite(header)
 	if n != len(header) {
@@ -242,7 +242,7 @@ func TestLazyWriteFlush(t *testing.T) {
 func TestLazyWriteConcat(t *testing.T) {
 	cipher := newTestCipher(t)
 	buf := new(bytes.Buffer)
-	writer := NewShadowsocksWriter(buf, cipher)
+	writer := NewShadowsocksWriter(buf, cipher, false)
 	header := []byte{1, 2, 3, 4}
 	n, err := writer.LazyWrite(header)
 	if n != len(header) {
@@ -296,7 +296,7 @@ func TestLazyWriteConcat(t *testing.T) {
 func TestLazyWriteOversize(t *testing.T) {
 	cipher := newTestCipher(t)
 	buf := new(bytes.Buffer)
-	writer := NewShadowsocksWriter(buf, cipher)
+	writer := NewShadowsocksWriter(buf, cipher, false)
 	N := 25000 // More than one block, less than two.
 	data := make([]byte, N)
 	for i := range data {
@@ -336,7 +336,7 @@ func TestLazyWriteOversize(t *testing.T) {
 func TestLazyWriteConcurrentFlush(t *testing.T) {
 	cipher := newTestCipher(t)
 	buf := new(bytes.Buffer)
-	writer := NewShadowsocksWriter(buf, cipher)
+	writer := NewShadowsocksWriter(buf, cipher, false)
 	header := []byte{1, 2, 3, 4}
 	n, err := writer.LazyWrite(header)
 	if n != len(header) {

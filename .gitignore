@@ -19,3 +19,6 @@
 
 # goreleaser temporary files.
 /dist/
+
+.vscode
+config.yml

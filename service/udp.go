@@ -78,11 +78,12 @@ type udpService struct {
 	m                 metrics.ShadowsocksMetrics
 	running           sync.WaitGroup
 	targetIPValidator onet.TargetIPValidator
+	saltPool          *SaltPool
 }
 
 // NewUDPService creates a UDPService
-func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
-	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m}
+func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics, saltPool *SaltPool) UDPService {
+	return &udpService{natTimeout: natTimeout, ciphers: cipherList, m: m, saltPool: saltPool}
 }
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.

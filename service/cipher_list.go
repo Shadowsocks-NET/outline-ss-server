@@ -37,7 +37,7 @@ type CipherEntry struct {
 // MakeCipherEntry constructs a CipherEntry.
 func MakeCipherEntry(id string, cipher *ss.Cipher, secret string) CipherEntry {
 	var saltGenerator ServerSaltGenerator
-	if cipher.SaltSize()-ServerSaltMarkLen >= minSaltEntropy {
+	if !cipher.Config().IsSpec2022 && cipher.SaltSize()-ServerSaltMarkLen >= minSaltEntropy {
 		// Mark salts with a tag for reverse replay protection.
 		saltGenerator = NewServerSaltGenerator(secret)
 	} else {
