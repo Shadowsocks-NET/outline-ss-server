@@ -26,12 +26,17 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
 )
 
-// payloadSizeMask is the maximum size of payload in bytes.
-const payloadSizeMask = 0x3FFF // 16*1024 - 1
+const (
+	// Max payload size for Shadowsocks 2022.
+	shadowsocks2022MaxPayloadSize = 0xFFFF // 64k - 1
+
+	// legacyPayloadSizeMask is the maximum size of payload in bytes for legacy Shadowsocks AEAD.
+	legacyPayloadSizeMask = 0x3FFF // 16*1024 - 1
+)
 
 // Buffer pool used for decrypting Shadowsocks streams.
 // The largest buffer we could need is for decrypting a max-length payload.
-var readBufPool = slicepool.MakePool(payloadSizeMask + maxTagSize())
+var readBufPool = slicepool.MakePool(shadowsocks2022MaxPayloadSize + maxTagSize())
 
 type DecryptionErr struct {
 	Err error
@@ -66,13 +71,29 @@ type Writer struct {
 	buf  []byte
 	aead cipher.AEAD
 	// Index of the next encrypted chunk to write.
-	counter []byte
+	counter        []byte
+	maxPayloadSize int
 }
 
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
 func NewShadowsocksWriter(writer io.Writer, ssCipher *Cipher, addPaddingOnFlush bool) *Writer {
-	return &Writer{writer: writer, ssCipher: ssCipher, saltGenerator: RandomSaltGenerator, addPaddingOnFlush: addPaddingOnFlush}
+	var maxPayloadSize int
+
+	switch {
+	case ssCipher.config.IsSpec2022:
+		maxPayloadSize = shadowsocks2022MaxPayloadSize
+	default:
+		maxPayloadSize = legacyPayloadSizeMask
+	}
+
+	return &Writer{
+		writer:            writer,
+		ssCipher:          ssCipher,
+		saltGenerator:     RandomSaltGenerator,
+		addPaddingOnFlush: addPaddingOnFlush,
+		maxPayloadSize:    maxPayloadSize,
+	}
 }
 
 // SetSaltGenerator sets the salt generator to be used. Must be called before the first write.
@@ -97,7 +118,7 @@ func (sw *Writer) init() (err error) {
 		// The maximum length message is the salt (first message only), length, length tag,
 		// payload, and payload tag.
 		sizeBufSize := 2 + sw.aead.Overhead()
-		maxPayloadBufSize := payloadSizeMask + sw.aead.Overhead()
+		maxPayloadBufSize := sw.maxPayloadSize + sw.aead.Overhead()
 		sw.buf = make([]byte, len(salt)+sizeBufSize+maxPayloadBufSize)
 		// Store the salt at the start of sw.buf.
 		copy(sw.buf, salt)
@@ -198,7 +219,7 @@ func (sw *Writer) buffers() (sizeBuf, payloadBuf []byte) {
 	// followed by a variable-length payload block.
 	sizeBuf = sw.buf[saltSize : saltSize+2]
 	payloadStart := saltSize + 2 + sw.aead.Overhead()
-	payloadBuf = sw.buf[payloadStart : payloadStart+payloadSizeMask]
+	payloadBuf = sw.buf[payloadStart : payloadStart+sw.maxPayloadSize]
 	return
 }
 
@@ -305,28 +326,8 @@ type chunkReader struct {
 	// Buffer for the uint16 size and its AEAD tag.  Made in init().
 	payloadSizeBuf []byte
 	// Holds a buffer for the payload and its AEAD tag, when needed.
-	payload slicepool.LazySlice
-}
-
-// Reader is an io.Reader that also implements io.WriterTo to
-// allow for piping the data without extra allocations and copies.
-type Reader interface {
-	io.Reader
-	io.WriterTo
-
-	Salt() []byte
-}
-
-// NewShadowsocksReader creates a Reader that decrypts the given Reader using
-// the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksReader(reader io.Reader, ssCipher *Cipher) Reader {
-	return &readConverter{
-		cr: &chunkReader{
-			reader:   reader,
-			ssCipher: ssCipher,
-			payload:  readBufPool.LazySlice(),
-		},
-	}
+	payload        slicepool.LazySlice
+	maxPayloadSize int
 }
 
 // init reads the salt from the inner Reader and sets up the AEAD object
@@ -387,7 +388,7 @@ func (cr *chunkReader) ReadChunk() ([]byte, error) {
 		}
 		return nil, err
 	}
-	size := int(binary.BigEndian.Uint16(cr.payloadSizeBuf) & payloadSizeMask)
+	size := int(binary.BigEndian.Uint16(cr.payloadSizeBuf)) & cr.maxPayloadSize
 	sizeWithTag := size + cr.aead.Overhead()
 	payloadBuf := cr.payload.Acquire()
 	if cap(payloadBuf) < sizeWithTag {
@@ -408,11 +409,42 @@ func (cr *chunkReader) Salt() []byte {
 	return cr.salt
 }
 
+// Reader is an io.Reader that also implements io.WriterTo to
+// allow for piping the data without extra allocations and copies.
+type Reader interface {
+	io.Reader
+	io.WriterTo
+
+	Salt() []byte
+}
+
 // readConverter adapts from ChunkReader, with source-controlled
 // chunk sizes, to Go-style IO.
 type readConverter struct {
 	cr       ChunkReader
 	leftover []byte
+}
+
+// NewShadowsocksReader creates a Reader that decrypts the given Reader using
+// the shadowsocks protocol with the given shadowsocks cipher.
+func NewShadowsocksReader(reader io.Reader, ssCipher *Cipher) Reader {
+	var maxPayloadSize int
+
+	switch {
+	case ssCipher.config.IsSpec2022:
+		maxPayloadSize = shadowsocks2022MaxPayloadSize
+	default:
+		maxPayloadSize = legacyPayloadSizeMask
+	}
+
+	return &readConverter{
+		cr: &chunkReader{
+			reader:         reader,
+			ssCipher:       ssCipher,
+			payload:        readBufPool.LazySlice(),
+			maxPayloadSize: maxPayloadSize,
+		},
+	}
 }
 
 func (c *readConverter) Salt() []byte {
