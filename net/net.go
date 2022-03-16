@@ -94,6 +94,8 @@ func Relay(leftConn, rightConn DuplexConn) (int64, int64, error) {
 
 type UDPPacketConn interface {
 	net.PacketConn
+	ReadFromUDP(b []byte) (n int, addr *net.UDPAddr, err error)
+	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
 	ReadMsgUDP(b, oob []byte) (n, oobn, flags int, addr *net.UDPAddr, err error)
 	WriteMsgUDP(b, oob []byte, addr *net.UDPAddr) (n, oobn int, err error)
 }

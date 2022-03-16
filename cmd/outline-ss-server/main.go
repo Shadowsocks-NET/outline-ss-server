@@ -24,7 +24,7 @@ import (
 	"github.com/oschwald/geoip2-golang"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v2"
 )
 
@@ -45,7 +45,7 @@ const (
 
 func init() {
 	var prefix = "%{level:.1s}%{time:2006-01-02T15:04:05.000Z07:00} %{pid} %{shortfile}]"
-	if terminal.IsTerminal(int(os.Stderr.Fd())) {
+	if term.IsTerminal(int(os.Stderr.Fd())) {
 		// Add color only if the output is the terminal
 		prefix = strings.Join([]string{"%{color}", prefix, "%{color:reset}"}, "")
 	}
@@ -77,17 +77,17 @@ func (s *SSServer) startPort(portNum int) (err error) {
 	}
 	listener, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf(":%d", portNum))
 	if err != nil {
-		return fmt.Errorf("Failed to start TCP on port %v: %v", portNum, err)
+		return fmt.Errorf("failed to start TCP on port %v: %v", portNum, err)
 	}
 	udpPacketConn, err := service.ListenUDP("udp", &net.UDPAddr{Port: portNum})
 	if err != nil {
-		return fmt.Errorf("Failed to start UDP on port %v: %v", portNum, err)
+		return fmt.Errorf("failed to start UDP on port %v: %v", portNum, err)
 	}
 	logger.Infof("Listening TCP and UDP on port %v", portNum)
 	port := &ssPort{cipherList: service.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
 	port.tcpService = service.NewTCPService(port.cipherList, &s.replayCache, s.saltPool, s.m, tcpReadTimeout, s.dialerTFO)
-	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m, s.saltPool)
+	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m)
 	if s.blockPrivateNet {
 		port.tcpService.SetTargetIPValidator(onet.RequirePublicIP)
 		port.udpService.SetTargetIPValidator(onet.RequirePublicIP)
@@ -101,16 +101,16 @@ func (s *SSServer) startPort(portNum int) (err error) {
 func (s *SSServer) removePort(portNum int) error {
 	port, ok := s.ports[portNum]
 	if !ok {
-		return fmt.Errorf("Port %v doesn't exist", portNum)
+		return fmt.Errorf("port %v doesn't exist", portNum)
 	}
 	tcpErr := port.tcpService.Stop()
 	udpErr := port.udpService.Stop()
 	delete(s.ports, portNum)
 	if tcpErr != nil {
-		return fmt.Errorf("Failed to close listener on %v: %v", portNum, tcpErr)
+		return fmt.Errorf("failed to close listener on %v: %v", portNum, tcpErr)
 	}
 	if udpErr != nil {
-		return fmt.Errorf("Failed to close packetConn on %v: %v", portNum, udpErr)
+		return fmt.Errorf("failed to close packetConn on %v: %v", portNum, udpErr)
 	}
 	logger.Infof("Stopped TCP and UDP on port %v", portNum)
 	return nil
@@ -119,7 +119,7 @@ func (s *SSServer) removePort(portNum int) error {
 func (s *SSServer) loadConfig(filename string) error {
 	config, err := readConfig(filename)
 	if err != nil {
-		return fmt.Errorf("Failed to read config file %v: %v", filename, err)
+		return fmt.Errorf("failed to read config file %v: %v", filename, err)
 	}
 
 	portChanges := make(map[int]int)
@@ -133,7 +133,7 @@ func (s *SSServer) loadConfig(filename string) error {
 		}
 		cipher, err := ss.NewCipher(keyConfig.Cipher, keyConfig.Secret)
 		if err != nil {
-			return fmt.Errorf("Failed to create cipher for key %v: %v", keyConfig.ID, err)
+			return fmt.Errorf("failed to create cipher for key %v: %v", keyConfig.ID, err)
 		}
 		entry := service.MakeCipherEntry(keyConfig.ID, cipher, keyConfig.Secret)
 		cipherList.PushBack(&entry)
@@ -144,11 +144,11 @@ func (s *SSServer) loadConfig(filename string) error {
 	for portNum, count := range portChanges {
 		if count == -1 {
 			if err := s.removePort(portNum); err != nil {
-				return fmt.Errorf("Failed to remove port %v: %v", portNum, err)
+				return fmt.Errorf("failed to remove port %v: %v", portNum, err)
 			}
 		} else if count == +1 {
 			if err := s.startPort(portNum); err != nil {
-				return fmt.Errorf("Failed to start port %v: %v", portNum, err)
+				return fmt.Errorf("failed to start port %v: %v", portNum, err)
 			}
 		}
 	}
@@ -184,7 +184,7 @@ func RunSSServer(filename string, natTimeout time.Duration, sm metrics.Shadowsoc
 	}
 	err := server.loadConfig(filename)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to load config file %v: %v", filename, err)
+		return nil, fmt.Errorf("failed to load config file %v: %v", filename, err)
 	}
 	sigHup := make(chan os.Signal, 1)
 	signal.Notify(sigHup, syscall.SIGHUP)

@@ -16,6 +16,9 @@ package shadowsocks
 
 import (
 	"crypto/rand"
+	"io"
+
+	"lukechampine.com/blake3"
 )
 
 // SaltGenerator generates unique salts to use in Shadowsocks connections.
@@ -33,5 +36,32 @@ func (randomSaltGenerator) GetSalt(salt []byte) error {
 	return err
 }
 
-// RandomSaltGenerator is a basic SaltGenerator.
-var RandomSaltGenerator SaltGenerator = randomSaltGenerator{}
+type blake3KeyedHashSaltGenerator struct {
+	r io.Reader
+}
+
+func NewBlake3KeyedHashReader(size int) SaltGenerator {
+	key := make([]byte, 32)
+	_, err := rand.Read(key)
+	if err != nil {
+		panic(err)
+	}
+
+	h := blake3.New(size, key)
+	return &blake3KeyedHashSaltGenerator{
+		r: h.XOF(),
+	}
+}
+
+func (g *blake3KeyedHashSaltGenerator) GetSalt(salt []byte) error {
+	_, err := g.r.Read(salt)
+	return err
+}
+
+var (
+	// RandomSaltGenerator is a basic SaltGenerator.
+	RandomSaltGenerator SaltGenerator = randomSaltGenerator{}
+
+	// High performance random salt/nonce generator
+	Blake3KeyedHashSaltGenerator = NewBlake3KeyedHashReader(24)
+)

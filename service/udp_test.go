@@ -147,7 +147,7 @@ func sendToDiscard(payloads [][]byte, validator onet.TargetIPValidator) *natTest
 	cipher := ciphers.SnapshotForClientIP(nil)[0].Value.(*CipherEntry).Cipher
 	clientConn := makePacketConn()
 	metrics := &natTestMetrics{}
-	service := NewUDPService(timeout, ciphers, metrics, nil)
+	service := NewUDPService(timeout, ciphers, metrics)
 	service.SetTargetIPValidator(validator)
 	go service.Serve(clientConn)
 
@@ -220,7 +220,7 @@ func assertAlmostEqual(t *testing.T, a, b time.Time) {
 
 func TestNATEmpty(t *testing.T) {
 	nat := newNATmap(timeout, &natTestMetrics{}, &sync.WaitGroup{})
-	if nat.Get("foo") != nil {
+	if nat.GetByClientAddress("foo") != nil {
 		t.Error("Expected nil value from empty NAT map")
 	}
 }
@@ -229,8 +229,8 @@ func setupNAT() (*fakePacketConn, *fakePacketConn, *natconn) {
 	nat := newNATmap(timeout, &natTestMetrics{}, &sync.WaitGroup{})
 	clientConn := makePacketConn()
 	targetConn := makePacketConn()
-	nat.Add(&clientAddr, clientConn, nil, natCipher, targetConn, "ZZ", "key id")
-	entry := nat.Get(clientAddr.String())
+	nat.Add(&clientAddr, clientConn, nil, natCipher, targetConn, "ZZ", "key id", nil)
+	entry := nat.GetByClientAddress(clientAddr.String())
 	return clientConn, targetConn, entry
 }
 
@@ -239,7 +239,7 @@ func TestNATGet(t *testing.T) {
 	if entry == nil {
 		t.Fatal("Failed to find target conn")
 	}
-	if entry.PacketConn != targetConn {
+	if entry.targetConn != targetConn {
 		t.Error("Mismatched connection returned")
 	}
 }
@@ -249,7 +249,7 @@ func TestNATWrite(t *testing.T) {
 
 	// Simulate one generic packet being sent
 	buf := []byte{1}
-	entry.WriteTo([]byte{1}, &targetAddr)
+	entry.WriteToUDP([]byte{1}, &targetAddr)
 	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(timeout))
 	sent := <-targetConn.send
 	if !bytes.Equal(sent.payload, buf) {
@@ -265,7 +265,7 @@ func TestNATWriteDNS(t *testing.T) {
 
 	// Simulate one DNS query being sent.
 	buf := []byte{1}
-	entry.WriteTo(buf, &dnsAddr)
+	entry.WriteToUDP(buf, &dnsAddr)
 	// DNS-only connections have a fixed timeout of 17 seconds.
 	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(17*time.Second))
 	sent := <-targetConn.send
@@ -282,11 +282,11 @@ func TestNATWriteDNSMultiple(t *testing.T) {
 
 	// Simulate three DNS queries being sent.
 	buf := []byte{1}
-	entry.WriteTo(buf, &dnsAddr)
+	entry.WriteToUDP(buf, &dnsAddr)
 	<-targetConn.send
-	entry.WriteTo(buf, &dnsAddr)
+	entry.WriteToUDP(buf, &dnsAddr)
 	<-targetConn.send
-	entry.WriteTo(buf, &dnsAddr)
+	entry.WriteToUDP(buf, &dnsAddr)
 	<-targetConn.send
 	// DNS-only connections have a fixed timeout of 17 seconds.
 	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(17*time.Second))
@@ -297,9 +297,9 @@ func TestNATWriteMixed(t *testing.T) {
 
 	// Simulate both non-DNS and DNS packets being sent.
 	buf := []byte{1}
-	entry.WriteTo(buf, &targetAddr)
+	entry.WriteToUDP(buf, &targetAddr)
 	<-targetConn.send
-	entry.WriteTo(buf, &dnsAddr)
+	entry.WriteToUDP(buf, &dnsAddr)
 	<-targetConn.send
 	// Mixed DNS and non-DNS connections should have the user-specified timeout.
 	assertAlmostEqual(t, targetConn.deadline, time.Now().Add(timeout))
@@ -310,7 +310,7 @@ func TestNATFastClose(t *testing.T) {
 
 	// Send one DNS query.
 	query := []byte{1}
-	entry.WriteTo(query, &dnsAddr)
+	entry.WriteToUDP(query, &dnsAddr)
 	sent := <-targetConn.send
 	// Send the response.
 	response := []byte{1, 2, 3, 4, 5}
@@ -336,7 +336,7 @@ func TestNATNoFastClose_NotDNS(t *testing.T) {
 
 	// Send one non-DNS packet.
 	query := []byte{1}
-	entry.WriteTo(query, &targetAddr)
+	entry.WriteToUDP(query, &targetAddr)
 	sent := <-targetConn.send
 	// Send the response.
 	response := []byte{1, 2, 3, 4, 5}
@@ -361,10 +361,10 @@ func TestNATNoFastClose_MultipleDNS(t *testing.T) {
 
 	// Send two DNS packets.
 	query1 := []byte{1}
-	entry.WriteTo(query1, &dnsAddr)
+	entry.WriteToUDP(query1, &dnsAddr)
 	<-targetConn.send
 	query2 := []byte{2}
-	entry.WriteTo(query2, &dnsAddr)
+	entry.WriteToUDP(query2, &dnsAddr)
 	<-targetConn.send
 
 	// Send a response.
@@ -394,7 +394,7 @@ func TestNATTimeout(t *testing.T) {
 	_, targetConn, entry := setupNAT()
 
 	// Simulate a non-DNS initial packet.
-	entry.WriteTo([]byte{1}, &targetAddr)
+	entry.WriteToUDP([]byte{1}, &targetAddr)
 	<-targetConn.send
 	// Simulate a read timeout.
 	received := packet{err: &fakeTimeoutError{}}
@@ -416,10 +416,15 @@ func BenchmarkUDPUnpackFail(b *testing.B) {
 	}
 	testPayload := ss.MakeTestPayload(50)
 	textBuf := make([]byte, serverUDPBufferSize)
-	testIP := net.ParseIP("192.0.2.1")
+	testUDPAddr := &net.UDPAddr{
+		IP: net.IPv4(192, 0, 2, 1),
+	}
+	s := &udpService{
+		ciphers: cipherList,
+	}
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
-		findAccessKeyUDP(testIP, textBuf, testPayload, cipherList)
+		s.findAccessKeyUDP(testUDPAddr, textBuf, testPayload, nil)
 	}
 }
 
@@ -433,7 +438,7 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 	}
 	testBuf := make([]byte, serverUDPBufferSize)
 	packets := [numCiphers][]byte{}
-	ips := [numCiphers]net.IP{}
+	addrs := [numCiphers]*net.UDPAddr{}
 	snapshot := cipherList.SnapshotForClientIP(nil)
 	for i, element := range snapshot {
 		packets[i] = make([]byte, 0, serverUDPBufferSize)
@@ -442,14 +447,19 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 		if err != nil {
 			b.Error(err)
 		}
-		ips[i] = net.IPv4(192, 0, 2, byte(i))
+		addrs[i] = &net.UDPAddr{
+			IP: net.IPv4(192, 0, 2, byte(i)),
+		}
+	}
+	s := &udpService{
+		ciphers: cipherList,
 	}
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		cipherNumber := n % numCiphers
-		ip := ips[cipherNumber]
+		addr := addrs[cipherNumber]
 		packet := packets[cipherNumber]
-		_, _, _, err := findAccessKeyUDP(ip, testBuf, packet, cipherList)
+		_, _, _, _, _, _, err := s.findAccessKeyUDP(addr, testBuf, packet, nil)
 		if err != nil {
 			b.Error(err)
 		}
@@ -470,14 +480,19 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	packet, _ := ss.Pack(make([]byte, serverUDPBufferSize), plaintext, cipher)
 
 	const numIPs = 100 // Must be <256
-	ips := [numIPs]net.IP{}
+	addrs := [numIPs]*net.UDPAddr{}
 	for i := 0; i < numIPs; i++ {
-		ips[i] = net.IPv4(192, 0, 2, byte(i))
+		addrs[i] = &net.UDPAddr{
+			IP: net.IPv4(192, 0, 2, byte(i)),
+		}
+	}
+	s := &udpService{
+		ciphers: cipherList,
 	}
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
-		ip := ips[n%numIPs]
-		_, _, _, err := findAccessKeyUDP(ip, testBuf, packet, cipherList)
+		addr := addrs[n%numIPs]
+		_, _, _, _, _, _, err := s.findAccessKeyUDP(addr, testBuf, packet, nil)
 		if err != nil {
 			b.Error(err)
 		}
@@ -490,9 +505,8 @@ func TestUDPDoubleServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	testMetrics := &natTestMetrics{}
-	saltPool := NewSaltPool()
 	const testTimeout = 200 * time.Millisecond
-	s := NewUDPService(testTimeout, cipherList, testMetrics, saltPool)
+	s := NewUDPService(testTimeout, cipherList, testMetrics)
 
 	c := make(chan error)
 	for i := 0; i < 2; i++ {
@@ -526,7 +540,7 @@ func TestUDPEarlyStop(t *testing.T) {
 	}
 	testMetrics := &natTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	s := NewUDPService(testTimeout, cipherList, testMetrics, nil)
+	s := NewUDPService(testTimeout, cipherList, testMetrics)
 
 	if err := s.Stop(); err != nil {
 		t.Error(err)

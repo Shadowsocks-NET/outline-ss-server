@@ -1,25 +1,20 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"flag"
-	"io"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/Shadowsocks-NET/outline-ss-server/client"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
-	"github.com/database64128/tfo-go"
 )
 
 func main() {
 	var address string
 	var method string
-	var password string
+	var psk string
 
 	var tunnelListenAddress string
 	var tunnelRemoteAddress string
@@ -32,7 +27,7 @@ func main() {
 
 	flag.StringVar(&address, "address", "", "shadowsocks server address host:port")
 	flag.StringVar(&method, "method", "chacha20-ietf-poly1305", "shadowsocks server method")
-	flag.StringVar(&password, "password", "", "shadowsocks server password")
+	flag.StringVar(&psk, "psk", "", "shadowsocks server pre-shared key")
 
 	flag.StringVar(&tunnelListenAddress, "tunnelListenAddress", "", "shadowsocks tunnel local listen address")
 	flag.StringVar(&tunnelRemoteAddress, "tunnelRemoteAddress", "", "shadowsocks tunnel remote address")
@@ -52,90 +47,33 @@ func main() {
 
 	saltPool := service.NewSaltPool()
 
-	c, err := client.NewClient(address, method, password, saltPool)
+	c, err := client.NewClient(address, method, psk, saltPool)
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	var services []client.Service
+
 	if tunnelTCP {
-		lc := tfo.ListenConfig{
-			DisableTFO: !listenerTFO,
-		}
-		l, err := lc.Listen(context.Background(), "tcp", tunnelListenAddress)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer l.Close()
-
-		go func() {
-			for {
-				clientconn, err := l.(*net.TCPListener).AcceptTCP()
-				if err != nil {
-					if errors.Is(err, net.ErrClosed) {
-						return
-					}
-					log.Print(err)
-					continue
-				}
-
-				go func() {
-					proxyconn, err := c.DialTCP(nil, tunnelRemoteAddress, dialerTFO)
-					if err != nil {
-						log.Print(err)
-					}
-					defer proxyconn.Close()
-
-					ch := make(chan error, 1)
-
-					go func() {
-						_, err := io.Copy(clientconn, proxyconn)
-						clientconn.CloseWrite()
-						ch <- err
-					}()
-
-					_, err = io.Copy(proxyconn, clientconn)
-					proxyconn.CloseWrite()
-
-					innerErr := <-ch
-
-					if err != nil {
-						log.Print(err)
-					}
-					if innerErr != nil {
-						log.Print(err)
-					}
-				}()
-			}
-		}()
+		s := client.NewTCPTunnelService(tunnelListenAddress, tunnelRemoteAddress, listenerTFO, dialerTFO, c)
+		s.Start()
+		services = append(services, s)
 	}
 
 	if tunnelUDP {
-		// l, err := net.Listen("udp", tunnelListenAddress)
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-		// defer l.Close()
-
-		// proxyconn, err := c.ListenUDP(nil)
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-		// defer proxyconn.Close()
-
-		// go func() {
-		// 	for {
-		// 		lazySlice := client.UDPPool.LazySlice()
-		// 		b := lazySlice.Acquire()
-		// 		defer lazySlice.Release()
-
-		// 		n, oobn, flags, raddr, err := l.(*net.UDPConn).ReadMsgUDP(b, oob)
-		// 	}
-		// }()
-		log.Println("not implemented")
-		return
+		s := client.NewUDPTunnelService(tunnelListenAddress, tunnelRemoteAddress, c)
+		s.Start()
+		services = append(services, s)
 	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	sig := <-sigCh
+
+	log.Printf("Received %s, stopping...", sig.String())
+
+	for _, s := range services {
+		s.Stop()
+		log.Printf("Stopped %s", s.Name())
+	}
 }

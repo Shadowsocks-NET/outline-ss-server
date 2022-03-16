@@ -80,14 +80,22 @@ func maxTagSize() int {
 }
 
 type CipherConfig struct {
-	IsSpec2022 bool
+	IsSpec2022           bool
+	UDPHasSeparateHeader bool
 }
 
 // Cipher encapsulates a Shadowsocks AEAD spec and a secret
 type Cipher struct {
 	aead   aeadSpec
 	secret []byte
+
+	// spec 2022
 	config CipherConfig
+	// Only used by 2022-blake3-aes-256-gcm for encrypting/decrypting the separate header.
+	separateHeaderCipher cipher.Block
+	// Only used by 2022-blake3-chacha20-poly1305, initialized with the main key.
+	// Packets with separate header should instead use the AEAD cipher in session.
+	udpAEAD cipher.AEAD
 }
 
 // SaltSize is the size of the salt for this Cipher
@@ -137,37 +145,53 @@ func simpleEVPBytesToKey(data []byte, keyLen int) []byte {
 
 // NewCipher creates a Cipher given a cipher name and a secret
 func NewCipher(cipherName string, secretText string) (*Cipher, error) {
-	var cipher Cipher
+	var c Cipher
 
 	switch cipherName {
 	case "aes-128-gcm", "AEAD_AES_128_GCM":
-		cipher.aead = supportedAEADs[3]
+		c.aead = supportedAEADs[3]
 	case "aes-192-gcm", "AEAD_AES_192_GCM":
-		cipher.aead = supportedAEADs[2]
+		c.aead = supportedAEADs[2]
 	case "2022-blake3-aes-256-gcm", "aes-256-gcm", "AEAD_AES_256_GCM":
-		cipher.aead = supportedAEADs[1]
-	case "chacha20-poly1305", "chacha20-ietf-poly1305":
-		cipher.aead = supportedAEADs[0]
+		c.aead = supportedAEADs[1]
+	case "2022-blake3-chacha20-poly1305", "chacha20-poly1305", "chacha20-ietf-poly1305":
+		c.aead = supportedAEADs[0]
 	default:
 		return nil, fmt.Errorf("unknown method %s", cipherName)
 	}
 
 	switch cipherName {
 	case "aes-128-gcm", "AEAD_AES_128_GCM", "aes-192-gcm", "AEAD_AES_192_GCM", "aes-256-gcm", "AEAD_AES_256_GCM", "chacha20-poly1305", "chacha20-ietf-poly1305":
-		cipher.secret = simpleEVPBytesToKey([]byte(secretText), cipher.aead.keySize)
-	case "2022-blake3-aes-256-gcm":
+		c.secret = simpleEVPBytesToKey([]byte(secretText), c.aead.keySize)
+	case "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305":
 		key, err := base64.StdEncoding.DecodeString(secretText)
 		if err != nil {
 			return nil, fmt.Errorf("invalid key %s", secretText)
 		}
-		if len(key) != cipher.aead.keySize {
+		if len(key) != c.aead.keySize {
 			return nil, fmt.Errorf("bad key length %d", len(key))
 		}
-		cipher.secret = key
-		cipher.config.IsSpec2022 = true
+		c.secret = key
+		c.config.IsSpec2022 = true
 	}
 
-	return &cipher, nil
+	switch cipherName {
+	case "2022-blake3-chacha20-poly1305":
+		udpAEAD, err := chacha20poly1305.NewX(c.secret)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create UDP AEAD: %w", err)
+		}
+		c.udpAEAD = udpAEAD
+	case "2022-blake3-aes-256-gcm":
+		c.config.UDPHasSeparateHeader = true
+		cb, err := aes.NewCipher(c.secret)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create block cipher for 2022 UDP header: %w", err)
+		}
+		c.separateHeaderCipher = cb
+	}
+
+	return &c, nil
 }
 
 // Assumes all ciphers have NonceSize() <= 12.
@@ -186,4 +210,19 @@ func DecryptOnce(cipher *Cipher, salt []byte, plainText, cipherText []byte) ([]b
 		return nil, io.ErrShortBuffer
 	}
 	return aead.Open(plainText, zeroNonce[:aead.NonceSize()], cipherText, nil)
+}
+
+func DecryptSeparateHeader(cipher *Cipher, dst, src []byte) error {
+	if !cipher.config.IsSpec2022 || !cipher.config.UDPHasSeparateHeader {
+		return nil
+	}
+
+	blockLen := cipher.separateHeaderCipher.BlockSize()
+
+	if len(dst) < blockLen || len(src) < blockLen {
+		return io.ErrShortBuffer
+	}
+
+	cipher.separateHeaderCipher.Decrypt(dst[:blockLen], src[:blockLen])
+	return nil
 }

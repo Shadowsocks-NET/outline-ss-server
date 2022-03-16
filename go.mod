@@ -11,6 +11,8 @@ require (
 	github.com/stretchr/testify v1.7.0
 	golang.org/x/crypto v0.0.0-20220307211146-efcb8507fb70
 	golang.org/x/sys v0.0.0-20220307203707-22a9840ba4d7
+	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211
+	golang.zx2c4.com/wireguard v0.0.0-20220310012736-ae6bc4dd64e1
 	gopkg.in/yaml.v2 v2.4.0
 	lukechampine.com/blake3 v1.1.7
 )
@@ -28,7 +30,6 @@ require (
 	github.com/prometheus/common v0.32.1 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
 	github.com/riobard/go-bloom v0.0.0-20200614022211-cdc8013cb5b3 // indirect
-	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211 // indirect
 	google.golang.org/protobuf v1.27.1 // indirect
 	gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c // indirect
 )

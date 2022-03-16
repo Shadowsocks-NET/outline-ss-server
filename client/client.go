@@ -1,6 +1,7 @@
 package client
 
 import (
+	"crypto/cipher"
 	"errors"
 	"io"
 	"net"
@@ -11,18 +12,17 @@ import (
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
 	"github.com/database64128/tfo-go"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
+	wgreplay "golang.zx2c4.com/wireguard/replay"
 )
 
 // clientUDPBufferSize is the maximum supported UDP packet size in bytes.
 const clientUDPBufferSize = 16 * 1024
 
-// UDPPool stores the byte slices used for storing encrypted packets.
 var (
-	UDPPool            = slicepool.MakePool(clientUDPBufferSize)
-	ErrParseTargetAddr = errors.New("failed to parse target address")
-	ErrReadSourceAddr  = errors.New("failed to read source address")
-	ErrRepeatedSalt    = errors.New("server stream has repeated salt")
+	// udpPool stores the byte slices used for storing encrypted packets.
+	udpPool = slicepool.MakePool(clientUDPBufferSize)
+
+	ErrRepeatedSalt = errors.New("server stream has repeated salt")
 )
 
 // Client is a client for Shadowsocks TCP and UDP connections.
@@ -32,8 +32,11 @@ type Client interface {
 	// `raddr` has the form `host:port`, where `host` can be a domain name or IP address.
 	DialTCP(laddr *net.TCPAddr, raddr string, dialerTFO bool) (onet.DuplexConn, error)
 
-	// ListenUDP relays UDP packets though a Shadowsocks proxy.
+	// ListenUDP starts a new Shadowsocks UDP session and returns a connection that
+	// can be used to relay UDP packets though the proxy.
 	// `laddr` is a local bind address, a local address is automatically chosen if nil.
+	// For Shadowsocks 2022, this encapsulation does not support multiplexing several sessions
+	// into one proxy connection.
 	ListenUDP(laddr *net.UDPAddr) (net.PacketConn, error)
 }
 
@@ -71,6 +74,7 @@ type ssClient struct {
 // was ~1 ms.)  If no client payload is received by this time, we connect without it.
 const helloWait = 10 * time.Millisecond
 
+// DialTCP implements the Client DialTCP method.
 func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string, dialerTFO bool) (onet.DuplexConn, error) {
 	dialer := tfo.Dialer{
 		DisableTFO: !dialerTFO,
@@ -168,72 +172,109 @@ func (dc *duplexConnAdaptor) CloseWrite() error {
 	return dc.DuplexConn.CloseWrite()
 }
 
+// ListenUDP implements the Client ListenUDP method.
 func (c *ssClient) ListenUDP(laddr *net.UDPAddr) (net.PacketConn, error) {
 	proxyAddr, err := net.ResolveUDPAddr("udp", c.address)
 	if err != nil {
 		return nil, err
 	}
 
-	pc, err := net.DialUDP("udp", laddr, proxyAddr)
+	proxyconn, err := net.DialUDP("udp", laddr, proxyAddr)
 	if err != nil {
 		return nil, err
 	}
 
-	conn := packetConn{UDPConn: pc, cipher: c.cipher}
-	return &conn, nil
+	return &packetConn{
+		UDPConn: proxyconn,
+		cipher:  c.cipher,
+	}, nil
 }
 
 type packetConn struct {
 	*net.UDPConn
 	cipher *ss.Cipher
+
+	// sid stores session ID for Shadowsocks 2022 Edition methods.
+	sid []byte
+
+	// pid stores packet ID for Shadowsocks 2022 Edition methods.
+	pid uint64
+
+	// Provides sliding window replay protection.
+	filter *wgreplay.Filter
+
+	// Only used by 2022-blake3-aes-256-gcm.
+	// Initialized with session subkey.
+	aead cipher.AEAD
 }
 
 // WriteTo encrypts `b` and writes to `addr` through the proxy.
 func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
-	socksTargetAddr := socks.ParseAddr(addr.String())
-	if socksTargetAddr == nil {
-		return 0, ErrParseTargetAddr
-	}
-	lazySlice := UDPPool.LazySlice()
+	lazySlice := udpPool.LazySlice()
 	cipherBuf := lazySlice.Acquire()
 	defer lazySlice.Release()
-	saltSize := c.cipher.SaltSize()
-	// Copy the SOCKS target address and payload, reserving space for the generated salt to avoid
-	// partially overlapping the plaintext and cipher slices since `Pack` skips the salt when calling
-	// `AEAD.Seal` (see https://golang.org/pkg/crypto/cipher/#AEAD).
-	plaintextBuf := append(append(cipherBuf[saltSize:saltSize], socksTargetAddr...), b...)
-	buf, err := ss.Pack(cipherBuf, plaintextBuf, c.cipher)
+
+	cipherConfig := c.cipher.Config()
+
+	// Calculate where to start writing header
+	var mainHeaderStart int
+
+	switch {
+	case cipherConfig.UDPHasSeparateHeader: // Starts at 0
+	case cipherConfig.IsSpec2022:
+		mainHeaderStart = 24
+	default:
+		mainHeaderStart = c.cipher.SaltSize()
+	}
+
+	// Write header
+	n, err := ss.WriteClientUDPHeader(cipherBuf[mainHeaderStart:], cipherConfig, c.sid, c.pid, addr, 1452)
 	if err != nil {
 		return 0, err
 	}
+
+	// Copy payload
+	copy(cipherBuf[mainHeaderStart+n:], b)
+
+	var buf []byte
+	switch {
+	case cipherConfig.UDPHasSeparateHeader:
+		buf, err = ss.PackAesWithSeparateHeader(cipherBuf, cipherBuf[mainHeaderStart:], c.cipher, c.aead)
+	default:
+		buf, err = ss.Pack(cipherBuf, cipherBuf[mainHeaderStart:], c.cipher)
+	}
+
+	if err != nil {
+		return 0, err
+	}
+
 	_, err = c.UDPConn.Write(buf)
 	return len(b), err
 }
 
 // ReadFrom reads from the embedded PacketConn and decrypts into `b`.
 func (c *packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
-	lazySlice := UDPPool.LazySlice()
+	lazySlice := udpPool.LazySlice()
 	cipherBuf := lazySlice.Acquire()
 	defer lazySlice.Release()
+
 	n, err := c.UDPConn.Read(cipherBuf)
 	if err != nil {
 		return 0, nil, err
 	}
+
 	// Decrypt in-place.
-	buf, err := ss.Unpack(nil, cipherBuf[:n], c.cipher)
+	payload, address, err := ss.UnpackAndValidatePacket(c.cipher, c.aead, c.filter, c.sid, nil, cipherBuf[:n])
 	if err != nil {
 		return 0, nil, err
 	}
-	socksSrcAddr := socks.SplitAddr(buf)
-	if socksSrcAddr == nil {
-		return 0, nil, ErrReadSourceAddr
+
+	n = copy(b, payload)
+	if n < len(payload) {
+		err = io.ErrShortBuffer
 	}
-	srcAddr := NewAddr(socksSrcAddr.String(), "udp")
-	n = copy(b, buf[len(socksSrcAddr):]) // Strip the SOCKS source address
-	if len(b) < len(buf)-len(socksSrcAddr) {
-		return n, srcAddr, io.ErrShortBuffer
-	}
-	return n, srcAddr, nil
+
+	return n, NewAddr(address, "udp"), err
 }
 
 type addr struct {
@@ -252,5 +293,8 @@ func (a *addr) Network() string {
 // NewAddr returns a net.Addr that holds an address of the form `host:port` with a domain name or IP as host.
 // Used for SOCKS addressing.
 func NewAddr(address, network string) net.Addr {
-	return &addr{address: address, network: network}
+	return &addr{
+		address: address,
+		network: network,
+	}
 }
