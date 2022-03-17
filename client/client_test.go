@@ -9,6 +9,7 @@ import (
 	"time"
 
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
+	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
@@ -159,7 +160,7 @@ func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 	}
 	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
-	buf := make([]byte, clientUDPBufferSize)
+	buf := make([]byte, service.UDPPacketBufferSize)
 	for n := 0; n < b.N; n++ {
 		payload := ss.MakeTestPayload(1024)
 		pcrw := &packetConnReadWriter{PacketConn: conn, targetAddr: NewAddr(testTargetAddr, "udp")}
@@ -221,8 +222,8 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Co
 		t.Fatalf("Proxy ListenUDP failed: %v", err)
 	}
 	t.Logf("Starting SS UDP echo proxy at %v\n", conn.LocalAddr())
-	cipherBuf := make([]byte, clientUDPBufferSize)
-	clientBuf := make([]byte, clientUDPBufferSize)
+	cipherBuf := make([]byte, service.UDPPacketBufferSize)
+	clientBuf := make([]byte, service.UDPPacketBufferSize)
 	cipher, err := ss.NewCipher(ss.TestCipher, testPassword)
 	if err != nil {
 		t.Fatalf("Failed to create cipher: %v", err)

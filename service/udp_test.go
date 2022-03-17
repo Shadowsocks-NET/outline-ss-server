@@ -415,7 +415,7 @@ func BenchmarkUDPUnpackFail(b *testing.B) {
 		b.Fatal(err)
 	}
 	testPayload := ss.MakeTestPayload(50)
-	textBuf := make([]byte, serverUDPBufferSize)
+	textBuf := make([]byte, UDPPacketBufferSize)
 	testUDPAddr := &net.UDPAddr{
 		IP: net.IPv4(192, 0, 2, 1),
 	}
@@ -436,14 +436,14 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	testBuf := make([]byte, serverUDPBufferSize)
+	testBuf := make([]byte, UDPPacketBufferSize)
 	packets := [numCiphers][]byte{}
 	addrs := [numCiphers]*net.UDPAddr{}
 	snapshot := cipherList.SnapshotForClientIP(nil)
 	for i, element := range snapshot {
-		packets[i] = make([]byte, 0, serverUDPBufferSize)
+		packets[i] = make([]byte, 0, UDPPacketBufferSize)
 		plaintext := ss.MakeTestPayload(50)
-		packets[i], err = ss.Pack(make([]byte, serverUDPBufferSize), plaintext, element.Value.(*CipherEntry).Cipher)
+		packets[i], err = ss.Pack(make([]byte, UDPPacketBufferSize), plaintext, element.Value.(*CipherEntry).Cipher)
 		if err != nil {
 			b.Error(err)
 		}
@@ -473,11 +473,11 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	testBuf := make([]byte, serverUDPBufferSize)
+	testBuf := make([]byte, UDPPacketBufferSize)
 	plaintext := ss.MakeTestPayload(50)
 	snapshot := cipherList.SnapshotForClientIP(nil)
 	cipher := snapshot[0].Value.(*CipherEntry).Cipher
-	packet, _ := ss.Pack(make([]byte, serverUDPBufferSize), plaintext, cipher)
+	packet, _ := ss.Pack(make([]byte, UDPPacketBufferSize), plaintext, cipher)
 
 	const numIPs = 100 // Must be <256
 	addrs := [numIPs]*net.UDPAddr{}

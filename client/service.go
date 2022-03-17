@@ -6,9 +6,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"time"
 
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
+	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	"github.com/database64128/tfo-go"
+	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
 type Service interface {
@@ -119,14 +122,19 @@ type UDPTunnel struct {
 	tunnelListenAddress string
 	tunnelRemoteAddress string
 
+	multiplexUDP bool
+	natTimeout   time.Duration
+
 	client Client
 	conn   *net.UDPConn
 }
 
-func NewUDPTunnelService(tunnelListenAddress, tunnelRemoteAddress string, client Client) Service {
+func NewUDPTunnelService(tunnelListenAddress, tunnelRemoteAddress string, multiplexUDP bool, natTimeout time.Duration, client Client) Service {
 	return &UDPTunnel{
 		tunnelListenAddress: tunnelListenAddress,
 		tunnelRemoteAddress: tunnelRemoteAddress,
+		multiplexUDP:        multiplexUDP,
+		natTimeout:          natTimeout,
 		client:              client,
 	}
 }
@@ -146,25 +154,49 @@ func (s *UDPTunnel) listen() {
 		log.Fatal(err)
 	}
 
-	s.conn, err = net.ListenUDP("udp", laddr)
+	conn, err := service.ListenUDP("udp", laddr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer s.conn.Close()
+	defer conn.Close()
+	s.conn = conn.(*net.UDPConn)
 
-	// proxyconn, err := s.client.ListenUDP(nil)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// defer proxyconn.Close()
+	nm := newNATmap(s.natTimeout)
+	defer nm.Close()
 
-	// for {
-	// 	lazySlice := UDPPool.LazySlice()
-	// 	b := lazySlice.Acquire()
-	// 	defer lazySlice.Release()
+	packetBuf := make([]byte, service.UDPPacketBufferSize)
+	oobBuf := make([]byte, service.UDPOOBBufferSize)
+	socksAddr := socks.ParseAddr(s.tunnelRemoteAddress)
 
-	// 	n, oobn, flags, raddr, err := s.conn.(*net.UDPConn).ReadMsgUDP(b, oob)
-	// }
+	for {
+		n, oobn, _, clientAddr, err := s.conn.ReadMsgUDP(packetBuf[ShadowsocksPacketConnFrontReserve:], oobBuf)
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			log.Print(err)
+			continue
+		}
+
+		oobCache := service.GetOobForCache(oobBuf[:oobn])
+		proxyConn := nm.GetByClientAddress(clientAddr.String())
+		if proxyConn == nil {
+			spc, err := s.client.ListenUDP(nil)
+			if err != nil {
+				log.Print(err)
+				continue
+			}
+
+			proxyConn = nm.Add(clientAddr, s.conn, oobCache, spc)
+		} else {
+			proxyConn.oobCache = oobCache
+		}
+
+		_, err = proxyConn.WriteToZeroCopy(packetBuf, ShadowsocksPacketConnFrontReserve, n, socksAddr)
+		if err != nil {
+			log.Print(err)
+		}
+	}
 }
 
 func (s *UDPTunnel) Stop() error {

@@ -12,15 +12,29 @@ import (
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
 	"github.com/database64128/tfo-go"
+	"github.com/shadowsocks/go-shadowsocks2/socks"
 	wgreplay "golang.zx2c4.com/wireguard/replay"
 )
 
-// clientUDPBufferSize is the maximum supported UDP packet size in bytes.
-const clientUDPBufferSize = 16 * 1024
+const (
+	// This code contains an optimization to send the initial client payload along with
+	// the Shadowsocks handshake.  This saves one packet during connection, and also
+	// reduces the distinctiveness of the connection pattern.
+	//
+	// Normally, the initial payload will be sent as soon as the socket is connected,
+	// except for delays due to inter-process communication.  However, some protocols
+	// expect the server to send data first, in which case there is no client payload.
+	// We therefore use a short delay, longer than any reasonable IPC but shorter than
+	// typical network latency.  (In an Android emulator, the 90th percentile delay
+	// was ~1 ms.)  If no client payload is received by this time, we connect without it.
+	helloWait = 10 * time.Millisecond
+
+	ShadowsocksPacketConnFrontReserve = 24 + 8 + 8 + 1 + 8 + socks.MaxAddrLen + 2 + ss.MaxPaddingLength
+)
 
 var (
 	// udpPool stores the byte slices used for storing encrypted packets.
-	udpPool = slicepool.MakePool(clientUDPBufferSize)
+	udpPool = slicepool.MakePool(service.UDPPacketBufferSize)
 
 	ErrRepeatedSalt = errors.New("server stream has repeated salt")
 )
@@ -37,7 +51,10 @@ type Client interface {
 	// `laddr` is a local bind address, a local address is automatically chosen if nil.
 	// For Shadowsocks 2022, this encapsulation does not support multiplexing several sessions
 	// into one proxy connection.
-	ListenUDP(laddr *net.UDPAddr) (net.PacketConn, error)
+	ListenUDP(laddr *net.UDPAddr) (ShadowsocksPacketConn, error)
+
+	// Cipher gets the underlying Shadowsocks cipher used by the client.
+	Cipher() *ss.Cipher
 }
 
 // NewClient creates a client that routes connections to a Shadowsocks proxy listening at
@@ -62,17 +79,9 @@ type ssClient struct {
 	saltPool *service.SaltPool
 }
 
-// This code contains an optimization to send the initial client payload along with
-// the Shadowsocks handshake.  This saves one packet during connection, and also
-// reduces the distinctiveness of the connection pattern.
-//
-// Normally, the initial payload will be sent as soon as the socket is connected,
-// except for delays due to inter-process communication.  However, some protocols
-// expect the server to send data first, in which case there is no client payload.
-// We therefore use a short delay, longer than any reasonable IPC but shorter than
-// typical network latency.  (In an Android emulator, the 90th percentile delay
-// was ~1 ms.)  If no client payload is received by this time, we connect without it.
-const helloWait = 10 * time.Millisecond
+func (c *ssClient) Cipher() *ss.Cipher {
+	return c.cipher
+}
 
 // DialTCP implements the Client DialTCP method.
 func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string, dialerTFO bool) (onet.DuplexConn, error) {
@@ -173,21 +182,37 @@ func (dc *duplexConnAdaptor) CloseWrite() error {
 }
 
 // ListenUDP implements the Client ListenUDP method.
-func (c *ssClient) ListenUDP(laddr *net.UDPAddr) (net.PacketConn, error) {
+func (c *ssClient) ListenUDP(laddr *net.UDPAddr) (ShadowsocksPacketConn, error) {
 	proxyAddr, err := net.ResolveUDPAddr("udp", c.address)
 	if err != nil {
 		return nil, err
 	}
 
-	proxyconn, err := net.DialUDP("udp", laddr, proxyAddr)
+	proxyConn, err := net.DialUDP("udp", laddr, proxyAddr)
 	if err != nil {
 		return nil, err
 	}
 
-	return &packetConn{
-		UDPConn: proxyconn,
-		cipher:  c.cipher,
-	}, nil
+	return newPacketConn(proxyConn, c.cipher)
+}
+
+// ShadowsocksPacketConn adds zero-copy methods for reading from
+// and writing to a Shadowsocks UDP proxy.
+type ShadowsocksPacketConn interface {
+	net.PacketConn
+
+	// ReadFromZeroCopy eliminates copying by requiring that a big enough buffer is passed for reading.
+	ReadFromZeroCopy(b []byte) (payload []byte, address string, err error)
+
+	// WriteToZeroCopy minimizes copying by requiring that enough space is reserved in b.
+	// The socks address is still being copied into the buffer.
+	//
+	// You should reserve 24 + 8 + 8 + 1 + 8 + socks.MaxAddrLen + 2 + ss.MaxPaddingLength in the beginning,
+	// and cipher.TagSize() in the end.
+	//
+	// start points to where the actual payload (excluding header) starts.
+	// length is payload length.
+	WriteToZeroCopy(b []byte, start, length int, socksAddr []byte) (n int, err error)
 }
 
 type packetConn struct {
@@ -208,6 +233,30 @@ type packetConn struct {
 	aead cipher.AEAD
 }
 
+func newPacketConn(proxyConn *net.UDPConn, c *ss.Cipher) (*packetConn, error) {
+	// Random session ID
+	sid := make([]byte, 8)
+	err := ss.Blake3KeyedHashSaltGenerator.GetSalt(sid)
+	if err != nil {
+		return nil, err
+	}
+
+	// Separate header AEAD
+	var aead cipher.AEAD
+	aead, err = c.NewAEAD(sid)
+	if err != nil {
+		return nil, err
+	}
+
+	return &packetConn{
+		UDPConn: proxyConn,
+		cipher:  c,
+		sid:     sid,
+		filter:  &wgreplay.Filter{},
+		aead:    aead,
+	}, nil
+}
+
 // WriteTo encrypts `b` and writes to `addr` through the proxy.
 func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	lazySlice := udpPool.LazySlice()
@@ -217,31 +266,77 @@ func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	cipherConfig := c.cipher.Config()
 
 	// Calculate where to start writing header
-	var mainHeaderStart int
+	var headerStart int
 
 	switch {
 	case cipherConfig.UDPHasSeparateHeader: // Starts at 0
 	case cipherConfig.IsSpec2022:
-		mainHeaderStart = 24
+		headerStart = 24
 	default:
-		mainHeaderStart = c.cipher.SaltSize()
+		headerStart = c.cipher.SaltSize()
 	}
 
 	// Write header
-	n, err := ss.WriteClientUDPHeader(cipherBuf[mainHeaderStart:], cipherConfig, c.sid, c.pid, addr, 1452)
+	n, err := ss.WriteClientUDPHeader(cipherBuf[headerStart:], cipherConfig, c.sid, c.pid, addr, 1452)
 	if err != nil {
 		return 0, err
 	}
 
 	// Copy payload
-	copy(cipherBuf[mainHeaderStart+n:], b)
+	copy(cipherBuf[headerStart+n:], b)
 
 	var buf []byte
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
-		buf, err = ss.PackAesWithSeparateHeader(cipherBuf, cipherBuf[mainHeaderStart:], c.cipher, c.aead)
+		buf, err = ss.PackAesWithSeparateHeader(cipherBuf, cipherBuf[headerStart:], c.cipher, c.aead)
 	default:
-		buf, err = ss.Pack(cipherBuf, cipherBuf[mainHeaderStart:], c.cipher)
+		buf, err = ss.Pack(cipherBuf, cipherBuf[headerStart:], c.cipher)
+	}
+
+	if err != nil {
+		return 0, err
+	}
+
+	_, err = c.UDPConn.Write(buf)
+	return len(b), err
+}
+
+func (c *packetConn) WriteToZeroCopy(b []byte, start, length int, socksAddr []byte) (n int, err error) {
+	cipherConfig := c.cipher.Config()
+
+	// Calculate where to start writing socks address, header
+	socksAddrStart := start - 2 - len(socksAddr)
+	var headerStart int
+	var packetStart int
+
+	switch {
+	case cipherConfig.UDPHasSeparateHeader:
+		headerStart = socksAddrStart - 8 - 1 - 8 - 8
+		packetStart = headerStart
+	case cipherConfig.IsSpec2022:
+		headerStart = socksAddrStart - 8 - 1 - 8 - 8
+		packetStart = headerStart - 24
+	default:
+		headerStart = socksAddrStart
+		packetStart = headerStart - c.cipher.SaltSize()
+	}
+
+	// For now, don't add padding for simplicity.
+	b[start-2] = 0
+	b[start-1] = 0
+
+	// Copy socks address
+	copy(b[socksAddrStart:], socksAddr)
+
+	// Write header
+	ss.WriteClientUDPHeaderPartial(b[packetStart:], cipherConfig, c.sid, c.pid)
+
+	var buf []byte
+	switch {
+	case cipherConfig.UDPHasSeparateHeader:
+		buf, err = ss.PackAesWithSeparateHeader(b[packetStart:], b[headerStart:start+length], c.cipher, c.aead)
+	default:
+		buf, err = ss.Pack(b[packetStart:], b[headerStart:start+length], c.cipher)
 	}
 
 	if err != nil {
@@ -275,6 +370,16 @@ func (c *packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	}
 
 	return n, NewAddr(address, "udp"), err
+}
+
+func (c *packetConn) ReadFromZeroCopy(b []byte) (payload []byte, address string, err error) {
+	n, err := c.UDPConn.Read(b)
+	if err != nil {
+		return
+	}
+
+	payload, address, err = ss.UnpackAndValidatePacket(c.cipher, c.aead, c.filter, c.sid, nil, b[:n])
+	return
 }
 
 type addr struct {

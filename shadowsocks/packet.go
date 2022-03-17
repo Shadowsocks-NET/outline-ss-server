@@ -67,22 +67,24 @@ func Pack(dst, plaintext []byte, cipher *Cipher) ([]byte, error) {
 	}
 
 	// Seal AEAD plaintext
-	return cipher.udpAEAD.Seal(dst[nonceSize:nonceSize], dst[:nonceSize], plaintext, nil), nil
+	return cipher.udpAEAD.Seal(dst[:nonceSize], dst[:nonceSize], plaintext, nil), nil
 }
 
 // Pack function for 2022-blake3-aes-256-gcm.
 // Do not encrypt header before calling this function.
 // This function encrypts the separate header after sealing AEAD.
+//
+// plaintext should start with the separate header.
 func PackAesWithSeparateHeader(dst, plaintext []byte, cipher *Cipher, sessionAEAD cipher.AEAD) ([]byte, error) {
 	if len(dst) < 16+len(plaintext)+sessionAEAD.Overhead() {
 		return nil, io.ErrShortBuffer
 	}
 
 	// Seal AEAD plaintext
-	ciphertext := sessionAEAD.Seal(dst[16:16], dst[4:16], plaintext, nil)
+	ciphertext := sessionAEAD.Seal(dst[:16], dst[4:16], plaintext[16:], nil)
 
 	// Encrypt header
-	cipher.separateHeaderCipher.Encrypt(dst[:16], dst[:16])
+	cipher.separateHeaderCipher.Encrypt(ciphertext[:16], ciphertext[:16])
 
 	return ciphertext, nil
 }
@@ -139,12 +141,12 @@ func UnpackAesWithSeparateHeader(dst, pkt, separateHeader []byte, cipher *Cipher
 	copy(dst, separateHeader)
 
 	// Open AEAD ciphertext
-	buf, err := unpackAEAD.Open(dst[16:16], separateHeader[4:], pkt[16:], nil)
+	buf, err := unpackAEAD.Open(dst[:16], separateHeader[4:], pkt[16:], nil)
 	if err != nil {
 		return nil, err
 	}
 
-	return dst[:16+len(buf)], nil
+	return buf, nil
 }
 
 // UnpackAndValidatePacket unpacks an encrypted packet, validates the packet,
@@ -156,12 +158,12 @@ func UnpackAndValidatePacket(c *Cipher, separateHeaderAEAD cipher.AEAD, filter *
 	var buf []byte
 	var err error
 
-	if dst == nil {
-		dst = src
-	}
-
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
+		if dst == nil {
+			dst = src
+		}
+
 		// Decrypt separate header
 		err = DecryptSeparateHeader(c, dst, src)
 		if err != nil {
@@ -186,7 +188,7 @@ func UnpackAndValidatePacket(c *Cipher, separateHeaderAEAD cipher.AEAD, filter *
 		}
 
 		// Check session id
-		if !bytes.Equal(sid, dst[:8]) {
+		if !bytes.Equal(sid, buf[:8]) {
 			return nil, "", ErrSessionIDMismatch
 		}
 
@@ -197,7 +199,7 @@ func UnpackAndValidatePacket(c *Cipher, separateHeaderAEAD cipher.AEAD, filter *
 		}
 	}
 
-	addr, payload, err := ParseUDPHeader(buf, cipherConfig)
+	addr, payload, err := ParseUDPHeader(buf, HeaderTypeServerPacket, cipherConfig)
 	if err != nil {
 		return nil, "", err
 	}

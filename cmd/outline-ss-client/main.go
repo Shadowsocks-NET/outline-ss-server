@@ -6,9 +6,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Shadowsocks-NET/outline-ss-server/client"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
+)
+
+const (
+	// A UDP NAT timeout of at least 5 minutes is recommended in RFC 4787 Section 4.3.
+	defaultNatTimeout time.Duration = 5 * time.Minute
 )
 
 func main() {
@@ -25,6 +31,9 @@ func main() {
 	var listenerTFO bool
 	var dialerTFO bool
 
+	var multiplexUDP bool
+	var natTimeout time.Duration
+
 	flag.StringVar(&address, "address", "", "shadowsocks server address host:port")
 	flag.StringVar(&method, "method", "chacha20-ietf-poly1305", "shadowsocks server method")
 	flag.StringVar(&psk, "psk", "", "shadowsocks server pre-shared key")
@@ -37,6 +46,9 @@ func main() {
 	flag.BoolVar(&TCPFastOpen, "tfo", false, "Enables TFO for both TCP listener and dialer")
 	flag.BoolVar(&listenerTFO, "tfo_listener", false, "Enables TFO for TCP listener")
 	flag.BoolVar(&dialerTFO, "tfo_dialer", false, "Enables TFO for TCP listener")
+
+	flag.BoolVar(&multiplexUDP, "muxUDP", false, "Whether to multiplex all UDP sessions into one UDPConn")
+	flag.DurationVar(&natTimeout, "natTimeout", defaultNatTimeout, "UDP NAT timeout")
 
 	flag.Parse()
 
@@ -61,7 +73,7 @@ func main() {
 	}
 
 	if tunnelUDP {
-		s := client.NewUDPTunnelService(tunnelListenAddress, tunnelRemoteAddress, c)
+		s := client.NewUDPTunnelService(tunnelListenAddress, tunnelRemoteAddress, multiplexUDP, natTimeout, c)
 		s.Start()
 		services = append(services, s)
 	}

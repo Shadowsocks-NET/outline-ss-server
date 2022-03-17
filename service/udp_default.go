@@ -27,6 +27,6 @@ func ListenUDP(network string, laddr *net.UDPAddr) (onet.UDPPacketConn, error) {
 	return net.ListenUDP(network, laddr)
 }
 
-func getOobForCache(clientOob []byte) []byte {
+func GetOobForCache(clientOob []byte) []byte {
 	return nil
 }

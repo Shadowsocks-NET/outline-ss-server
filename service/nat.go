@@ -13,9 +13,8 @@ import (
 )
 
 type natconn struct {
-	// Stores reference to target conn.
-	// Only applicable to legacy Shadowsocks.
-	// For Shadowsocks 2022, use the targetConn in session.
+	// For legacy Shadowsocks servers, this stores reference to target conn.
+	// For Shadowsocks 2022 servers, use the targetConn in session instead.
 	targetConn onet.UDPPacketConn
 
 	// Reference to access key's cipher.
@@ -117,7 +116,7 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
 	// [padding?][salt][address][body][tag][extra]
 	// Padding is only used if the address is IPv4.
-	pkt := make([]byte, serverUDPBufferSize)
+	pkt := make([]byte, UDPPacketBufferSize)
 	saltSize := c.cipher.SaltSize()
 	cipherConfig := c.cipher.Config()
 	lastSeenAddr := c.lastSeenAddr
@@ -129,7 +128,7 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 	case cipherConfig.UDPHasSeparateHeader:
 		bodyStart = 16 + 1 + 8 + ss.SocksAddressIPv6Length + 2 + ss.MaxPaddingLength
 	case cipherConfig.IsSpec2022:
-		bodyStart = 24 + 1 + 8 + 8 + 8 + ss.SocksAddressIPv6Length + 2 + ss.MaxPaddingLength
+		bodyStart = 24 + 8 + 8 + 1 + 8 + ss.SocksAddressIPv6Length + 2 + ss.MaxPaddingLength
 	default:
 		bodyStart = saltSize + ss.SocksAddressIPv6Length
 	}
@@ -182,21 +181,22 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 				socksAddrLen = ss.SocksAddressIPv4Length
 			}
 
+			// For now, let's not think about padding.
 			switch {
 			case cipherConfig.UDPHasSeparateHeader:
-				headerStart = bodyStart - 1 - 8 - socksAddrLen
-				ss.WriteUDPHeaderSeparated(pkt, ss.HeaderTypeServerPacket, ses.sid, ses.pid, raddr, 1452)
+				headerStart = bodyStart - 8 - 8 - 1 - 8 - socksAddrLen - 2
+				pktStart = headerStart
+				ss.WriteUDPHeaderSeparated(pkt[pktStart:], ss.HeaderTypeServerPacket, ses.sid, ses.pid, raddr, 0)
 				ses.pid++
-				pktStart = headerStart - 16
 			case cipherConfig.IsSpec2022:
-				headerStart = bodyStart - 1 - 8 - 8 - 8 - socksAddrLen
-				ss.WriteUDPHeader(pkt, ss.HeaderTypeServerPacket, ses.sid, ses.pid, raddr, 1452)
-				ses.pid++
+				headerStart = bodyStart - 8 - 8 - 1 - 8 - socksAddrLen - 2
 				pktStart = headerStart - 24
+				ss.WriteUDPHeader(pkt[pktStart:], ss.HeaderTypeServerPacket, ses.sid, ses.pid, raddr, 0)
+				ses.pid++
 			default:
 				headerStart = bodyStart - socksAddrLen
-				ss.WriteUDPAddrToSocksAddr(pkt[headerStart:], raddr)
 				pktStart = headerStart - saltSize
+				ss.WriteUDPAddrToSocksAddr(pkt[headerStart:], raddr)
 			}
 
 			// `plainTextBuf` concatenates the SOCKS address and body:
@@ -252,10 +252,13 @@ type natmap struct {
 }
 
 func newNATmap(timeout time.Duration, sm metrics.ShadowsocksMetrics, running *sync.WaitGroup) *natmap {
-	m := &natmap{metrics: sm, running: running}
-	m.keyConn = make(map[string]*natconn)
-	m.timeout = timeout
-	return m
+	return &natmap{
+		keyConn: make(map[string]*natconn),
+		sidConn: make(map[uint64]*session),
+		timeout: timeout,
+		metrics: sm,
+		running: running,
+	}
 }
 
 func (m *natmap) GetByClientAddress(key string) *natconn {

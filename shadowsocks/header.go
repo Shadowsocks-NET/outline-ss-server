@@ -269,34 +269,21 @@ func LazyWriteTCPRespHeader(clientSalt []byte, ssw *Writer) error {
 }
 
 // For spec 2022, this function only parses the decrypted AEAD header.
-func ParseUDPHeader(plaintext []byte, cipherConfig CipherConfig) (address string, payload []byte, err error) {
+func ParseUDPHeader(plaintext []byte, htype byte, cipherConfig CipherConfig) (address string, payload []byte, err error) {
 	var offset int
 
-	// Filter out short packets
-	switch {
-	case cipherConfig.UDPHasSeparateHeader:
+	if cipherConfig.IsSpec2022 {
+		// Filter out short packets
 		if len(plaintext) < 16+1+8+3 {
 			err = fmt.Errorf("packet too short: %d", len(plaintext))
 			return
 		}
-	case cipherConfig.IsSpec2022:
-		if len(plaintext) < 24+8+8+1+8+3 {
-			err = fmt.Errorf("packet too short: %d", len(plaintext))
-			return
-		}
-	}
 
-	// Nonce, session ID, packet ID
-	switch {
-	case cipherConfig.UDPHasSeparateHeader:
-		offset = 16
-	case cipherConfig.IsSpec2022:
-		offset = 24 + 8 + 8
-	}
+		// Session ID, packet ID
+		offset += 16
 
-	if cipherConfig.IsSpec2022 {
 		// Verify type
-		if plaintext[offset] != HeaderTypeClientPacket {
+		if plaintext[offset] != htype {
 			err = ErrTypeMismatch
 			return
 		}
@@ -322,7 +309,33 @@ func ParseUDPHeader(plaintext []byte, cipherConfig CipherConfig) (address string
 		return
 	}
 
-	return tgtAddr.String(), plaintext[offset+len(tgtAddr):], nil
+	offset += len(tgtAddr)
+
+	if cipherConfig.IsSpec2022 {
+		// Verify padding length
+		if len(plaintext) < offset+2 {
+			err = fmt.Errorf("packet too short to contain padding length field: %d", len(plaintext))
+			return
+		}
+
+		paddingLen := int(binary.BigEndian.Uint16(plaintext[offset : offset+2]))
+		if paddingLen < MinPaddingLength || paddingLen > MaxPaddingLength {
+			err = ErrPaddingLengthOutOfRange
+			return
+		}
+
+		offset += 2
+
+		// Verify padding
+		if len(plaintext) < offset+paddingLen {
+			err = fmt.Errorf("packet too short (%d) to contain specified length (%d) of padding", len(plaintext), paddingLen)
+			return
+		}
+
+		offset += paddingLen
+	}
+
+	return tgtAddr.String(), plaintext[offset:], nil
 }
 
 // WriteUDPAddrToSocksAddr converts a UDP address
@@ -347,7 +360,7 @@ func WriteUDPAddrToSocksAddr(b []byte, addr *net.UDPAddr) (n int) {
 }
 
 func WriteRandomPadding(b []byte, targetPort int, max int) int {
-	if targetPort != 53 {
+	if len(b) > max || targetPort != 53 {
 		b[0] = 0
 		b[1] = 0
 		return 2
@@ -414,7 +427,8 @@ func WriteUDPHeaderSeparated(plaintext []byte, htype byte, sid []byte, pid uint6
 	return
 }
 
-func WriteClientUDPHeader(plaintext []byte, cipherConfig CipherConfig, sid []byte, pid uint64, targetAddr net.Addr, maxPacketSize int) (n int, err error) {
+// WriteClientUDPHeaderPartial writes the first 8+8+1+8 bytes of header to the buffer.
+func WriteClientUDPHeaderPartial(plaintext []byte, cipherConfig CipherConfig, sid []byte, pid uint64) (n int) {
 	if cipherConfig.IsSpec2022 && !cipherConfig.UDPHasSeparateHeader {
 		n = 24
 	}
@@ -437,6 +451,12 @@ func WriteClientUDPHeader(plaintext []byte, cipherConfig CipherConfig, sid []byt
 		binary.BigEndian.PutUint64(plaintext[n:n+8], uint64(nowEpoch))
 		n += 8
 	}
+
+	return
+}
+
+func WriteClientUDPHeader(plaintext []byte, cipherConfig CipherConfig, sid []byte, pid uint64, targetAddr net.Addr, maxPacketSize int) (n int, err error) {
+	n += WriteClientUDPHeaderPartial(plaintext, cipherConfig, sid, pid)
 
 	// Write socks address
 	var port int

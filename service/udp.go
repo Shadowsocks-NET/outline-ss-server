@@ -31,10 +31,9 @@ import (
 	logging "github.com/op/go-logging"
 )
 
-// Max UDP buffer size for the server code.
 const (
-	serverUDPBufferSize    = 64 * 1024
-	serverUDPOOBBufferSize = 0x10 + 0x14 // unix.SizeofCmsghdr + unix.SizeofInet6Pktinfo
+	UDPPacketBufferSize = 64 * 1024
+	UDPOOBBufferSize    = 0x10 + 0x14 // unix.SizeofCmsghdr + unix.SizeofInet6Pktinfo
 )
 
 // Wrapper for logger.Debugf during UDP proxying.
@@ -109,9 +108,9 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 
 	nm := newNATmap(s.natTimeout, s.m, &s.running)
 	defer nm.Close()
-	cipherBuf := make([]byte, serverUDPBufferSize)
-	oobBuf := make([]byte, serverUDPOOBBufferSize)
-	textBuf := make([]byte, serverUDPBufferSize)
+	cipherBuf := make([]byte, UDPPacketBufferSize)
+	oobBuf := make([]byte, UDPOOBBufferSize)
+	textBuf := make([]byte, UDPPacketBufferSize)
 
 	stopped := false
 	for !stopped {
@@ -159,6 +158,7 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 			}
 
 			cipherData := cipherBuf[:clientProxyBytes]
+			oobCache := GetOobForCache(oobBuf[:clientConnOobBytes])
 			var sid uint64
 			var ses *session
 			var isNewSession bool
@@ -166,9 +166,6 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 			var tgtUDPAddr *net.UDPAddr
 			targetConn := nm.GetByClientAddress(clientAddr.String())
 			if targetConn == nil {
-				clientConnOob := oobBuf[:clientConnOobBytes]
-				oobCache := getOobForCache(clientConnOob)
-
 				var locErr error
 				clientLocation, locErr = s.m.GetLocation(clientAddr)
 				if locErr != nil {
@@ -222,6 +219,8 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData, targetConn.cipher.Config(), clientAddr, sid, ses, isNewSession, nm); onetErr != nil {
 					return onetErr
 				}
+
+				targetConn.oobCache = oobCache
 			}
 
 			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
@@ -281,12 +280,13 @@ func (s *udpService) findAccessKeyUDP(clientAddr *net.UDPAddr, dst, src []byte, 
 // When called by Serve, dst is nil. separateHeader must point to src[:16] so an in-place decryption is done on the buffer.
 func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAddr, dst, src, separateHeader []byte, nm *natmap) (buf []byte, sid uint64, ses *session, isNewSession bool, err error) {
 	cipherConfig := c.Config()
-	if separateHeader == nil {
-		separateHeader = make([]byte, 16)
-	}
 
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
+		if separateHeader == nil {
+			separateHeader = make([]byte, 16)
+		}
+
 		// Decrypt separate header
 		err = ss.DecryptSeparateHeader(c, separateHeader, src)
 		if err != nil {
@@ -344,7 +344,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 // the payload and the destination address, or an error if
 // this packet cannot or should not be forwarded.
 func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfig, clientAddr *net.UDPAddr, sid uint64, ses *session, isNewSession bool, nm *natmap) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
-	addr, payload, err := ss.ParseUDPHeader(textData, cipherConfig)
+	addr, payload, err := ss.ParseUDPHeader(textData, ss.HeaderTypeClientPacket, cipherConfig)
 	if err != nil {
 		return nil, nil, onet.NewConnectionError("ERR_READ_HEADER", "Failed to read packet header", err)
 	}

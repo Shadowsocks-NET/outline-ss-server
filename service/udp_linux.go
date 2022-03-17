@@ -54,7 +54,7 @@ func ListenUDP(network string, laddr *net.UDPAddr) (onet.UDPPacketConn, error) {
 	}
 }
 
-func getOobForCache(clientOob []byte) []byte {
+func GetOobForCache(clientOob []byte) []byte {
 	switch len(clientOob) {
 	case unix.SizeofCmsghdr + unix.SizeofInet4Pktinfo:
 		return getOobForCache4(clientOob)
