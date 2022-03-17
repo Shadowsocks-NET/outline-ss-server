@@ -8,7 +8,7 @@ require (
 	github.com/oschwald/geoip2-golang v1.6.1
 	github.com/prometheus/client_golang v1.12.1
 	github.com/shadowsocks/go-shadowsocks2 v0.1.5
-	github.com/stretchr/testify v1.7.0
+	github.com/stretchr/testify v1.7.1
 	golang.org/x/crypto v0.0.0-20220307211146-efcb8507fb70
 	golang.org/x/sys v0.0.0-20220317061510-51cd9980dadf
 	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211
