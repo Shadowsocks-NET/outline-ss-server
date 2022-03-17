@@ -1,6 +1,6 @@
 module github.com/Shadowsocks-NET/outline-ss-server
 
-go 1.17
+go 1.18
 
 require (
 	github.com/database64128/tfo-go v1.0.2

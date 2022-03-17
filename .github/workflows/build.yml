@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - '**'
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux/archlinux:base-devel
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Go
+        run: pacman -Syu --needed --noconfirm go
+
+      - name: Build
+        run: go build -v -trimpath -ldflags '-s -w -buildid=' ./...
+
+      - name: Test
+        run: go test -v -benchmem -bench . ./...

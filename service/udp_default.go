@@ -1,5 +1,4 @@
 //go:build !linux
-// +build !linux
 
 // Copyright 2018 Jigsaw Operations LLC
 //
