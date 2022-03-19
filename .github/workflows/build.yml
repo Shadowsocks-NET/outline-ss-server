@@ -15,20 +15,37 @@ on:
 jobs:
   build:
     name: Build
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux/archlinux:base-devel
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - name: Install Git & Go
-        run: pacman -Syu --needed --noconfirm git go
-
       - uses: actions/checkout@v3
         with:
           submodules: true
 
+      - name: Setup Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: ^1.18
+
       - name: Build
-        run: go build -v -trimpath -ldflags '-s -w -buildid=' ./...
+        run: |
+          mkdir build
+          export GOAMD64=v3
+          go build -v -trimpath -ldflags '-s -w -buildid=' -o build/ ./cmd/outline-ss-client
+          go build -v -trimpath -ldflags '-s -w -buildid=' -o build/ ./cmd/outline-ss-server
 
       - name: Test
         run: go test -v -benchmem -bench . ./...
+
+      - name: Upload Binaries
+        uses: actions/upload-artifact@v3
+        with:
+          name: outline-shadowsocks-${{ matrix.os }}-x86-64-v3
+          path: build/
