@@ -39,7 +39,7 @@ func init() {
 }
 
 func startTCPEchoServer(t testing.TB) (*net.TCPListener, *sync.WaitGroup) {
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
@@ -65,7 +65,7 @@ func startTCPEchoServer(t testing.TB) (*net.TCPListener, *sync.WaitGroup) {
 }
 
 func startUDPEchoServer(t testing.TB) (*net.UDPConn, *sync.WaitGroup) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		t.Fatalf("Proxy ListenUDP failed: %v", err)
 	}
@@ -93,7 +93,7 @@ func startUDPEchoServer(t testing.TB) (*net.UDPConn, *sync.WaitGroup) {
 func TestTCPEcho(t *testing.T) {
 	echoListener, echoRunning := startTCPEchoServer(t)
 
-	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
@@ -162,12 +162,12 @@ func (m *statusMetrics) AddClosedTCPConnection(clientLocation, accessKey, status
 }
 
 func TestRestrictedAddresses(t *testing.T) {
-	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv6loopback, Port: 0})
 	require.NoError(t, err, "ListenTCP failed: %v", err)
 	secrets := ss.MakeTestSecrets(1)
 	cipherList, err := service.MakeTestCiphers(secrets)
 	require.NoError(t, err)
-	const testTimeout = 200 * time.Millisecond
+	const testTimeout = 800 * time.Millisecond
 	testMetrics := &statusMetrics{}
 	proxy := service.NewTCPService(cipherList, nil, nil, testMetrics, testTimeout, false)
 	proxy.SetTargetIPValidator(onet.RequirePublicIP)
@@ -238,7 +238,7 @@ func (m *fakeUDPMetrics) RemoveUDPNatEntry() {
 func TestUDPEcho(t *testing.T) {
 	echoConn, echoRunning := startUDPEchoServer(t)
 
-	proxyConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	proxyConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestUDPEcho(t *testing.T) {
 func BenchmarkTCPThroughput(b *testing.B) {
 	echoListener, echoRunning := startTCPEchoServer(b)
 
-	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
@@ -382,7 +382,7 @@ func BenchmarkTCPThroughput(b *testing.B) {
 func BenchmarkTCPMultiplexing(b *testing.B) {
 	echoListener, echoRunning := startTCPEchoServer(b)
 
-	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	proxyListener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
@@ -451,7 +451,7 @@ func BenchmarkTCPMultiplexing(b *testing.B) {
 func BenchmarkUDPEcho(b *testing.B) {
 	echoConn, echoRunning := startUDPEchoServer(b)
 
-	proxyConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	proxyConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
@@ -490,7 +490,7 @@ func BenchmarkUDPEcho(b *testing.B) {
 func BenchmarkUDPManyKeys(b *testing.B) {
 	echoConn, echoRunning := startUDPEchoServer(b)
 
-	proxyConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	proxyConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}

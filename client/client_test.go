@@ -48,9 +48,9 @@ func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
 
-	// Wait for more than 10 milliseconds to ensure that the target
+	// Wait for more than 100 milliseconds to ensure that the target
 	// address is sent.
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	// Force the echo server to verify the target address.
 	conn.Close()
 
@@ -60,7 +60,7 @@ func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
 
 func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
 	// Set up a listener that verifies no data is sent.
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
@@ -174,7 +174,7 @@ func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 }
 
 func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Listener, *sync.WaitGroup) {
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		t.Fatalf("ListenTCP failed: %v", err)
 	}
@@ -217,7 +217,7 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Lis
 }
 
 func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Conn, *sync.WaitGroup) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		t.Fatalf("Proxy ListenUDP failed: %v", err)
 	}

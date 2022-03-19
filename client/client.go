@@ -27,7 +27,7 @@ const (
 	// We therefore use a short delay, longer than any reasonable IPC but shorter than
 	// typical network latency.  (In an Android emulator, the 90th percentile delay
 	// was ~1 ms.)  If no client payload is received by this time, we connect without it.
-	helloWait = 10 * time.Millisecond
+	helloWait = 100 * time.Millisecond
 
 	ShadowsocksPacketConnFrontReserve = 24 + 8 + 8 + 1 + 8 + socks.MaxAddrLen + 2 + ss.MaxPaddingLength
 )
@@ -286,11 +286,13 @@ func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	copy(cipherBuf[headerStart+n:], b)
 
 	var buf []byte
+	plaintextLen := n + len(b)
+
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
-		buf, err = ss.PackAesWithSeparateHeader(cipherBuf, cipherBuf[headerStart:], c.cipher, c.aead)
+		buf, err = ss.PackAesWithSeparateHeader(cipherBuf, cipherBuf[headerStart:headerStart+plaintextLen], c.cipher, c.aead)
 	default:
-		buf, err = ss.Pack(cipherBuf, cipherBuf[headerStart:], c.cipher)
+		buf, err = ss.Pack(cipherBuf, cipherBuf[headerStart:headerStart+plaintextLen], c.cipher)
 	}
 
 	if err != nil {

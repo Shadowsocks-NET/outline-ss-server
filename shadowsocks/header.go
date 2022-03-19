@@ -415,7 +415,9 @@ func WriteClientUDPHeader(plaintext []byte, cipherConfig CipherConfig, sid []byt
 	}
 
 	// Write padding length and optionally padding
-	n += WriteRandomPadding(plaintext[n:], port, maxPacketSize-n-2)
+	if cipherConfig.IsSpec2022 {
+		n += WriteRandomPadding(plaintext[n:], port, maxPacketSize-n-2)
+	}
 
 	return
 }

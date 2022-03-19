@@ -237,6 +237,7 @@ func (sw *Writer) ReadFrom(r io.Reader) (int64, error) {
 	if sw.needFlush {
 		pending := sw.pending
 
+		sw.mu.Unlock()
 		saltsize := sw.ssCipher.SaltSize()
 		overhead := sw.aead.Overhead()
 		// The first pending+overhead bytes of payloadBuf are potentially
@@ -246,6 +247,7 @@ func (sw *Writer) ReadFrom(r io.Reader) (int64, error) {
 		var plaintextSize int
 		plaintextSize, err = r.Read(readBuf)
 		written = int64(plaintextSize)
+		sw.mu.Lock()
 
 		sw.enqueue(readBuf[:plaintextSize])
 		if flushErr := sw.flush(); flushErr != nil {

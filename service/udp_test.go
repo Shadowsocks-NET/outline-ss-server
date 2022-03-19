@@ -72,6 +72,11 @@ func (conn *fakePacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) 
 	return len(payload), nil
 }
 
+func (conn *fakePacketConn) WriteToUDP(b []byte, addr *net.UDPAddr) (int, error) {
+	conn.send <- packet{addr, b, nil}
+	return len(b), nil
+}
+
 func (conn *fakePacketConn) WriteMsgUDP(b, oob []byte, addr *net.UDPAddr) (n, oobn int, err error) {
 	conn.send <- packet{addr, b, nil}
 	return len(b), 0, nil
@@ -87,6 +92,21 @@ func (conn *fakePacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		return n, pkt.addr, errors.New("Buffer was too short")
 	}
 	return n, pkt.addr, pkt.err
+}
+
+func (conn *fakePacketConn) ReadFromUDP(b []byte) (n int, addr *net.UDPAddr, err error) {
+	n, raddr, err := conn.ReadFrom(b)
+	if err != nil {
+		return
+	}
+	switch a := raddr.(type) {
+	case *net.UDPAddr:
+		addr = a
+	default:
+		address := a.String()
+		addr, err = net.ResolveUDPAddr("udp", address)
+	}
+	return
 }
 
 func (conn *fakePacketConn) ReadMsgUDP(b, oob []byte) (n, oobn, flags int, addr *net.UDPAddr, err error) {
@@ -510,7 +530,7 @@ func TestUDPDoubleServe(t *testing.T) {
 
 	c := make(chan error)
 	for i := 0; i < 2; i++ {
-		clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
 		if err != nil {
 			t.Fatalf("ListenUDP failed: %v", err)
 		}
@@ -545,7 +565,7 @@ func TestUDPEarlyStop(t *testing.T) {
 	if err := s.Stop(); err != nil {
 		t.Error(err)
 	}
-	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		t.Fatalf("ListenUDP failed: %v", err)
 	}

@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"sync"
@@ -39,7 +38,7 @@ func init() {
 }
 
 func makeLocalhostListener(t testing.TB) *net.TCPListener {
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv6loopback, Port: 0})
 	require.Nil(t, err, "ListenTCP failed: %v", err)
 	return listener
 }
@@ -59,7 +58,7 @@ func startDiscardServer(t testing.TB) (*net.TCPListener, *sync.WaitGroup) {
 			running.Add(1)
 			go func() {
 				defer running.Done()
-				io.Copy(ioutil.Discard, clientConn)
+				io.Copy(io.Discard, clientConn)
 				clientConn.Close()
 			}()
 		}
@@ -72,7 +71,7 @@ func BenchmarkTCPFindCipherFail(b *testing.B) {
 	b.StopTimer()
 	b.ResetTimer()
 
-	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv6loopback, Port: 0})
 	if err != nil {
 		b.Fatalf("ListenTCP failed: %v", err)
 	}
@@ -301,23 +300,22 @@ func makeClientBytesBasic(t *testing.T, cipher *ss.Cipher, targetAddr string) []
 	var buffer bytes.Buffer
 	socksTargetAddr, err := socks.ParseAddr(targetAddr)
 	require.Nil(t, err, "ParseAddr failed: %v", err)
-	// Assumes IPv4, as that's the common case.
-	require.Equal(t, 1+4+2, len(socksTargetAddr))
+	require.Equal(t, 1+16+2, len(socksTargetAddr))
 	ssw := ss.NewShadowsocksWriter(&buffer, cipher, false)
 	n, err := ssw.Write(socksTargetAddr)
 	require.Nil(t, err, "Write failed: %v", err)
 	require.Equal(t, len(socksTargetAddr), n, "Write failed: %v", err)
-	require.Equal(t, 32+2+16+7+16, buffer.Len()) // 73
+	require.Equal(t, 32+2+16+19+16, buffer.Len()) // 73
 
 	payload := make([]byte, 100)
 	rand.Read(payload)
 	_, err = ssw.Write(payload[:60])
 	require.Nil(t, err, "Write failed: %v", err)
-	require.Equal(t, 73+2+16+60+16, buffer.Len()) // 167
+	require.Equal(t, 85+2+16+60+16, buffer.Len()) // 167
 
 	_, err = ssw.Write(payload[60:])
 	require.Nil(t, err, "Write failed: %v", err)
-	require.Equal(t, 167+2+16+40+16, buffer.Len()) // 241
+	require.Equal(t, 179+2+16+40+16, buffer.Len()) // 241
 
 	return buffer.Bytes()
 }
@@ -332,7 +330,7 @@ func makeClientBytesCoalesced(t *testing.T, cipher *ss.Cipher, targetAddr string
 	require.Equal(t, len(socksTargetAddr), n, "LazyWrite failed: %v", err)
 	_, err = ssw.Write([]byte("initial data"))
 	require.Nil(t, err, "Write failed: %v", err)
-	require.Equal(t, 32+2+16+7+12+16, buffer.Len()) // 85
+	require.Equal(t, 32+2+16+19+12+16, buffer.Len()) // 85
 
 	_, err = ssw.Write([]byte("more data"))
 	require.Nil(t, err, "Write failed: %v", err)
@@ -365,9 +363,9 @@ func TestProbeClientBytesBasicTruncated(t *testing.T) {
 	s.GracefulStop()
 	statusCount := testMetrics.countStatuses()
 	require.Equal(t, 50, statusCount["ERR_CIPHER"])
-	require.Equal(t, 7+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, 19+16, statusCount["ERR_READ_ADDRESS"])
 	require.Equal(t, 2, statusCount["OK"]) // On the chunk boundaries.
-	require.Equal(t, len(initialBytes)-50-7-16-2, statusCount["ERR_RELAY_CLIENT"])
+	require.Equal(t, len(initialBytes)-50-19-16-2, statusCount["ERR_RELAY_CLIENT"])
 	// We only count as probes failures in the first 50 bytes.
 	require.Equal(t, 50, len(testMetrics.probeData))
 	discardListener.Close()
@@ -397,8 +395,8 @@ func TestProbeClientBytesBasicModified(t *testing.T) {
 	s.GracefulStop()
 	statusCount := testMetrics.countStatuses()
 	require.Equal(t, 50, statusCount["ERR_CIPHER"])
-	require.Equal(t, 7+16, statusCount["ERR_READ_ADDRESS"])
-	require.Equal(t, len(initialBytes)-50-7-16, statusCount["ERR_RELAY_CLIENT"])
+	require.Equal(t, 19+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, len(initialBytes)-50-19-16, statusCount["ERR_RELAY_CLIENT"])
 	require.Equal(t, 50, len(testMetrics.probeData))
 	discardListener.Close()
 	discardWait.Wait()
@@ -466,7 +464,7 @@ func TestProbeServerBytesModified(t *testing.T) {
 	s.GracefulStop()
 	statusCount := testMetrics.countStatuses()
 	require.Equal(t, 50, statusCount["ERR_CIPHER"])
-	require.Equal(t, 7+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, 19+16, statusCount["ERR_READ_ADDRESS"])
 	require.Equal(t, 50, len(testMetrics.probeData))
 	discardListener.Close()
 	discardWait.Wait()
@@ -622,10 +620,8 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 	s := NewTCPService(cipherList, nil, nil, testMetrics, testTimeout, false)
 
 	testPayload := ss.MakeTestPayload(payloadSize)
-	done := make(chan bool)
 	ch := make(chan error, 1)
 	go func() {
-		defer func() { done <- true }()
 		timerStart := time.Now()
 		conn, err := net.Dial("tcp", listener.Addr().String())
 		if err != nil {
@@ -641,20 +637,19 @@ func probeExpectTimeout(t *testing.T, payloadSize int) {
 			ch <- fmt.Errorf("Expected error EOF, got %v", err)
 		case bytesRead > 0:
 			ch <- fmt.Errorf("Expected to read 0 bytes, got %v bytes", bytesRead)
-		case elapsedTime < testTimeout || elapsedTime > testTimeout+10*time.Millisecond:
+		case elapsedTime < testTimeout || elapsedTime > testTimeout*2:
 			ch <- fmt.Errorf("Expected elapsed time close to %v, got %v", testTimeout, elapsedTime)
 		default:
 			// ok
 			ch <- nil
 		}
 	}()
+
+	go s.Serve(listener)
 	err = <-ch
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	go s.Serve(listener)
-	<-done
 	s.GracefulStop()
 
 	if len(testMetrics.probeData) == 1 {

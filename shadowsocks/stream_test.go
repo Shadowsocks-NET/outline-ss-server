@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"strings"
 	"sync"
 	"testing"
@@ -164,17 +163,17 @@ func TestEndToEnd(t *testing.T) {
 		_, err := writer.Write([]byte(expected))
 		ch <- err
 	}()
-	err := <-ch
-	if err != nil {
-		t.Fatalf("Failed Write: %v", err)
-	}
 	var output bytes.Buffer
-	_, err = reader.WriteTo(&output)
+	_, err := reader.WriteTo(&output)
 	if err != nil {
 		t.Fatalf("Failed WriteTo: %v", err)
 	}
 	if output.String() != expected {
 		t.Fatalf("Expected output '%v'. Got '%v'", expected, output.String())
+	}
+	err = <-ch
+	if err != nil {
+		t.Fatalf("Failed Write: %v", err)
 	}
 }
 
@@ -321,7 +320,7 @@ func TestLazyWriteOversize(t *testing.T) {
 
 	// Verify content
 	reader := NewShadowsocksReader(buf, cipher)
-	decrypted, err := ioutil.ReadAll(reader)
+	decrypted, err := io.ReadAll(reader)
 	if len(decrypted) != N {
 		t.Errorf("Wrong number of bytes out: %d", len(decrypted))
 	}
@@ -365,7 +364,7 @@ func TestLazyWriteConcurrentFlush(t *testing.T) {
 	}()
 
 	// Wait for ReadFrom to start and get blocked.
-	time.Sleep(20 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	// Flush while ReadFrom is blocked.
 	if err := writer.Flush(); err != nil {

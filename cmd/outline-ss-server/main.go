@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -210,7 +209,7 @@ type Config struct {
 
 func readConfig(filename string) (*Config, error) {
 	config := Config{}
-	configData, err := ioutil.ReadFile(filename)
+	configData, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
