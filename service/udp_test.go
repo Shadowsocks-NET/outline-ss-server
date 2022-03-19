@@ -25,8 +25,8 @@ import (
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 	logging "github.com/op/go-logging"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -152,7 +152,7 @@ func sendToDiscard(payloads [][]byte, validator onet.TargetIPValidator) *natTest
 	go service.Serve(clientConn)
 
 	// Send one packet to the "discard" port on localhost
-	targetAddr := socks.ParseAddr("127.0.0.1:9")
+	targetAddr, _ := socks.ParseAddr("127.0.0.1:9")
 	for _, payload := range payloads {
 		plaintext := append(targetAddr, payload...)
 		ciphertext := make([]byte, cipher.SaltSize()+len(plaintext)+cipher.TagSize())

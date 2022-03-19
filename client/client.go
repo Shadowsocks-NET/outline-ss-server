@@ -11,8 +11,8 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 	"github.com/database64128/tfo-go"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
 	wgreplay "golang.zx2c4.com/wireguard/replay"
 )
 

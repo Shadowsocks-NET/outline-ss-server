@@ -8,11 +8,10 @@ import (
 	"io"
 	"math/rand"
 	"net"
-	"strconv"
 	"time"
 
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 )
 
 const (
@@ -31,9 +30,6 @@ const (
 	// type + 64-bit timestamp + max salt length
 	TCPRespHeaderMaxLength = 1 + 8 + 32
 
-	SocksAddressIPv4Length = 1 + net.IPv4len + 2
-	SocksAddressIPv6Length = 1 + net.IPv6len + 2
-
 	SeparateHeaderMinClientPacketID = 0
 	SeparateHeaderMinServerPacketID = 1 << 63
 )
@@ -41,7 +37,6 @@ const (
 var (
 	ErrBadTimestamp            = errors.New("time diff is over 30 seconds")
 	ErrTypeMismatch            = errors.New("header type mismatch")
-	ErrUnknownATYP             = errors.New("unknown ATYP in socks address")
 	ErrPaddingLengthOutOfRange = errors.New("padding length is less than 0 or greater than 900")
 	ErrClientSaltMismatch      = errors.New("client salt in response header does not match request")
 	ErrSessionIDMismatch       = errors.New("unexpected session ID")
@@ -51,7 +46,7 @@ var (
 
 func ParseTCPReqHeader(r io.Reader, cipherConfig CipherConfig, htype byte) (string, error) {
 	if !cipherConfig.IsSpec2022 {
-		a, err := socks.ReadAddr(r)
+		a, err := socks.AddrFromReader(r)
 		if err != nil {
 			return "", err
 		}
@@ -65,7 +60,7 @@ func ParseTCPReqHeader(r io.Reader, cipherConfig CipherConfig, htype byte) (stri
 	// Read type & timestamp
 	_, err := io.ReadFull(r, b[:1+8])
 	if err != nil {
-		return "", fmt.Errorf("failed to read type and timestamp %w", err)
+		return "", fmt.Errorf("failed to read type and timestamp: %w", err)
 	}
 
 	// Verify type
@@ -81,49 +76,20 @@ func ParseTCPReqHeader(r io.Reader, cipherConfig CipherConfig, htype byte) (stri
 		return "", ErrBadTimestamp
 	}
 
-	// Read ATYP
-	_, err = io.ReadFull(r, b[1+8:1+8+1])
-	if err != nil {
-		return "", fmt.Errorf("failed to read ATYP %w", err)
-	}
+	offset := 1 + 8
 
-	// Read addr
-	var offset int
-	var socksaddr socks.Addr
-	switch b[1+8] {
-	case socks.AtypDomainName:
-		_, err := io.ReadFull(r, b[1+8+1:1+8+1+1])
-		if err != nil {
-			return "", fmt.Errorf("failed to read domain name length %w", err)
-		}
-		offset = 1 + 8 + 1 + 1 + int(b[1+8+1]) + 2
-		_, err = io.ReadFull(r, b[1+8+1+1:offset])
-		if err != nil {
-			return "", fmt.Errorf("failed to read domain name %w", err)
-		}
-		socksaddr = b[1+8 : offset]
-	case socks.AtypIPv4:
-		offset = 1 + 8 + SocksAddressIPv4Length
-		_, err := io.ReadFull(r, b[1+8+1:offset])
-		if err != nil {
-			return "", fmt.Errorf("failed to read IPv4 %w", err)
-		}
-		socksaddr = b[1+8 : offset]
-	case socks.AtypIPv6:
-		offset = 1 + 8 + SocksAddressIPv6Length
-		_, err := io.ReadFull(r, b[1+8+1:offset])
-		if err != nil {
-			return "", fmt.Errorf("failed to read IPv6 %w", err)
-		}
-		socksaddr = b[1+8 : offset]
-	default:
-		return "", ErrUnknownATYP
+	// Read socks address
+	n, err := socks.ReadAddr(b[offset:], r)
+	if err != nil {
+		return "", fmt.Errorf("failed to read socks address: %w", err)
 	}
+	socksaddr := socks.Addr(b[offset : offset+n])
+	offset += n
 
 	// Read padding length
 	_, err = io.ReadFull(r, b[offset:offset+2])
 	if err != nil {
-		return "", fmt.Errorf("failed to read padding length %w", err)
+		return "", fmt.Errorf("failed to read padding length: %w", err)
 	}
 
 	// Verify padding length
@@ -136,7 +102,7 @@ func ParseTCPReqHeader(r io.Reader, cipherConfig CipherConfig, htype byte) (stri
 	if paddingLen > 0 {
 		_, err := io.ReadFull(r, b[offset+2:offset+2+paddingLen])
 		if err != nil {
-			return "", fmt.Errorf("failed to read padding %w", err)
+			return "", fmt.Errorf("failed to read padding: %w", err)
 		}
 	}
 
@@ -145,11 +111,11 @@ func ParseTCPReqHeader(r io.Reader, cipherConfig CipherConfig, htype byte) (stri
 
 func LazyWriteTCPReqHeader(address string, ssw *Writer) error {
 	if !ssw.ssCipher.config.IsSpec2022 {
-		tgtAddr := socks.ParseAddr(address)
-		if tgtAddr == nil {
-			return errors.New("failed to write target address")
+		tgtAddr, err := socks.ParseAddr(address)
+		if err != nil {
+			return fmt.Errorf("failed to write target address: %w", err)
 		}
-		_, err := ssw.LazyWrite(tgtAddr)
+		_, err = ssw.LazyWrite(tgtAddr)
 		return err
 	}
 
@@ -164,39 +130,14 @@ func LazyWriteTCPReqHeader(address string, ssw *Writer) error {
 	nowEpoch := time.Now().Unix()
 	binary.BigEndian.PutUint64(b[1:], uint64(nowEpoch))
 
+	offset := 1 + 8
+
 	// Write socks address
-	host, port, err := net.SplitHostPort(address)
+	n, _, _, err := socks.WriteAddr(b[offset:], address)
 	if err != nil {
-		return fmt.Errorf("failed to split host:port %w", err)
+		return fmt.Errorf("failed to write socks address: %w", err)
 	}
-
-	var offset int
-
-	if ip := net.ParseIP(host); ip != nil {
-		if ip4 := ip.To4(); ip4 != nil {
-			b[1+8] = socks.AtypIPv4
-			copy(b[1+8+1:], ip4)
-			offset = 1 + 8 + SocksAddressIPv4Length
-		} else {
-			b[1+8] = socks.AtypIPv6
-			copy(b[1+8+1:], ip)
-			offset = 1 + 8 + SocksAddressIPv6Length
-		}
-	} else {
-		if len(host) > 255 {
-			return fmt.Errorf("host is too long: %d, must not be greater than 255", len(host))
-		}
-		b[1+8] = socks.AtypDomainName
-		b[1+8+1] = byte(len(host))
-		copy(b[1+8+1+1:], host)
-		offset = 1 + 8 + 1 + 1 + len(host) + 2
-	}
-
-	portnum, err := strconv.ParseUint(port, 10, 16)
-	if err != nil {
-		return fmt.Errorf("failed to parse port string: %s", port)
-	}
-	binary.BigEndian.PutUint16(b[offset-2:], uint16(portnum))
+	offset += n
 
 	// Ensure padding length is 0
 	b[offset] = 0
@@ -220,7 +161,7 @@ func ParseTCPRespHeader(r io.Reader, clientSalt []byte, cipherConfig CipherConfi
 	// Read response header
 	_, err := io.ReadFull(r, b)
 	if err != nil {
-		return fmt.Errorf("failed to read response header %w", err)
+		return fmt.Errorf("failed to read response header: %w", err)
 	}
 
 	// Verify type
@@ -303,9 +244,9 @@ func ParseUDPHeader(plaintext []byte, htype byte, cipherConfig CipherConfig) (ad
 	}
 
 	// Parse socks address
-	tgtAddr := socks.SplitAddr(plaintext[offset:])
-	if tgtAddr == nil {
-		err = errors.New("failed to parse target address")
+	tgtAddr, err := socks.SplitAddr(plaintext[offset:])
+	if err != nil {
+		err = fmt.Errorf("failed to parse target address: %w", err)
 		return
 	}
 
@@ -465,39 +406,12 @@ func WriteClientUDPHeader(plaintext []byte, cipherConfig CipherConfig, sid []byt
 		port = udpaddr.Port
 		n += WriteUDPAddrToSocksAddr(plaintext[n:], udpaddr)
 	} else {
-		host, portString, err := net.SplitHostPort(targetAddr.String())
+		var san int
+		san, _, port, err = socks.WriteAddr(plaintext[n:], targetAddr.String())
 		if err != nil {
-			return 0, fmt.Errorf("failed to split host:port %w", err)
+			return
 		}
-
-		if ip := net.ParseIP(host); ip != nil {
-			if ip4 := ip.To4(); ip4 != nil {
-				plaintext[n] = socks.AtypIPv4
-				n++
-				n += copy(plaintext[n:], ip4)
-			} else {
-				plaintext[n] = socks.AtypIPv6
-				n++
-				n += copy(plaintext[n:], ip)
-			}
-		} else {
-			if len(host) > 255 {
-				return 0, fmt.Errorf("host is too long: %d, must not be greater than 255", len(host))
-			}
-			plaintext[n] = socks.AtypDomainName
-			n++
-			plaintext[n] = byte(len(host))
-			n++
-			n += copy(plaintext[n:], host)
-		}
-
-		portnum, err := strconv.ParseUint(portString, 10, 16)
-		if err != nil {
-			return 0, fmt.Errorf("failed to parse port string: %s", portString)
-		}
-		binary.BigEndian.PutUint16(plaintext[n:], uint16(portnum))
-		n += 2
-		port = int(portnum)
+		n += san
 	}
 
 	// Write padding length and optionally padding

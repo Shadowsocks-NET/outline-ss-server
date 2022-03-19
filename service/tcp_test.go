@@ -29,8 +29,8 @@ import (
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 	logging "github.com/op/go-logging"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
 	"github.com/stretchr/testify/require"
 )
 
@@ -299,7 +299,8 @@ func TestProbeRandom(t *testing.T) {
 
 func makeClientBytesBasic(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
 	var buffer bytes.Buffer
-	socksTargetAddr := socks.ParseAddr(targetAddr)
+	socksTargetAddr, err := socks.ParseAddr(targetAddr)
+	require.Nil(t, err, "ParseAddr failed: %v", err)
 	// Assumes IPv4, as that's the common case.
 	require.Equal(t, 1+4+2, len(socksTargetAddr))
 	ssw := ss.NewShadowsocksWriter(&buffer, cipher, false)
@@ -323,7 +324,8 @@ func makeClientBytesBasic(t *testing.T, cipher *ss.Cipher, targetAddr string) []
 
 func makeClientBytesCoalesced(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
 	var buffer bytes.Buffer
-	socksTargetAddr := socks.ParseAddr(targetAddr)
+	socksTargetAddr, err := socks.ParseAddr(targetAddr)
+	require.Nil(t, err, "ParseAddr failed: %v", err)
 	ssw := ss.NewShadowsocksWriter(&buffer, cipher, false)
 	n, err := ssw.LazyWrite(socksTargetAddr)
 	require.Nil(t, err, "LazyWrite failed: %v", err)
@@ -431,9 +433,10 @@ func TestProbeClientBytesCoalescedModified(t *testing.T) {
 
 func makeServerBytes(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte {
 	var buffer bytes.Buffer
-	socksTargetAddr := socks.ParseAddr(targetAddr)
+	socksTargetAddr, err := socks.ParseAddr(targetAddr)
+	require.Nil(t, err, "ParseAddr failed: %v", err)
 	ssw := ss.NewShadowsocksWriter(&buffer, cipher, false)
-	_, err := ssw.Write(socksTargetAddr)
+	_, err = ssw.Write(socksTargetAddr)
 	require.Nil(t, err, "Write failed: %v", err)
 	_, err = ssw.Write([]byte("initial data"))
 	require.Nil(t, err, "Write failed: %v", err)

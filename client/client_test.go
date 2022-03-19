@@ -11,7 +11,7 @@ import (
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 )
 
 const (
@@ -202,7 +202,7 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Lis
 				ssw := ss.NewShadowsocksWriter(clientConn, cipher, cipher.Config().IsSpec2022)
 				ssClientConn := onet.WrapDuplexConn(clientConn, ssr, ssw)
 
-				tgtAddr, err := socks.ReadAddr(ssClientConn)
+				tgtAddr, err := socks.AddrFromReader(ssClientConn)
 				if err != nil {
 					t.Fatalf("Failed to read target address: %v", err)
 				}
@@ -243,8 +243,8 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Co
 			if err != nil {
 				t.Fatalf("Failed to decrypt: %v", err)
 			}
-			tgtAddr := socks.SplitAddr(buf)
-			if tgtAddr == nil {
+			tgtAddr, err := socks.SplitAddr(buf)
+			if err != nil {
 				t.Fatalf("Failed to read target address: %v", err)
 			}
 			if tgtAddr.String() != expectedTgtAddr {

@@ -10,8 +10,8 @@ import (
 
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 	"github.com/database64128/tfo-go"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
 type Service interface {
@@ -166,7 +166,11 @@ func (s *UDPTunnel) listen() {
 
 	packetBuf := make([]byte, service.UDPPacketBufferSize)
 	oobBuf := make([]byte, service.UDPOOBBufferSize)
-	socksAddr := socks.ParseAddr(s.tunnelRemoteAddress)
+
+	socksAddr, err := socks.ParseAddr(s.tunnelRemoteAddress)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	for {
 		n, oobn, _, clientAddr, err := s.conn.ReadMsgUDP(packetBuf[ShadowsocksPacketConnFrontReserve:], oobBuf)

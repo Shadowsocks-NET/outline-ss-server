@@ -9,6 +9,7 @@ import (
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 	wgreplay "golang.zx2c4.com/wireguard/replay"
 )
 
@@ -126,11 +127,11 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
-		bodyStart = 16 + 1 + 8 + ss.SocksAddressIPv6Length + 2 + ss.MaxPaddingLength
+		bodyStart = 16 + 1 + 8 + socks.SocksAddressIPv6Length + 2 + ss.MaxPaddingLength
 	case cipherConfig.IsSpec2022:
-		bodyStart = 24 + 8 + 8 + 1 + 8 + ss.SocksAddressIPv6Length + 2 + ss.MaxPaddingLength
+		bodyStart = 24 + 8 + 8 + 1 + 8 + socks.SocksAddressIPv6Length + 2 + ss.MaxPaddingLength
 	default:
-		bodyStart = saltSize + ss.SocksAddressIPv6Length
+		bodyStart = saltSize + socks.SocksAddressIPv6Length
 	}
 
 	expired := false
@@ -176,9 +177,9 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 
 			debugUDPAddr(lastSeenAddr, "Got response from %v", raddr)
 
-			socksAddrLen := ss.SocksAddressIPv6Length
+			socksAddrLen := socks.SocksAddressIPv6Length
 			if raddr.IP.To4() != nil {
-				socksAddrLen = ss.SocksAddressIPv4Length
+				socksAddrLen = socks.SocksAddressIPv4Length
 			}
 
 			// For now, let's not think about padding.
