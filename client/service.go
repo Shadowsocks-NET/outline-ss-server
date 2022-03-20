@@ -74,9 +74,12 @@ func (s *TCPTunnel) listen() {
 		}
 
 		go func() {
+			defer clientconn.Close()
+
 			proxyconn, err := s.client.DialTCP(nil, s.tunnelRemoteAddress, s.dialerTFO)
 			if err != nil {
 				log.Print(err)
+				return
 			}
 			defer proxyconn.Close()
 

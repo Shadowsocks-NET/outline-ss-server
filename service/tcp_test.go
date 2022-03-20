@@ -203,9 +203,13 @@ func BenchmarkTCPFindCipherRepeat(b *testing.B) {
 		addr := &net.TCPAddr{IP: clientIP, Port: 54321}
 		c := conn{clientAddr: addr, reader: reader, writer: writer}
 		cipher := cipherEntries[cipherNumber].Cipher
-		go ss.NewShadowsocksWriter(writer, cipher, cipher.Config().IsSpec2022).Write(ss.MakeTestPayload(50))
+		ssw, err := ss.NewShadowsocksWriter(writer, cipher, nil, nil, cipher.Config().IsSpec2022)
+		if err != nil {
+			b.Fatal(err)
+		}
+		go ssw.Write(ss.MakeTestPayload(50))
 		b.StartTimer()
-		_, _, _, _, err := findAccessKey(&c, clientIP, cipherList)
+		_, _, _, _, err = findAccessKey(&c, clientIP, cipherList)
 		b.StopTimer()
 		if err != nil {
 			b.Error(err)
@@ -301,7 +305,8 @@ func makeClientBytesBasic(t *testing.T, cipher *ss.Cipher, targetAddr string) []
 	socksTargetAddr, err := socks.ParseAddr(targetAddr)
 	require.Nil(t, err, "ParseAddr failed: %v", err)
 	require.Equal(t, 1+16+2, len(socksTargetAddr))
-	ssw := ss.NewShadowsocksWriter(&buffer, cipher, false)
+	ssw, err := ss.NewShadowsocksWriter(&buffer, cipher, nil, nil, false)
+	require.Nil(t, err, "NewShadowsocksWriter failed: %v", err)
 	n, err := ssw.Write(socksTargetAddr)
 	require.Nil(t, err, "Write failed: %v", err)
 	require.Equal(t, len(socksTargetAddr), n, "Write failed: %v", err)
@@ -324,10 +329,8 @@ func makeClientBytesCoalesced(t *testing.T, cipher *ss.Cipher, targetAddr string
 	var buffer bytes.Buffer
 	socksTargetAddr, err := socks.ParseAddr(targetAddr)
 	require.Nil(t, err, "ParseAddr failed: %v", err)
-	ssw := ss.NewShadowsocksWriter(&buffer, cipher, false)
-	n, err := ssw.LazyWrite(socksTargetAddr)
-	require.Nil(t, err, "LazyWrite failed: %v", err)
-	require.Equal(t, len(socksTargetAddr), n, "LazyWrite failed: %v", err)
+	ssw, err := ss.NewShadowsocksWriter(&buffer, cipher, nil, socksTargetAddr, false)
+	require.Nil(t, err, "NewShadowsocksWriter failed: %v", err)
 	_, err = ssw.Write([]byte("initial data"))
 	require.Nil(t, err, "Write failed: %v", err)
 	require.Equal(t, 32+2+16+19+12+16, buffer.Len()) // 85
@@ -433,7 +436,8 @@ func makeServerBytes(t *testing.T, cipher *ss.Cipher, targetAddr string) []byte 
 	var buffer bytes.Buffer
 	socksTargetAddr, err := socks.ParseAddr(targetAddr)
 	require.Nil(t, err, "ParseAddr failed: %v", err)
-	ssw := ss.NewShadowsocksWriter(&buffer, cipher, false)
+	ssw, err := ss.NewShadowsocksWriter(&buffer, cipher, nil, nil, false)
+	require.Nil(t, err, "NewShadowsocksWriter failed: %v", err)
 	_, err = ssw.Write(socksTargetAddr)
 	require.Nil(t, err, "Write failed: %v", err)
 	_, err = ssw.Write([]byte("initial data"))
@@ -483,7 +487,8 @@ func TestReplayDefense(t *testing.T) {
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
-	go ss.NewShadowsocksWriter(writer, cipher, cipher.Config().IsSpec2022).Write([]byte{0})
+	ssw, err := ss.NewShadowsocksWriter(writer, cipher, nil, nil, cipher.Config().IsSpec2022)
+	go ssw.Write([]byte{0})
 	preamble := make([]byte, cipher.SaltSize()+2+cipher.TagSize())
 	if _, err := io.ReadFull(reader, preamble); err != nil {
 		t.Fatal(err)
@@ -557,9 +562,8 @@ func TestReverseReplayDefense(t *testing.T) {
 	cipherEntry := snapshot[0].Value.(*CipherEntry)
 	cipher := cipherEntry.Cipher
 	reader, writer := io.Pipe()
-	ssWriter := ss.NewShadowsocksWriter(writer, cipher, cipher.Config().IsSpec2022)
 	// Use a server-marked salt in the client's preamble.
-	ssWriter.SetSaltGenerator(cipherEntry.SaltGenerator)
+	ssWriter, err := ss.NewShadowsocksWriter(writer, cipher, cipherEntry.SaltGenerator, nil, cipher.Config().IsSpec2022)
 	go ssWriter.Write([]byte{0})
 	preamble := make([]byte, 32+2+16)
 	if _, err := io.ReadFull(reader, preamble); err != nil {

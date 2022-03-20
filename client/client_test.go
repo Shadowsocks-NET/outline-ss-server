@@ -199,7 +199,10 @@ func startShadowsocksTCPEchoProxy(expectedTgtAddr string, t testing.TB) (net.Lis
 				defer running.Done()
 				defer clientConn.Close()
 				ssr := ss.NewShadowsocksReader(clientConn, cipher)
-				ssw := ss.NewShadowsocksWriter(clientConn, cipher, cipher.Config().IsSpec2022)
+				ssw, err := ss.NewShadowsocksWriter(clientConn, cipher, nil, nil, cipher.Config().IsSpec2022)
+				if err != nil {
+					t.Fatalf("Failed to create shadowsocks writer: %v", err)
+				}
 				ssClientConn := onet.WrapDuplexConn(clientConn, ssr, ssw)
 
 				tgtAddr, err := socks.AddrFromReader(ssClientConn)

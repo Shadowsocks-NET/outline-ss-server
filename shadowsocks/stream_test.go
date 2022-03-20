@@ -154,7 +154,10 @@ func TestEndToEnd(t *testing.T) {
 	cipher := newTestCipher(t)
 
 	connReader, connWriter := io.Pipe()
-	writer := NewShadowsocksWriter(connWriter, cipher, false)
+	writer, err := NewShadowsocksWriter(connWriter, cipher, nil, nil, false)
+	if err != nil {
+		t.Fatalf("Failed NewShadowsocksWriter: %v", err)
+	}
 	reader := NewShadowsocksReader(connReader, cipher)
 	expected := "Test"
 	ch := make(chan error, 1)
@@ -164,7 +167,7 @@ func TestEndToEnd(t *testing.T) {
 		ch <- err
 	}()
 	var output bytes.Buffer
-	_, err := reader.WriteTo(&output)
+	_, err = reader.WriteTo(&output)
 	if err != nil {
 		t.Fatalf("Failed WriteTo: %v", err)
 	}
@@ -180,14 +183,10 @@ func TestEndToEnd(t *testing.T) {
 func TestLazyWriteFlush(t *testing.T) {
 	cipher := newTestCipher(t)
 	buf := new(bytes.Buffer)
-	writer := NewShadowsocksWriter(buf, cipher, false)
 	header := []byte{1, 2, 3, 4}
-	n, err := writer.LazyWrite(header)
-	if n != len(header) {
-		t.Errorf("Wrong write size: %d", n)
-	}
+	writer, err := NewShadowsocksWriter(buf, cipher, nil, header, false)
 	if err != nil {
-		t.Errorf("LazyWrite failed: %v", err)
+		t.Fatalf("Failed NewShadowsocksWriter: %v", err)
 	}
 	if buf.Len() != 0 {
 		t.Errorf("LazyWrite isn't lazy: %v", buf.Bytes())
@@ -202,7 +201,7 @@ func TestLazyWriteFlush(t *testing.T) {
 
 	// Check that normal writes now work
 	body := []byte{5, 6, 7}
-	n, err = writer.Write(body)
+	n, err := writer.Write(body)
 	if n != len(body) {
 		t.Errorf("Wrong write size: %d", n)
 	}
@@ -241,14 +240,10 @@ func TestLazyWriteFlush(t *testing.T) {
 func TestLazyWriteConcat(t *testing.T) {
 	cipher := newTestCipher(t)
 	buf := new(bytes.Buffer)
-	writer := NewShadowsocksWriter(buf, cipher, false)
 	header := []byte{1, 2, 3, 4}
-	n, err := writer.LazyWrite(header)
-	if n != len(header) {
-		t.Errorf("Wrong write size: %d", n)
-	}
+	writer, err := NewShadowsocksWriter(buf, cipher, nil, header, false)
 	if err != nil {
-		t.Errorf("LazyWrite failed: %v", err)
+		t.Fatalf("Failed NewShadowsocksWriter: %v", err)
 	}
 	if buf.Len() != 0 {
 		t.Errorf("LazyWrite isn't lazy: %v", buf.Bytes())
@@ -256,7 +251,7 @@ func TestLazyWriteConcat(t *testing.T) {
 
 	// Write additional data and flush the header.
 	body := []byte{5, 6, 7}
-	n, err = writer.Write(body)
+	n, err := writer.Write(body)
 	if n != len(body) {
 		t.Errorf("Wrong write size: %d", n)
 	}
@@ -292,57 +287,13 @@ func TestLazyWriteConcat(t *testing.T) {
 	}
 }
 
-func TestLazyWriteOversize(t *testing.T) {
-	cipher := newTestCipher(t)
-	buf := new(bytes.Buffer)
-	writer := NewShadowsocksWriter(buf, cipher, false)
-	N := 25000 // More than one block, less than two.
-	data := make([]byte, N)
-	for i := range data {
-		data[i] = byte(i)
-	}
-	n, err := writer.LazyWrite(data)
-	if n != len(data) {
-		t.Errorf("Wrong write size: %d", n)
-	}
-	if err != nil {
-		t.Errorf("LazyWrite failed: %v", err)
-	}
-	if buf.Len() >= N {
-		t.Errorf("Too much data in first block: %d", buf.Len())
-	}
-	if err = writer.Flush(); err != nil {
-		t.Errorf("Flush failed: %v", err)
-	}
-	if buf.Len() <= N {
-		t.Errorf("Not enough data written after flush: %d", buf.Len())
-	}
-
-	// Verify content
-	reader := NewShadowsocksReader(buf, cipher)
-	decrypted, err := io.ReadAll(reader)
-	if len(decrypted) != N {
-		t.Errorf("Wrong number of bytes out: %d", len(decrypted))
-	}
-	if err != nil {
-		t.Errorf("Read failed: %v", err)
-	}
-	if !bytes.Equal(decrypted, data) {
-		t.Errorf("Wrong final content: %v", decrypted)
-	}
-}
-
 func TestLazyWriteConcurrentFlush(t *testing.T) {
 	cipher := newTestCipher(t)
 	buf := new(bytes.Buffer)
-	writer := NewShadowsocksWriter(buf, cipher, false)
 	header := []byte{1, 2, 3, 4}
-	n, err := writer.LazyWrite(header)
-	if n != len(header) {
-		t.Errorf("Wrong write size: %d", n)
-	}
+	writer, err := NewShadowsocksWriter(buf, cipher, nil, header, false)
 	if err != nil {
-		t.Errorf("LazyWrite failed: %v", err)
+		t.Fatalf("Failed NewShadowsocksWriter: %v", err)
 	}
 	if buf.Len() != 0 {
 		t.Errorf("LazyWrite isn't lazy: %v", buf.Bytes())
@@ -376,7 +327,7 @@ func TestLazyWriteConcurrentFlush(t *testing.T) {
 	}
 
 	// Check that normal writes now work
-	n, err = w.Write(body)
+	n, err := w.Write(body)
 	if n != len(body) {
 		t.Errorf("Wrong write size: %d", n)
 	}

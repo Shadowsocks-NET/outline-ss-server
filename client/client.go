@@ -3,6 +3,7 @@ package client
 import (
 	"crypto/cipher"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"time"
@@ -94,8 +95,13 @@ func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string, dialerTFO bool) (on
 		return nil, err
 	}
 
-	ssw := ss.NewShadowsocksWriter(proxyConn, c.cipher, c.cipher.Config().IsSpec2022)
-	err = ss.LazyWriteTCPReqHeader(raddr, ssw)
+	socksaddr, err := socks.ParseAddr(raddr)
+	if err != nil {
+		proxyConn.Close()
+		return nil, fmt.Errorf("failed to parse address: %w", err)
+	}
+
+	ssw, err := ss.NewShadowsocksWriter(proxyConn, c.cipher, nil, socksaddr, c.cipher.Config().IsSpec2022)
 	if err != nil {
 		proxyConn.Close()
 		return nil, err

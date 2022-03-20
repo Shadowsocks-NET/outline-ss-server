@@ -288,12 +288,14 @@ func (s *tcpService) handleConnection(listenerPort int, clientTCPConn tfo.Conn) 
 		defer tgtConn.Close()
 
 		logger.Debugf("proxy %s <-> %s", clientTCPConn.RemoteAddr().String(), tgtConn.RemoteAddr().String())
-		ssw := ss.NewShadowsocksWriter(clientConn, cipherEntry.Cipher, false)
-		ssw.SetSaltGenerator(cipherEntry.SaltGenerator)
 
-		err = ss.LazyWriteTCPRespHeader(clientSalt, ssw)
+		var lazyWriteBuf []byte
+		if cipherEntry.Cipher.Config().IsSpec2022 {
+			lazyWriteBuf = clientSalt
+		}
+		ssw, err := ss.NewShadowsocksWriter(clientConn, cipherEntry.Cipher, cipherEntry.SaltGenerator, lazyWriteBuf, false)
 		if err != nil {
-			return onet.NewConnectionError("ERR_WRITE_RESP_HEADER", "Failed to lazy-write response header", err)
+			return onet.NewConnectionError("ERR_CREATE_SS_WRITER", "Failed to create shadowsocks writer", err)
 		}
 
 		fromClientErrCh := make(chan error)

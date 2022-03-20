@@ -1,17 +1,3 @@
-// Copyright 2018 Jigsaw Operations LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     https://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package shadowsocks
 
 import (
@@ -20,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"math/rand"
 	"sync"
 
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
@@ -51,33 +36,38 @@ func (e *DecryptionErr) Error() string { return "failed to decrypt: " + e.Err.Er
 // added but delayed until the first write, for concatenation.
 // All methods except Flush must be called from a single thread.
 type Writer struct {
-	// This type is single-threaded except when needFlush is true.
-	// mu protects needFlush, and also protects everything
-	// else while needFlush could be true.
+	// This type is single-threaded except when lazyWriteBuf is not nil.
+	// mu syncs the flushing goroutine with the main write goroutine.
 	mu sync.Mutex
-	// Indicates that a concurrent flush is currently allowed.
-	needFlush bool
+
 	// Controls whether to add a random padding and set the padding length
 	// when Flush() (not flush()) is called.
 	addPaddingOnFlush bool
-	writer            io.Writer
-	ssCipher          *Cipher
-	saltGenerator     SaltGenerator
+
+	// lazyWriteBuf stores socks address + padding length or request salt.
+	// Used when flushing to write header.
+	// After flushing, set this to nil.
+	lazyWriteBuf []byte
+
+	writer   io.Writer
+	ssCipher *Cipher
 	// Wrapper for input that arrives as a slice.
 	byteWrapper bytes.Reader
 	// Number of plaintext bytes that are currently buffered.
-	pending int
-	// These are populated by init():
-	buf  []byte
-	aead cipher.AEAD
-	// Index of the next encrypted chunk to write.
+	pending        int
+	buf            []byte
+	aead           cipher.AEAD
 	counter        []byte
 	maxPayloadSize int
 }
 
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksWriter(writer io.Writer, ssCipher *Cipher, addPaddingOnFlush bool) *Writer {
+//
+// addPaddingOnFlush: true, lazyWriteBuf != nil: Shadowsocks 2022 client writer
+// addPaddingOnFlush: false, lazyWriteBuf != nil: Legacy Shadowsocks client writer
+// addPaddingOnFlush: false, lazyWriteBuf == nil: Legacy Shadowsocks server writer
+func NewShadowsocksWriter(writer io.Writer, ssCipher *Cipher, saltGenerator SaltGenerator, lazyWriteBuf []byte, addPaddingOnFlush bool) (*Writer, error) {
 	var maxPayloadSize int
 
 	switch {
@@ -87,50 +77,39 @@ func NewShadowsocksWriter(writer io.Writer, ssCipher *Cipher, addPaddingOnFlush 
 		maxPayloadSize = legacyPayloadSizeMask
 	}
 
+	saltLen := ssCipher.aead.saltSize
+	overhead := ssCipher.aead.tagSize
+	buf := make([]byte, saltLen+2+overhead+maxPayloadSize+overhead)
+
+	// Generate random salt
+	if saltGenerator == nil {
+		saltGenerator = RandomSaltGenerator
+	}
+
+	if err := saltGenerator.GetSalt(buf[:saltLen]); err != nil {
+		return nil, fmt.Errorf("failed to generate salt: %w", err)
+	}
+
+	// Create AEAD
+	aead, err := ssCipher.NewAEAD(buf[:saltLen])
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AEAD: %w", err)
+	}
+
 	return &Writer{
 		writer:            writer,
 		ssCipher:          ssCipher,
-		saltGenerator:     RandomSaltGenerator,
+		buf:               buf,
+		aead:              aead,
+		counter:           make([]byte, aead.NonceSize()),
 		addPaddingOnFlush: addPaddingOnFlush,
+		lazyWriteBuf:      lazyWriteBuf,
 		maxPayloadSize:    maxPayloadSize,
-	}
-}
-
-// SetSaltGenerator sets the salt generator to be used. Must be called before the first write.
-func (sw *Writer) SetSaltGenerator(saltGenerator SaltGenerator) {
-	sw.saltGenerator = saltGenerator
-}
-
-// init generates a random salt, sets up the AEAD object and writes
-// the salt to the inner Writer.
-func (sw *Writer) init() (err error) {
-	if sw.aead == nil {
-		salt := make([]byte, sw.ssCipher.SaltSize())
-		if err := sw.saltGenerator.GetSalt(salt); err != nil {
-			return fmt.Errorf("failed to generate salt: %w", err)
-		}
-		sw.aead, err = sw.ssCipher.NewAEAD(salt)
-		if err != nil {
-			return fmt.Errorf("failed to create AEAD: %w", err)
-		}
-		sw.saltGenerator = nil // No longer needed, so release reference.
-		sw.counter = make([]byte, sw.aead.NonceSize())
-		// The maximum length message is the salt (first message only), length, length tag,
-		// payload, and payload tag.
-		sizeBufSize := 2 + sw.aead.Overhead()
-		maxPayloadBufSize := sw.maxPayloadSize + sw.aead.Overhead()
-		sw.buf = make([]byte, len(salt)+sizeBufSize+maxPayloadBufSize)
-		// Store the salt at the start of sw.buf.
-		copy(sw.buf, salt)
-	}
-	return nil
+	}, nil
 }
 
 func (sw *Writer) Salt() []byte {
-	if sw.buf == nil {
-		return nil
-	}
-	return sw.buf[:sw.ssCipher.SaltSize()]
+	return sw.buf[:sw.ssCipher.aead.saltSize]
 }
 
 // encryptBlock encrypts `plaintext` in-place.  The slice must have enough capacity
@@ -147,57 +126,19 @@ func (sw *Writer) Write(p []byte) (int, error) {
 	return int(n), err
 }
 
-// LazyWrite queues p to be written, but doesn't send it until Flush() is
-// called, a non-lazy write is made, or the buffer is filled.
-func (sw *Writer) LazyWrite(p []byte) (int, error) {
-	if err := sw.init(); err != nil {
-		return 0, err
-	}
-
-	// Locking is needed due to potential concurrency with the Flush()
-	// for a previous call to LazyWrite().
-	sw.mu.Lock()
-	defer sw.mu.Unlock()
-
-	queued := 0
-	for {
-		n := sw.enqueue(p)
-		queued += n
-		p = p[n:]
-		if len(p) == 0 {
-			sw.needFlush = true
-			return queued, nil
-		}
-		// p didn't fit in the buffer.  Flush the buffer and try
-		// again.
-		if err := sw.flush(); err != nil {
-			return queued, err
-		}
-	}
-}
-
-// Flush sends the pending data, if any. This method is thread-safe.
+// Flush sends the pending header, if any. This method is thread-safe.
 func (sw *Writer) Flush() error {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
-	if !sw.needFlush {
+
+	if sw.lazyWriteBuf == nil {
 		return nil
 	}
-	if sw.addPaddingOnFlush {
-		if sw.pending <= 1+8+2 {
-			return fmt.Errorf("called Flush() with unexpected sw.pending=%d", sw.pending)
-		}
-		_, payloadBuf := sw.buffers()
-		remainingLen := len(payloadBuf) - sw.pending
-		maxPaddingLen := MaxPaddingLength
-		if remainingLen < maxPaddingLen {
-			maxPaddingLen = remainingLen
-		}
-		n := rand.Intn(maxPaddingLen + 1)
-		binary.BigEndian.PutUint16(payloadBuf[sw.pending-2:], uint16(n))
-		sw.pending += n
-		sw.addPaddingOnFlush = false
-	}
+
+	// Write header and random padding
+	_, payloadBuf := sw.buffers()
+	sw.pending = WriteTCPReqHeader(payloadBuf, sw.lazyWriteBuf, sw.addPaddingOnFlush, sw.ssCipher.config)
+	sw.lazyWriteBuf = nil
 	return sw.flush()
 }
 
@@ -213,72 +154,126 @@ func isZero(b []byte) bool {
 // Returns the slices of sw.buf in which to place plaintext for encryption.
 func (sw *Writer) buffers() (sizeBuf, payloadBuf []byte) {
 	// sw.buf starts with the salt.
-	saltSize := sw.ssCipher.SaltSize()
+	saltSize := sw.ssCipher.aead.saltSize
+	overhead := sw.ssCipher.aead.tagSize
 
 	// Each Shadowsocks-TCP message consists of a fixed-length size block,
 	// followed by a variable-length payload block.
 	sizeBuf = sw.buf[saltSize : saltSize+2]
-	payloadStart := saltSize + 2 + sw.aead.Overhead()
+	payloadStart := saltSize + 2 + overhead
 	payloadBuf = sw.buf[payloadStart : payloadStart+sw.maxPayloadSize]
 	return
 }
 
+// offsetInPayloadBuf is relative to payloadBuf, not sw.buf.
+func (sw *Writer) buffersFromPayloadOffset(offsetInPayloadBuf int) (saltOffset, sizeOffset, payloadOffset int, saltBuf, sizeBuf, payloadBuf []byte) {
+	saltSize := sw.ssCipher.aead.saltSize
+	overhead := sw.ssCipher.aead.tagSize
+
+	payloadOffset = saltSize + 2 + overhead + offsetInPayloadBuf
+	payloadBuf = sw.buf[payloadOffset : len(sw.buf)-overhead]
+
+	sizeOffset = payloadOffset - overhead - 2
+	sizeBuf = sw.buf[sizeOffset : sizeOffset+2]
+
+	saltOffset = sizeOffset - saltSize
+	saltBuf = sw.buf[saltOffset:sizeOffset]
+
+	return
+}
+
 // ReadFrom implements the io.ReaderFrom interface.
-func (sw *Writer) ReadFrom(r io.Reader) (int64, error) {
-	if err := sw.init(); err != nil {
-		return 0, err
-	}
-	var written int64
-	var err error
+func (sw *Writer) ReadFrom(r io.Reader) (n int64, err error) {
 	_, payloadBuf := sw.buffers()
+	saltLen := sw.ssCipher.aead.saltSize
 
-	// Special case: one thread-safe read, if necessary
 	sw.mu.Lock()
-	if sw.needFlush {
-		pending := sw.pending
-
+	if sw.lazyWriteBuf != nil {
+		// Unlock so Flush() can successfully flush the header
+		// should the timeout ran out and the read didn't return.
 		sw.mu.Unlock()
-		saltsize := sw.ssCipher.SaltSize()
-		overhead := sw.aead.Overhead()
-		// The first pending+overhead bytes of payloadBuf are potentially
-		// in use, and may be modified on the flush thread.  Data after
-		// that is safe to use on this thread.
-		readBuf := sw.buf[saltsize+2+overhead+pending+overhead:]
-		var plaintextSize int
-		plaintextSize, err = r.Read(readBuf)
-		written = int64(plaintextSize)
-		sw.mu.Lock()
 
-		sw.enqueue(readBuf[:plaintextSize])
-		if flushErr := sw.flush(); flushErr != nil {
-			err = flushErr
+		if sw.addPaddingOnFlush {
+			// The protocol is Shadowsocks 2022 and might need padding.
+			// Header length uncertain. Reserve max space for header.
+			reservedLen := 1 + 8 + len(sw.lazyWriteBuf) + 2 + MaxPaddingLength
+			var rn int
+			rn, err = r.Read(payloadBuf[reservedLen:])
+			n = int64(rn)
+
+			sw.mu.Lock()
+			sw.pending += rn
+
+			if sw.lazyWriteBuf != nil {
+				// Header not sent yet.
+				// Calculate header start position, write header w/o padding.
+				headerOffset := reservedLen - 1 - 8 - len(sw.lazyWriteBuf) - 2
+				sw.pending += WriteTCPReqHeader(payloadBuf[headerOffset:], sw.lazyWriteBuf, true, sw.ssCipher.config)
+				// Flush.
+				if flushErr := sw.flushAt(headerOffset); flushErr != nil {
+					err = flushErr
+				}
+				sw.lazyWriteBuf = nil
+			} else {
+				// Header already sent. Flush payload.
+				if flushErr := sw.flushAt(reservedLen); flushErr != nil {
+					err = flushErr
+				}
+			}
+		} else {
+			// Calculate header length.
+			// It's either Shadowsocks 2022 response header, or legacy Shadowsocks socks address.
+			var headerLen int
+			switch {
+			case sw.ssCipher.config.IsSpec2022:
+				headerLen = 1 + 8 + saltLen
+			default:
+				headerLen = len(sw.lazyWriteBuf)
+			}
+			var rn int
+			rn, err = r.Read(payloadBuf[headerLen:])
+			n = int64(rn)
+
+			sw.mu.Lock()
+			sw.pending += rn
+
+			if sw.lazyWriteBuf != nil {
+				// Header not sent yet.
+				// Write header.
+				switch {
+				case sw.ssCipher.config.IsSpec2022:
+					sw.pending += WriteTCPRespHeader(payloadBuf, sw.lazyWriteBuf, sw.ssCipher.config)
+				default:
+					sw.pending += WriteTCPReqHeader(payloadBuf, sw.lazyWriteBuf, false, sw.ssCipher.config)
+				}
+				// Flush.
+				if flushErr := sw.flush(); flushErr != nil {
+					err = flushErr
+				}
+				sw.lazyWriteBuf = nil
+			} else {
+				// Header already sent. Flush payloadBuf[headerLen:headerLen+rn]
+				if flushErr := sw.flushAt(headerLen); flushErr != nil {
+					err = flushErr
+				}
+			}
 		}
-		sw.needFlush = false
 	}
 	sw.mu.Unlock()
 
 	// Main transfer loop
 	for err == nil {
 		sw.pending, err = r.Read(payloadBuf)
-		written += int64(sw.pending)
+		n += int64(sw.pending)
 		if flushErr := sw.flush(); flushErr != nil {
 			err = flushErr
 		}
 	}
 
 	if err == io.EOF { // ignore EOF as per io.ReaderFrom contract
-		return written, nil
+		return n, nil
 	}
-	return written, fmt.Errorf("failed to read payload: %w", err)
-}
-
-// Adds as much of `plaintext` into the buffer as will fit, and increases
-// sw.pending accordingly.  Returns the number of bytes consumed.
-func (sw *Writer) enqueue(plaintext []byte) int {
-	_, payloadBuf := sw.buffers()
-	n := copy(payloadBuf[sw.pending:], plaintext)
-	sw.pending += n
-	return n
+	return n, fmt.Errorf("failed to read payload: %w", err)
 }
 
 // Encrypts all pending data and writes it to the output.
@@ -287,7 +282,7 @@ func (sw *Writer) flush() error {
 		return nil
 	}
 	// sw.buf starts with the salt.
-	saltSize := sw.ssCipher.SaltSize()
+	saltSize := sw.ssCipher.aead.saltSize
 	// Normally we ignore the salt at the beginning of sw.buf.
 	start := saltSize
 	if isZero(sw.counter) {
@@ -302,6 +297,37 @@ func (sw *Writer) flush() error {
 	sizeBlockSize := sw.encryptBlock(sizeBuf)
 	payloadSize := sw.encryptBlock(payloadBuf[:sw.pending])
 	_, err := sw.writer.Write(sw.buf[start : saltSize+sizeBlockSize+payloadSize])
+	sw.pending = 0
+	return err
+}
+
+// flushAt flushes all pending bytes.
+// When counter is zero, the salt will be skipped.
+//
+// offsetInPayloadBuf is relative to payloadBuf, not sw.buf.
+func (sw *Writer) flushAt(offsetInPayloadBuf int) error {
+	if sw.pending == 0 {
+		return nil
+	}
+
+	saltOffset, sizeOffset, _, _, sizeBuf, payloadBuf := sw.buffersFromPayloadOffset(offsetInPayloadBuf)
+	saltLen := sw.ssCipher.aead.saltSize
+	start := sizeOffset
+	if isZero(sw.counter) {
+		// First flush. Include salt.
+		start = saltOffset
+		if saltOffset != 0 {
+			// Copy salt to saltOffset
+			// We don't have to worry about overlapped buffers,
+			// because a large space should have been reserved before saltOffset.
+			copy(sw.buf[saltOffset:], sw.buf[:saltLen])
+		}
+	}
+
+	binary.BigEndian.PutUint16(sizeBuf, uint16(sw.pending))
+	sizeBlockSize := sw.encryptBlock(sizeBuf)
+	payloadSize := sw.encryptBlock(payloadBuf[:sw.pending])
+	_, err := sw.writer.Write(sw.buf[start : sizeOffset+sizeBlockSize+payloadSize])
 	sw.pending = 0
 	return err
 }
@@ -336,7 +362,7 @@ type chunkReader struct {
 func (cr *chunkReader) init() (err error) {
 	if cr.aead == nil {
 		// For chacha20-poly1305, SaltSize is 32, NonceSize is 12 and Overhead is 16.
-		cr.salt = make([]byte, cr.ssCipher.SaltSize())
+		cr.salt = make([]byte, cr.ssCipher.aead.saltSize)
 		if _, err := io.ReadFull(cr.reader, cr.salt); err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
 				err = fmt.Errorf("failed to read salt: %w", err)

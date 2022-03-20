@@ -109,46 +109,33 @@ func ParseTCPReqHeader(r io.Reader, cipherConfig CipherConfig, htype byte) (stri
 	return socksaddr.String(), nil
 }
 
-func LazyWriteTCPReqHeader(address string, ssw *Writer) error {
-	if !ssw.ssCipher.config.IsSpec2022 {
-		tgtAddr, err := socks.ParseAddr(address)
-		if err != nil {
-			return fmt.Errorf("failed to write target address: %w", err)
-		}
-		_, err = ssw.LazyWrite(tgtAddr)
-		return err
+func WriteTCPReqHeader(dst, socksaddr []byte, addPadding bool, cipherConfig CipherConfig) (n int) {
+	if !cipherConfig.IsSpec2022 {
+		copy(dst, socksaddr)
+		return len(socksaddr)
 	}
 
-	lazySlice := tcpReqHeaderPool.LazySlice()
-	b := lazySlice.Acquire()
-	defer lazySlice.Release()
-
 	// Write type
-	b[0] = HeaderTypeClientStream
+	dst[0] = HeaderTypeClientStream
 
 	// Write timestamp
 	nowEpoch := time.Now().Unix()
-	binary.BigEndian.PutUint64(b[1:], uint64(nowEpoch))
+	binary.BigEndian.PutUint64(dst[1:], uint64(nowEpoch))
 
-	offset := 1 + 8
+	n = 1 + 8
 
 	// Write socks address
-	n, _, _, err := socks.WriteAddr(b[offset:], address)
-	if err != nil {
-		return fmt.Errorf("failed to write socks address: %w", err)
+	n += copy(dst[n:], socksaddr)
+
+	// Write padding if applicable
+	// We pass 53 as port number so whether padding is added depends on maxPaddingLen.
+	var maxPaddingLen int
+	if addPadding {
+		maxPaddingLen = MaxPaddingLength
 	}
-	offset += n
+	n += WriteRandomPadding(dst[n:], 53, maxPaddingLen)
 
-	// Ensure padding length is 0
-	b[offset] = 0
-	b[offset+1] = 0
-
-	_, err = ssw.LazyWrite(b[:offset+2])
-	if err != nil {
-		return fmt.Errorf("failed to lazy-write: %w", err)
-	}
-
-	return nil
+	return
 }
 
 func ParseTCPRespHeader(r io.Reader, clientSalt []byte, cipherConfig CipherConfig) error {
@@ -186,27 +173,19 @@ func ParseTCPRespHeader(r io.Reader, clientSalt []byte, cipherConfig CipherConfi
 	return nil
 }
 
-func MakeTCPRespHeader(clientSalt []byte) []byte {
-	b := make([]byte, 1+8+len(clientSalt))
-
-	b[0] = HeaderTypeServerStream
-
-	nowEpoch := time.Now().Unix()
-	binary.BigEndian.PutUint64(b[1:1+8], uint64(nowEpoch))
-
-	copy(b[1+8:], clientSalt)
-
-	return b
-}
-
-func LazyWriteTCPRespHeader(clientSalt []byte, ssw *Writer) error {
-	if !ssw.ssCipher.config.IsSpec2022 {
-		return nil
+func WriteTCPRespHeader(dst, clientSalt []byte, cipherConfig CipherConfig) (n int) {
+	if !cipherConfig.IsSpec2022 {
+		return 0
 	}
 
-	rh := MakeTCPRespHeader(clientSalt)
-	_, err := ssw.LazyWrite(rh)
-	return err
+	dst[0] = HeaderTypeServerStream
+
+	nowEpoch := time.Now().Unix()
+	binary.BigEndian.PutUint64(dst[1:1+8], uint64(nowEpoch))
+
+	n = 1 + 8
+	n += copy(dst[1+8:], clientSalt)
+	return
 }
 
 // For spec 2022, this function only parses the decrypted AEAD header.
@@ -301,7 +280,7 @@ func WriteUDPAddrToSocksAddr(b []byte, addr *net.UDPAddr) (n int) {
 }
 
 func WriteRandomPadding(b []byte, targetPort int, max int) int {
-	if len(b) > max || targetPort != 53 {
+	if max == 0 || targetPort != 53 || len(b) < max {
 		b[0] = 0
 		b[1] = 0
 		return 2
