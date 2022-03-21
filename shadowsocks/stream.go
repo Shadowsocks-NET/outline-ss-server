@@ -65,7 +65,7 @@ type Writer struct {
 // the shadowsocks protocol with the given shadowsocks cipher.
 //
 // addPaddingOnFlush: true, lazyWriteBuf != nil: Shadowsocks 2022 client writer
-// addPaddingOnFlush: false, lazyWriteBuf != nil: Legacy Shadowsocks client writer
+// addPaddingOnFlush: false, lazyWriteBuf != nil: Shadowsocks 2022 server writer, Legacy Shadowsocks client writer
 // addPaddingOnFlush: false, lazyWriteBuf == nil: Legacy Shadowsocks server writer
 func NewShadowsocksWriter(writer io.Writer, ssCipher *Cipher, saltGenerator SaltGenerator, lazyWriteBuf []byte, addPaddingOnFlush bool) (*Writer, error) {
 	var maxPayloadSize int
@@ -208,7 +208,7 @@ func (sw *Writer) ReadFrom(r io.Reader) (n int64, err error) {
 				// Header not sent yet.
 				// Calculate header start position, write header w/o padding.
 				headerOffset := reservedLen - 1 - 8 - len(sw.lazyWriteBuf) - 2
-				sw.pending += WriteTCPReqHeader(payloadBuf[headerOffset:], sw.lazyWriteBuf, true, sw.ssCipher.config)
+				sw.pending += WriteTCPReqHeader(payloadBuf[headerOffset:], sw.lazyWriteBuf, false, sw.ssCipher.config)
 				// Flush.
 				if flushErr := sw.flushAt(headerOffset); flushErr != nil {
 					err = flushErr
