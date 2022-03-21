@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/cipher"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -127,9 +128,9 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
-		bodyStart = 16 + 1 + 8 + socks.SocksAddressIPv6Length + 2 + ss.MaxPaddingLength
+		bodyStart = 8 + 8 + 1 + 8 + 2 + ss.MaxPaddingLength + socks.SocksAddressIPv6Length
 	case cipherConfig.IsSpec2022:
-		bodyStart = 24 + 8 + 8 + 1 + 8 + socks.SocksAddressIPv6Length + 2 + ss.MaxPaddingLength
+		bodyStart = 24 + 8 + 8 + 1 + 8 + 2 + ss.MaxPaddingLength + socks.SocksAddressIPv6Length
 	default:
 		bodyStart = saltSize + socks.SocksAddressIPv6Length
 	}
@@ -182,21 +183,17 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 				socksAddrLen = socks.SocksAddressIPv4Length
 			}
 
-			// For now, let's not think about padding.
 			switch {
-			case cipherConfig.UDPHasSeparateHeader:
-				headerStart = bodyStart - 8 - 8 - 1 - 8 - socksAddrLen - 2
-				pktStart = headerStart
-				ss.WriteUDPHeaderSeparated(pkt[pktStart:], ss.HeaderTypeServerPacket, ses.sid, ses.pid, raddr, 0)
-				ses.pid++
 			case cipherConfig.IsSpec2022:
-				headerStart = bodyStart - 8 - 8 - 1 - 8 - socksAddrLen - 2
-				pktStart = headerStart - 24
-				ss.WriteUDPHeader(pkt[pktStart:], ss.HeaderTypeServerPacket, ses.sid, ses.pid, raddr, 0)
+				var paddingLen int
+				if raddr.Port == 53 {
+					paddingLen = rand.Intn(ss.MaxPaddingLength + 1)
+				}
+				headerStart = bodyStart - 8 - 8 - 1 - 8 - 2 - paddingLen - socksAddrLen
+				ss.WriteUDPHeader(pkt[headerStart:], ss.HeaderTypeServerPacket, ses.sid, ses.pid, raddr, nil, paddingLen)
 				ses.pid++
 			default:
 				headerStart = bodyStart - socksAddrLen
-				pktStart = headerStart - saltSize
 				ss.WriteUDPAddrToSocksAddr(pkt[headerStart:], raddr)
 			}
 
@@ -204,7 +201,15 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 			// [padding?][salt][address][body][tag][unused]
 			// |-- addrStart -|[plaintextBuf ]
 			plaintextBuf := pkt[headerStart : bodyStart+bodyLen]
-			// pktStart is 0 if raddr is IPv6.
+
+			switch {
+			case cipherConfig.UDPHasSeparateHeader:
+				pktStart = headerStart
+			case cipherConfig.IsSpec2022:
+				pktStart = headerStart - 24
+			default:
+				pktStart = headerStart - saltSize
+			}
 
 			// `packBuf` adds space for the salt and tag.
 			// `buf` shows the space that was used.

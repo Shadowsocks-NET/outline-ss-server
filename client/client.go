@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"time"
 
@@ -30,7 +31,7 @@ const (
 	// was ~1 ms.)  If no client payload is received by this time, we connect without it.
 	helloWait = 100 * time.Millisecond
 
-	ShadowsocksPacketConnFrontReserve = 24 + 8 + 8 + 1 + 8 + socks.MaxAddrLen + 2 + ss.MaxPaddingLength
+	ShadowsocksPacketConnFrontReserve = 24 + 8 + 8 + 1 + 8 + 2 + ss.MaxPaddingLength + socks.MaxAddrLen
 )
 
 var (
@@ -213,7 +214,7 @@ type ShadowsocksPacketConn interface {
 	// WriteToZeroCopy minimizes copying by requiring that enough space is reserved in b.
 	// The socks address is still being copied into the buffer.
 	//
-	// You should reserve 24 + 8 + 8 + 1 + 8 + socks.MaxAddrLen + 2 + ss.MaxPaddingLength in the beginning,
+	// You should reserve 24 + 8 + 8 + 1 + 8 + 2 + ss.MaxPaddingLength + socks.MaxAddrLen in the beginning,
 	// and cipher.TagSize() in the end.
 	//
 	// start points to where the actual payload (excluding header) starts.
@@ -287,6 +288,9 @@ func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	if cipherConfig.IsSpec2022 {
+		c.pid++
+	}
 
 	// Copy payload
 	copy(cipherBuf[headerStart+n:], b)
@@ -313,31 +317,35 @@ func (c *packetConn) WriteToZeroCopy(b []byte, start, length int, socksAddr []by
 	cipherConfig := c.cipher.Config()
 
 	// Calculate where to start writing socks address, header
-	socksAddrStart := start - 2 - len(socksAddr)
+	socksAddrStart := start - len(socksAddr)
+	var paddingLen int
 	var headerStart int
 	var packetStart int
 
+	if cipherConfig.IsSpec2022 && socksAddr[len(socksAddr)-2] == 0 && socksAddr[len(socksAddr)-1] == 53 {
+		paddingLen = rand.Intn(ss.MaxPaddingLength + 1)
+	}
+
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
-		headerStart = socksAddrStart - 8 - 1 - 8 - 8
+		headerStart = socksAddrStart - paddingLen - 2 - 8 - 1 - 8 - 8
 		packetStart = headerStart
 	case cipherConfig.IsSpec2022:
-		headerStart = socksAddrStart - 8 - 1 - 8 - 8
+		headerStart = socksAddrStart - paddingLen - 2 - 8 - 1 - 8 - 8
 		packetStart = headerStart - 24
 	default:
 		headerStart = socksAddrStart
 		packetStart = headerStart - c.cipher.SaltSize()
 	}
 
-	// For now, don't add padding for simplicity.
-	b[start-2] = 0
-	b[start-1] = 0
-
-	// Copy socks address
-	copy(b[socksAddrStart:], socksAddr)
-
 	// Write header
-	ss.WriteClientUDPHeaderPartial(b[packetStart:], cipherConfig, c.sid, c.pid)
+	switch {
+	case cipherConfig.IsSpec2022:
+		ss.WriteUDPHeader(b[headerStart:], ss.HeaderTypeClientPacket, c.sid, c.pid, nil, socksAddr, paddingLen)
+		c.pid++
+	default:
+		copy(b[headerStart:], socksAddr)
+	}
 
 	var buf []byte
 	switch {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
@@ -220,18 +221,7 @@ func ParseUDPHeader(plaintext []byte, htype byte, cipherConfig CipherConfig) (ad
 		}
 
 		offset += 8
-	}
 
-	// Parse socks address
-	tgtAddr, err := socks.SplitAddr(plaintext[offset:])
-	if err != nil {
-		err = fmt.Errorf("failed to parse target address: %w", err)
-		return
-	}
-
-	offset += len(tgtAddr)
-
-	if cipherConfig.IsSpec2022 {
 		// Verify padding length
 		if len(plaintext) < offset+2 {
 			err = fmt.Errorf("packet too short to contain padding length field: %d", len(plaintext))
@@ -254,6 +244,15 @@ func ParseUDPHeader(plaintext []byte, htype byte, cipherConfig CipherConfig) (ad
 
 		offset += paddingLen
 	}
+
+	// Parse socks address
+	tgtAddr, err := socks.SplitAddr(plaintext[offset:])
+	if err != nil {
+		err = fmt.Errorf("failed to parse target address: %w", err)
+		return
+	}
+
+	offset += len(tgtAddr)
 
 	return tgtAddr.String(), plaintext[offset:], nil
 }
@@ -279,6 +278,16 @@ func WriteUDPAddrToSocksAddr(b []byte, addr *net.UDPAddr) (n int) {
 	return
 }
 
+func WritePadding(b []byte, paddingLen int) int {
+	if paddingLen == 0 {
+		b[0] = 0
+		b[1] = 0
+		return 2
+	}
+	binary.BigEndian.PutUint16(b, uint16(paddingLen))
+	return 2 + paddingLen
+}
+
 func WriteRandomPadding(b []byte, targetPort int, max int) int {
 	if max == 0 || targetPort != 53 || len(b) < max {
 		b[0] = 0
@@ -291,111 +300,110 @@ func WriteRandomPadding(b []byte, targetPort int, max int) int {
 	return 2 + paddingLen
 }
 
-// WriteUDPHeader fills a UDP header into the buffer.
+// WriteUDPHeader fills a Shadowsocks 2022 UDP header into the buffer.
+// Make sure to increment packet ID upon returning.
+// Pass either targetUDPAddr or targetSocksAddr.
+//
+// For legacy Shadowsocks, call WriteUDPAddrToSocksAddr directly.
 //
 // No buffer length checks are performed.
 // Make sure the buffer can hold the socks address.
-func WriteUDPHeader(plaintext []byte, htype byte, sid []byte, pid uint64, targetAddr *net.UDPAddr, maxPacketSize int) (n int) {
+func WriteUDPHeader(plaintext []byte, htype byte, sid []byte, pid uint64, targetUDPAddr *net.UDPAddr, targetSocksAddr []byte, paddingLen int) (n int) {
 	// Write session ID
-	copy(plaintext[24:24+8], sid)
+	n = copy(plaintext[:8], sid)
 
 	// Write packet ID
-	binary.BigEndian.PutUint64(plaintext[24+8:24+8+8], pid)
+	binary.BigEndian.PutUint64(plaintext[n:n+8], pid)
+	n += 8
 
 	// Write type
-	plaintext[24+8+8] = htype
+	plaintext[n] = htype
+	n++
 
 	// Write timestamp
 	nowEpoch := time.Now().Unix()
-	binary.BigEndian.PutUint64(plaintext[24+8+8+1:24+8+8+8+1], uint64(nowEpoch))
-
-	// Write socks address
-	n = 24 + 8 + 8 + 1 + 8
-	n += WriteUDPAddrToSocksAddr(plaintext[n:], targetAddr)
+	binary.BigEndian.PutUint64(plaintext[n:n+8], uint64(nowEpoch))
+	n += 8
 
 	// Write padding length and optionally padding
-	n += WriteRandomPadding(plaintext[n:], targetAddr.Port, maxPacketSize-n-2)
-
-	return
-}
-
-// WriteUDPHeaderSeparated fills the separate header and the in-AEAD UDP header into the buffer.
-//
-// No buffer length checks are performed.
-// Make sure the buffer can hold the socks address.
-func WriteUDPHeaderSeparated(plaintext []byte, htype byte, sid []byte, pid uint64, targetAddr *net.UDPAddr, maxPacketSize int) (n int) {
-	// Write session ID
-	copy(plaintext[:8], sid)
-
-	// Write packet ID
-	binary.BigEndian.PutUint64(plaintext[8:8+8], pid)
-
-	// Write type
-	plaintext[16] = htype
-
-	// Write timestamp
-	nowEpoch := time.Now().Unix()
-	binary.BigEndian.PutUint64(plaintext[16+1:16+1+8], uint64(nowEpoch))
+	n += WritePadding(plaintext[n:], paddingLen)
 
 	// Write socks address
-	n = 16 + 1 + 8
-	n += WriteUDPAddrToSocksAddr(plaintext[n:], targetAddr)
-
-	// Write padding length and optionally padding
-	n += WriteRandomPadding(plaintext[n:], targetAddr.Port, maxPacketSize-n-2)
-
-	return
-}
-
-// WriteClientUDPHeaderPartial writes the first 8+8+1+8 bytes of header to the buffer.
-func WriteClientUDPHeaderPartial(plaintext []byte, cipherConfig CipherConfig, sid []byte, pid uint64) (n int) {
-	if cipherConfig.IsSpec2022 && !cipherConfig.UDPHasSeparateHeader {
-		n = 24
-	}
-
 	switch {
-	case cipherConfig.IsSpec2022:
-		// Write session ID
-		n += copy(plaintext[n:n+8], sid)
-
-		// Write packet ID
-		binary.BigEndian.PutUint64(plaintext[n:n+8], pid)
-		n += 8
-
-		// Write type
-		plaintext[n] = HeaderTypeClientPacket
-		n++
-
-		// Write timestamp
-		nowEpoch := time.Now().Unix()
-		binary.BigEndian.PutUint64(plaintext[n:n+8], uint64(nowEpoch))
-		n += 8
+	case targetUDPAddr != nil:
+		n += WriteUDPAddrToSocksAddr(plaintext[n:], targetUDPAddr)
+	case targetSocksAddr != nil:
+		n += copy(plaintext[n:], targetSocksAddr)
 	}
 
 	return
 }
 
+// WriteClientUDPHeader fills a Shadowsocks UDP header into the buffer.
+//
+// For Shadowsocks 2022, make sure to increment packet ID upon returning.
+//
+// No buffer length checks are performed.
+// Make sure the buffer can hold the socks address.
 func WriteClientUDPHeader(plaintext []byte, cipherConfig CipherConfig, sid []byte, pid uint64, targetAddr net.Addr, maxPacketSize int) (n int, err error) {
-	n += WriteClientUDPHeaderPartial(plaintext, cipherConfig, sid, pid)
+	if cipherConfig.IsSpec2022 {
+		n += WriteUDPHeader(plaintext[n:], HeaderTypeClientPacket, sid, pid, nil, nil, 0)
+		// Go back so we can rewrite/overwrite padding length.
+		n -= 2
+	}
 
-	// Write socks address
+	// Determine port and write padding, socks address
 	var port int
 
 	if udpaddr, ok := targetAddr.(*net.UDPAddr); ok {
 		port = udpaddr.Port
+
+		// Write padding length and optionally padding
+		if cipherConfig.IsSpec2022 {
+			n += WriteRandomPadding(plaintext[n:], port, maxPacketSize-n-2)
+		}
+
 		n += WriteUDPAddrToSocksAddr(plaintext[n:], udpaddr)
 	} else {
-		var san int
-		san, _, port, err = socks.WriteAddr(plaintext[n:], targetAddr.String())
+		host, portString, err := net.SplitHostPort(targetAddr.String())
 		if err != nil {
-			return
+			return n, fmt.Errorf("failed to split host:port: %w", err)
 		}
-		n += san
-	}
 
-	// Write padding length and optionally padding
-	if cipherConfig.IsSpec2022 {
-		n += WriteRandomPadding(plaintext[n:], port, maxPacketSize-n-2)
+		portnum, err := strconv.ParseUint(portString, 10, 16)
+		if err != nil {
+			return n, fmt.Errorf("failed to parse port string: %w", err)
+		}
+		port = int(portnum)
+
+		// Write padding length and optionally padding
+		if cipherConfig.IsSpec2022 {
+			n += WriteRandomPadding(plaintext[n:], port, maxPacketSize-n-2)
+		}
+
+		if ip := net.ParseIP(host); ip != nil {
+			if ip4 := ip.To4(); ip4 != nil {
+				plaintext[n] = socks.AtypIPv4
+				n++
+				n += copy(plaintext[n:], ip4)
+			} else {
+				plaintext[n] = socks.AtypIPv6
+				n++
+				n += copy(plaintext[n:], ip)
+			}
+		} else {
+			if len(host) > 255 {
+				return n, fmt.Errorf("host is too long: %d, must not be greater than 255", len(host))
+			}
+			plaintext[n] = socks.AtypDomainName
+			n++
+			plaintext[n] = byte(len(host))
+			n++
+			n += copy(plaintext[n:], host)
+		}
+
+		binary.BigEndian.PutUint16(plaintext[n:], uint16(port))
+		n += 2
 	}
 
 	return
