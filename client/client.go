@@ -3,7 +3,6 @@ package client
 import (
 	"crypto/cipher"
 	"errors"
-	"fmt"
 	"io"
 	"math/rand"
 	"net"
@@ -45,8 +44,8 @@ var (
 type Client interface {
 	// DialTCP connects to `raddr` over TCP though a Shadowsocks proxy.
 	// `laddr` is a local bind address, a local address is automatically chosen if nil.
-	// `raddr` has the form `host:port`, where `host` can be a domain name or IP address.
-	DialTCP(laddr *net.TCPAddr, raddr string, dialerTFO bool) (onet.DuplexConn, error)
+	// `raddr` is the target socks address.
+	DialTCP(laddr *net.TCPAddr, raddr []byte, dialerTFO bool) (onet.DuplexConn, error)
 
 	// ListenUDP starts a new Shadowsocks UDP session and returns a connection that
 	// can be used to relay UDP packets though the proxy.
@@ -86,7 +85,7 @@ func (c *ssClient) Cipher() *ss.Cipher {
 }
 
 // DialTCP implements the Client DialTCP method.
-func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string, dialerTFO bool) (onet.DuplexConn, error) {
+func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr []byte, dialerTFO bool) (onet.DuplexConn, error) {
 	dialer := tfo.Dialer{
 		DisableTFO: !dialerTFO,
 	}
@@ -96,13 +95,7 @@ func (c *ssClient) DialTCP(laddr *net.TCPAddr, raddr string, dialerTFO bool) (on
 		return nil, err
 	}
 
-	socksaddr, err := socks.ParseAddr(raddr)
-	if err != nil {
-		proxyConn.Close()
-		return nil, fmt.Errorf("failed to parse address: %w", err)
-	}
-
-	ssw, err := ss.NewShadowsocksWriter(proxyConn, c.cipher, nil, socksaddr, c.cipher.Config().IsSpec2022)
+	ssw, err := ss.NewShadowsocksWriter(proxyConn, c.cipher, nil, raddr, c.cipher.Config().IsSpec2022)
 	if err != nil {
 		proxyConn.Close()
 		return nil, err
@@ -322,7 +315,7 @@ func (c *packetConn) WriteToZeroCopy(b []byte, start, length int, socksAddr []by
 	var headerStart int
 	var packetStart int
 
-	if cipherConfig.IsSpec2022 && socksAddr[len(socksAddr)-2] == 0 && socksAddr[len(socksAddr)-1] == 53 {
+	if cipherConfig.IsSpec2022 && len(socksAddr) > 1 && socksAddr[len(socksAddr)-2] == 0 && socksAddr[len(socksAddr)-1] == 53 {
 		paddingLen = rand.Intn(ss.MaxPaddingLength + 1)
 	}
 

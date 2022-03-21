@@ -27,6 +27,7 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 	logging "github.com/op/go-logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -112,7 +113,9 @@ func TestTCPEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
-	conn, err := client.DialTCP(nil, echoListener.Addr().String(), false)
+	socksAddr, err := socks.ParseAddr(echoListener.Addr().String())
+	require.NoError(t, err, "socks.ParseAddr(echoListener.Addr().String()) failed: %v", err)
+	conn, err := client.DialTCP(nil, socksAddr, false)
 	if err != nil {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -193,7 +196,9 @@ func TestRestrictedAddresses(t *testing.T) {
 	}
 
 	for _, address := range addresses {
-		conn, err := client.DialTCP(nil, address, false)
+		socksAddr, err := socks.ParseAddr(address)
+		require.NoError(t, err, "socks.ParseAddr(echoListener.Addr().String()) failed: %v", err)
+		conn, err := client.DialTCP(nil, socksAddr, false)
 		require.NoError(t, err, "Failed to dial %v", address)
 		n, err := conn.Read(buf)
 		assert.Equal(t, 0, n, "Server should close without replying on rejected address")

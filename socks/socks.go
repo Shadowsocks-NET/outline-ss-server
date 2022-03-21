@@ -8,11 +8,31 @@ import (
 	"strconv"
 )
 
+// SOCKS request commands as defined in RFC 1928 section 4.
+const (
+	CmdConnect      = 1
+	CmdBind         = 2
+	CmdUDPAssociate = 3
+)
+
 // SOCKS address types as defined in RFC 1928 section 5.
 const (
 	AtypIPv4       = 1
 	AtypDomainName = 3
 	AtypIPv6       = 4
+)
+
+// SOCKS errors as defined in RFC 1928 section 6.
+const (
+	Succeeded               = 0
+	ErrGeneralFailure       = 1
+	ErrConnectionNotAllowed = 2
+	ErrNetworkUnreachable   = 3
+	ErrHostUnreachable      = 4
+	ErrConnectionRefused    = 5
+	ErrTTLExpired           = 6
+	ErrCommandNotSupported  = 7
+	ErrAddressNotSupported  = 8
 )
 
 const (

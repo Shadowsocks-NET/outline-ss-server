@@ -19,13 +19,23 @@ const (
 	testTargetAddr = "test.local:1111"
 )
 
+var testTargetSocksAddr socks.Addr
+
+func init() {
+	var err error
+	testTargetSocksAddr, err = socks.ParseAddr(testTargetAddr)
+	if err != nil {
+		panic(err)
+	}
+}
+
 func TestShadowsocksClient_DialTCP(t *testing.T) {
 	proxy, running := startShadowsocksTCPEchoProxy(testTargetAddr, t)
 	d, err := NewClient(proxy.Addr().String(), ss.TestCipher, testPassword, nil)
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
-	conn, err := d.DialTCP(nil, testTargetAddr, false)
+	conn, err := d.DialTCP(nil, testTargetSocksAddr, false)
 	if err != nil {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -43,7 +53,7 @@ func TestShadowsocksClient_DialTCPNoPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
-	conn, err := d.DialTCP(nil, testTargetAddr, false)
+	conn, err := d.DialTCP(nil, testTargetSocksAddr, false)
 	if err != nil {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -85,7 +95,7 @@ func TestShadowsocksClient_DialTCPFastClose(t *testing.T) {
 		t.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
 
-	conn, err := d.DialTCP(nil, testTargetAddr, false)
+	conn, err := d.DialTCP(nil, testTargetSocksAddr, false)
 	if err != nil {
 		t.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}
@@ -127,7 +137,7 @@ func BenchmarkShadowsocksClient_DialTCP(b *testing.B) {
 	if err != nil {
 		b.Fatalf("Failed to create ShadowsocksClient: %v", err)
 	}
-	conn, err := d.DialTCP(nil, testTargetAddr, false)
+	conn, err := d.DialTCP(nil, testTargetSocksAddr, false)
 	if err != nil {
 		b.Fatalf("ShadowsocksClient.DialTCP failed: %v", err)
 	}

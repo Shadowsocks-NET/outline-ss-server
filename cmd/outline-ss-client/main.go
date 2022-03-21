@@ -10,6 +10,7 @@ import (
 
 	"github.com/Shadowsocks-NET/outline-ss-server/client"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 )
 
 const (
@@ -27,6 +28,14 @@ func main() {
 	var tunnelTCP bool
 	var tunnelUDP bool
 
+	var socks5ListenAddress string
+	var socks5EnableTCP bool
+	var socks5EnableUDP bool
+
+	var ssNoneListenAddress string
+	var ssNoneEnableTCP bool
+	var ssNoneEnableUDP bool
+
 	var TCPFastOpen bool
 	var listenerTFO bool
 	var dialerTFO bool
@@ -42,6 +51,14 @@ func main() {
 	flag.StringVar(&tunnelRemoteAddress, "tunnelRemoteAddress", "", "shadowsocks tunnel remote address")
 	flag.BoolVar(&tunnelTCP, "tunnelTCP", false, "Whether to tunnel TCP traffic")
 	flag.BoolVar(&tunnelUDP, "tunnelUDP", false, "Whether to tunnel UDP traffic")
+
+	flag.StringVar(&socks5ListenAddress, "socks5ListenAddress", "", "SOCKS5 proxy listen address")
+	flag.BoolVar(&socks5EnableTCP, "socks5EnableTCP", false, "Enables SOCKS5 TCP proxy")
+	flag.BoolVar(&socks5EnableUDP, "socks5EnableUDP", false, "Enables SOCKS5 UDP proxy")
+
+	flag.StringVar(&ssNoneListenAddress, "ssNoneListenAddress", "", "Shadowsocks None proxy listen address")
+	flag.BoolVar(&ssNoneEnableTCP, "ssNoneEnableTCP", false, "Enables Shadowsocks None TCP proxy")
+	flag.BoolVar(&ssNoneEnableUDP, "ssNoneEnableUDP", false, "Enables Shadowsocks None UDP proxy")
 
 	flag.BoolVar(&TCPFastOpen, "tfo", false, "Enables TFO for both TCP listener and dialer")
 	flag.BoolVar(&listenerTFO, "tfo_listener", false, "Enables TFO for TCP listener")
@@ -66,14 +83,46 @@ func main() {
 
 	var services []client.Service
 
+	var tunnelRemoteSocksAddr socks.Addr
+	if tunnelRemoteAddress != "" {
+		tunnelRemoteSocksAddr, err = socks.ParseAddr(tunnelRemoteAddress)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	if tunnelTCP {
-		s := client.NewTCPTunnelService(tunnelListenAddress, tunnelRemoteAddress, listenerTFO, dialerTFO, c)
+		s := client.NewTCPSimpleTunnelService(tunnelListenAddress, tunnelRemoteSocksAddr, listenerTFO, dialerTFO, c)
 		s.Start()
 		services = append(services, s)
 	}
 
 	if tunnelUDP {
-		s := client.NewUDPTunnelService(tunnelListenAddress, tunnelRemoteAddress, multiplexUDP, natTimeout, c)
+		s := client.NewUDPSimpleTunnelService(tunnelListenAddress, tunnelRemoteSocksAddr, multiplexUDP, natTimeout, c)
+		s.Start()
+		services = append(services, s)
+	}
+
+	if socks5EnableTCP {
+		s := client.NewTCPSimpleSocks5Service(socks5ListenAddress, socks5EnableTCP, socks5EnableUDP, listenerTFO, dialerTFO, c)
+		s.Start()
+		services = append(services, s)
+	}
+
+	if socks5EnableUDP {
+		s := client.NewUDPSimpleSocks5Service(socks5ListenAddress, multiplexUDP, natTimeout, c)
+		s.Start()
+		services = append(services, s)
+	}
+
+	if ssNoneEnableTCP {
+		s := client.NewTCPShadowsocksNoneService(ssNoneListenAddress, listenerTFO, dialerTFO, c)
+		s.Start()
+		services = append(services, s)
+	}
+
+	if ssNoneEnableUDP {
+		s := client.NewUDPShadowsocksNoneService(ssNoneListenAddress, multiplexUDP, natTimeout, c)
 		s.Start()
 		services = append(services, s)
 	}
