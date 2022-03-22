@@ -202,7 +202,7 @@ type ShadowsocksPacketConn interface {
 	net.PacketConn
 
 	// ReadFromZeroCopy eliminates copying by requiring that a big enough buffer is passed for reading.
-	ReadFromZeroCopy(b []byte) (payload []byte, address string, err error)
+	ReadFromZeroCopy(b []byte) (socksAddrStart, payloadStart, payloadLength int, err error)
 
 	// WriteToZeroCopy minimizes copying by requiring that enough space is reserved in b.
 	// The socks address is still being copied into the buffer.
@@ -368,7 +368,12 @@ func (c *packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	}
 
 	// Decrypt in-place.
-	payload, address, err := ss.UnpackAndValidatePacket(c.cipher, c.aead, c.filter, c.sid, nil, cipherBuf[:n])
+	_, socksAddr, payload, err := ss.UnpackAndValidatePacket(c.cipher, c.aead, c.filter, c.sid, nil, cipherBuf[:n])
+	if err != nil {
+		return 0, nil, err
+	}
+
+	addr, err := socksAddr.Addr("udp")
 	if err != nil {
 		return 0, nil, err
 	}
@@ -378,37 +383,17 @@ func (c *packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
 		err = io.ErrShortBuffer
 	}
 
-	return n, NewAddr(address, "udp"), err
+	return n, addr, err
 }
 
-func (c *packetConn) ReadFromZeroCopy(b []byte) (payload []byte, address string, err error) {
+func (c *packetConn) ReadFromZeroCopy(b []byte) (socksAddrStart, payloadStart, payloadLength int, err error) {
 	n, err := c.UDPConn.Read(b)
 	if err != nil {
 		return
 	}
 
-	payload, address, err = ss.UnpackAndValidatePacket(c.cipher, c.aead, c.filter, c.sid, nil, b[:n])
+	socksAddrStart, socksAddr, payload, err := ss.UnpackAndValidatePacket(c.cipher, c.aead, c.filter, c.sid, nil, b[:n])
+	payloadStart = socksAddrStart + len(socksAddr)
+	payloadLength = len(payload)
 	return
-}
-
-type addr struct {
-	address string
-	network string
-}
-
-func (a *addr) String() string {
-	return a.address
-}
-
-func (a *addr) Network() string {
-	return a.network
-}
-
-// NewAddr returns a net.Addr that holds an address of the form `host:port` with a domain name or IP as host.
-// Used for SOCKS addressing.
-func NewAddr(address, network string) net.Addr {
-	return &addr{
-		address: address,
-		network: network,
-	}
 }

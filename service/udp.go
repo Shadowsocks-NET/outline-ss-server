@@ -316,7 +316,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 		}
 
 	case cipherConfig.IsSpec2022:
-		buf, err = ss.Unpack(dst, src, c)
+		_, buf, err = ss.Unpack(dst, src, c)
 		if err != nil {
 			debugUDP(id, "Failed to unpack: %v", err)
 			return
@@ -330,7 +330,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 		}
 
 	default:
-		buf, err = ss.Unpack(dst, src, c)
+		_, buf, err = ss.Unpack(dst, src, c)
 		if err != nil {
 			debugUDP(id, "Failed to unpack: %v", err)
 			return
@@ -344,14 +344,14 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 // the payload and the destination address, or an error if
 // this packet cannot or should not be forwarded.
 func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfig, clientAddr *net.UDPAddr, sid uint64, ses *session, isNewSession bool, nm *natmap) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
-	addr, payload, err := ss.ParseUDPHeader(textData, ss.HeaderTypeClientPacket, cipherConfig)
+	_, socksAddr, payload, err := ss.ParseUDPHeader(textData, ss.HeaderTypeClientPacket, cipherConfig)
 	if err != nil {
 		return nil, nil, onet.NewConnectionError("ERR_READ_HEADER", "Failed to read packet header", err)
 	}
 
-	tgtUDPAddr, err := net.ResolveUDPAddr("udp", addr)
+	tgtUDPAddr, err := socksAddr.UDPAddr()
 	if err != nil {
-		return nil, nil, onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", addr), err)
+		return nil, nil, onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", socksAddr.String()), err)
 	}
 	if s.targetIPValidator != nil {
 		if err := s.targetIPValidator(tgtUDPAddr.IP); err != nil {

@@ -36,6 +36,9 @@ type natconn struct {
 
 	// The UDPConn where the last client packet was received from.
 	clientConn onet.UDPPacketConn
+
+	// packetAdapter translates packets between clientConn and proxyConn.
+	packetAdapter PacketAdapter
 }
 
 func isDNS(addr *net.UDPAddr) bool {
@@ -79,8 +82,8 @@ func (c *natconn) WriteToZeroCopy(b []byte, start, length int, socksAddr []byte)
 	return c.proxyConn.WriteToZeroCopy(b, start, length, socksAddr)
 }
 
-func (c *natconn) ReadFromZeroCopy(b []byte) (payload []byte, address string, err error) {
-	payload, address, err = c.proxyConn.ReadFromZeroCopy(b)
+func (c *natconn) ReadFromZeroCopy(b []byte) (socksAddrStart, payloadStart, payloadLength int, err error) {
+	socksAddrStart, payloadStart, payloadLength, err = c.proxyConn.ReadFromZeroCopy(b)
 	if err == nil {
 		c.onRead(nil)
 	}
@@ -104,7 +107,7 @@ func (c *natconn) timedCopy() {
 	packetBuf := make([]byte, service.UDPPacketBufferSize)
 
 	for {
-		payload, _, err := c.ReadFromZeroCopy(packetBuf)
+		socksAddrStart, payloadStart, payloadLength, err := c.ReadFromZeroCopy(packetBuf)
 		if err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
 				return
@@ -113,7 +116,13 @@ func (c *natconn) timedCopy() {
 			continue
 		}
 
-		_, _, err = c.clientConn.WriteMsgUDP(payload, c.oobCache, c.clientAddr)
+		writeBuf, err := c.packetAdapter.EncapsulatePacket(packetBuf, socksAddrStart, payloadStart, payloadLength)
+		if err != nil {
+			log.Print(err)
+			continue
+		}
+
+		_, _, err = c.clientConn.WriteMsgUDP(writeBuf, c.oobCache, c.clientAddr)
 		if err != nil {
 			log.Print(err)
 		}
@@ -140,13 +149,14 @@ func (m *natmap) GetByClientAddress(key string) *natconn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) set(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, proxyConn ShadowsocksPacketConn, oobCache []byte) *natconn {
+func (m *natmap) set(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, proxyConn ShadowsocksPacketConn, oobCache []byte, packetAdapter PacketAdapter) *natconn {
 	entry := &natconn{
 		proxyConn:      proxyConn,
 		defaultTimeout: m.timeout,
 		oobCache:       oobCache,
 		clientAddr:     clientAddr,
 		clientConn:     clientConn,
+		packetAdapter:  packetAdapter,
 	}
 
 	m.Lock()
@@ -168,8 +178,8 @@ func (m *natmap) del(key string) *natconn {
 	return nil
 }
 
-func (m *natmap) Add(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte, proxyConn ShadowsocksPacketConn) *natconn {
-	entry := m.set(clientAddr, clientConn, proxyConn, oobCache)
+func (m *natmap) Add(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte, proxyConn ShadowsocksPacketConn, packetAdapter PacketAdapter) *natconn {
+	entry := m.set(clientAddr, clientConn, proxyConn, oobCache, packetAdapter)
 	go func() {
 		entry.timedCopy()
 		if pc := m.del(clientAddr.String()); pc != nil {

@@ -62,16 +62,17 @@ func (s *TCPTunnel) listen() {
 
 			socksaddr, err := s.handshaker.Handshake(clientConn)
 			if err != nil {
-				if socksaddr == nil {
-					// Keep the connection open until EOF.
-					// Example use case: SOCKS5 UDP ASSOCIATE command.
-					b := make([]byte, 1)
-					_, err = io.ReadFull(clientConn, b)
-					if err == nil || err == io.ErrUnexpectedEOF {
-						return
-					}
-				}
 				log.Print(err)
+				return
+			}
+			if socksaddr == nil {
+				// Keep the connection open until EOF.
+				// Example use case: SOCKS5 UDP ASSOCIATE command.
+				b := make([]byte, 1)
+				_, err = io.ReadFull(clientConn, b)
+				if err != nil && err != io.ErrUnexpectedEOF {
+					log.Print(err)
+				}
 				return
 			}
 

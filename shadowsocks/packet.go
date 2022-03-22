@@ -23,6 +23,7 @@ import (
 	"io"
 	"math"
 
+	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 	wgreplay "golang.zx2c4.com/wireguard/replay"
 )
 
@@ -89,37 +90,38 @@ func PackAesWithSeparateHeader(dst, plaintext []byte, cipher *Cipher, sessionAEA
 	return ciphertext, nil
 }
 
-// Unpack decrypts a Shadowsocks-UDP packet and returns a slice containing the decrypted payload or an error.
+// Unpack decrypts a Shadowsocks UDP packet and returns
+// the plaintext offset in the original packet buffer,
+// a slice containing the decrypted plaintext (header + payload) or an error.
+//
 // If dst is present, it is used to store the plaintext, and must have enough capacity.
 // If dst is nil, decryption proceeds in-place.
-// This function is needed because shadowaead.Unpack() embeds its own replay detection,
-// which we do not always want, especially on memory-constrained clients.
-func Unpack(dst, pkt []byte, cipher *Cipher) ([]byte, error) {
-	if !cipher.config.IsSpec2022 {
-		saltSize := cipher.SaltSize()
-		if len(pkt) < saltSize {
-			return nil, ErrShortPacket
-		}
-		salt := pkt[:saltSize]
-		msg := pkt[saltSize:]
-		if dst == nil {
-			dst = msg
-		}
-		return DecryptOnce(cipher, salt, dst[:0], msg)
+func Unpack(dst, pkt []byte, cipher *Cipher) (plaintextStart int, plaintext []byte, err error) {
+	switch {
+	case cipher.config.IsSpec2022:
+		plaintextStart = cipher.udpAEAD.NonceSize()
+	default:
+		plaintextStart = cipher.SaltSize()
 	}
 
-	nonceSize := cipher.udpAEAD.NonceSize()
-
-	if len(pkt) <= nonceSize+cipher.udpAEAD.Overhead() {
-		return nil, ErrShortPacket
+	if len(pkt) < plaintextStart {
+		err = ErrShortPacket
+		return
 	}
 
 	if dst == nil {
-		dst = pkt[nonceSize:]
+		dst = pkt[plaintextStart:]
 	}
 
 	// Open AEAD ciphertext
-	return cipher.udpAEAD.Open(dst[:0], pkt[:nonceSize], pkt[nonceSize:], nil)
+	switch {
+	case cipher.config.IsSpec2022:
+		plaintext, err = cipher.udpAEAD.Open(dst[:0], pkt[:plaintextStart], pkt[plaintextStart:], nil)
+	default:
+		plaintext, err = DecryptOnce(cipher, pkt[:plaintextStart], dst[:0], pkt[plaintextStart:])
+	}
+
+	return
 }
 
 // Unpack function for 2022-blake3-aes-256-gcm.
@@ -153,10 +155,10 @@ func UnpackAesWithSeparateHeader(dst, pkt, separateHeader []byte, cipher *Cipher
 // and returns the payload (without header) and the address.
 //
 // This function is intended to be called by a client receiving from server.
-func UnpackAndValidatePacket(c *Cipher, separateHeaderAEAD cipher.AEAD, filter *wgreplay.Filter, sid, dst, src []byte) ([]byte, string, error) {
+func UnpackAndValidatePacket(c *Cipher, separateHeaderAEAD cipher.AEAD, filter *wgreplay.Filter, sid, dst, src []byte) (socksAddrStart int, socksAddr socks.Addr, payload []byte, err error) {
 	cipherConfig := c.Config()
+	var plaintextStart int
 	var buf []byte
-	var err error
 
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
@@ -167,49 +169,53 @@ func UnpackAndValidatePacket(c *Cipher, separateHeaderAEAD cipher.AEAD, filter *
 		// Decrypt separate header
 		err = DecryptSeparateHeader(c, dst, src)
 		if err != nil {
-			return nil, "", err
+			return
 		}
 
 		// Check session id
 		if !bytes.Equal(sid, dst[:8]) {
-			return nil, "", ErrSessionIDMismatch
+			err = ErrSessionIDMismatch
+			return
 		}
 
 		// Unpack
 		buf, err = UnpackAesWithSeparateHeader(dst, src, nil, c, separateHeaderAEAD)
 		if err != nil {
-			return nil, "", err
+			return
 		}
 
 	case cipherConfig.IsSpec2022:
-		buf, err = Unpack(dst, src, c)
+		plaintextStart, buf, err = Unpack(dst, src, c)
 		if err != nil {
-			return nil, "", err
+			return
 		}
 
 		// Check session id
 		if !bytes.Equal(sid, buf[:8]) {
-			return nil, "", ErrSessionIDMismatch
+			err = ErrSessionIDMismatch
+			return
 		}
 
 	default:
-		buf, err = Unpack(dst, src, c)
+		plaintextStart, buf, err = Unpack(dst, src, c)
 		if err != nil {
-			return nil, "", err
+			return
 		}
 	}
 
-	addr, payload, err := ParseUDPHeader(buf, HeaderTypeServerPacket, cipherConfig)
+	socksAddrStart, socksAddr, payload, err = ParseUDPHeader(buf, HeaderTypeServerPacket, cipherConfig)
 	if err != nil {
-		return nil, "", err
+		return
 	}
+	socksAddrStart += plaintextStart
 
 	if cipherConfig.IsSpec2022 {
 		pid := binary.BigEndian.Uint64(buf[8:])
 		if !filter.ValidateCounter(pid, math.MaxUint64) {
-			return nil, "", fmt.Errorf("detected replay packet id %d", pid)
+			err = fmt.Errorf("detected replay packet id %d", pid)
+			return
 		}
 	}
 
-	return payload, addr, nil
+	return
 }

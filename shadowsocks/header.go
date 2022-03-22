@@ -190,7 +190,7 @@ func WriteTCPRespHeader(dst, clientSalt []byte, cipherConfig CipherConfig) (n in
 }
 
 // For spec 2022, this function only parses the decrypted AEAD header.
-func ParseUDPHeader(plaintext []byte, htype byte, cipherConfig CipherConfig) (address string, payload []byte, err error) {
+func ParseUDPHeader(plaintext []byte, htype byte, cipherConfig CipherConfig) (socksAddrStart int, socksAddr socks.Addr, payload []byte, err error) {
 	var offset int
 
 	if cipherConfig.IsSpec2022 {
@@ -245,36 +245,18 @@ func ParseUDPHeader(plaintext []byte, htype byte, cipherConfig CipherConfig) (ad
 		offset += paddingLen
 	}
 
+	socksAddrStart = offset
+
 	// Parse socks address
-	tgtAddr, err := socks.SplitAddr(plaintext[offset:])
+	socksAddr, err = socks.SplitAddr(plaintext[offset:])
 	if err != nil {
 		err = fmt.Errorf("failed to parse target address: %w", err)
 		return
 	}
 
-	offset += len(tgtAddr)
+	offset += len(socksAddr)
+	payload = plaintext[offset:]
 
-	return tgtAddr.String(), plaintext[offset:], nil
-}
-
-// WriteUDPAddrToSocksAddr converts a UDP address
-// into socks address and writes to the buffer.
-//
-// No buffer length checks are performed.
-// Make sure the buffer can hold the socks address.
-func WriteUDPAddrToSocksAddr(b []byte, addr *net.UDPAddr) (n int) {
-	n = 1
-
-	if ip4 := addr.IP.To4(); ip4 != nil {
-		b[0] = socks.AtypIPv4
-		n += copy(b[n:], ip4)
-	} else {
-		b[0] = socks.AtypIPv6
-		n += copy(b[n:], addr.IP)
-	}
-
-	binary.BigEndian.PutUint16(b[n:], uint16(addr.Port))
-	n += 2
 	return
 }
 
@@ -331,7 +313,7 @@ func WriteUDPHeader(plaintext []byte, htype byte, sid []byte, pid uint64, target
 	// Write socks address
 	switch {
 	case targetUDPAddr != nil:
-		n += WriteUDPAddrToSocksAddr(plaintext[n:], targetUDPAddr)
+		n += socks.WriteUDPAddrAsSocksAddr(plaintext[n:], targetUDPAddr)
 	case targetSocksAddr != nil:
 		n += copy(plaintext[n:], targetSocksAddr)
 	}
@@ -363,7 +345,7 @@ func WriteClientUDPHeader(plaintext []byte, cipherConfig CipherConfig, sid []byt
 			n += WriteRandomPadding(plaintext[n:], port, maxPacketSize-n-2)
 		}
 
-		n += WriteUDPAddrToSocksAddr(plaintext[n:], udpaddr)
+		n += socks.WriteUDPAddrAsSocksAddr(plaintext[n:], udpaddr)
 	} else {
 		host, portString, err := net.SplitHostPort(targetAddr.String())
 		if err != nil {

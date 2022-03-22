@@ -110,3 +110,25 @@ type ConnectionError struct {
 func NewConnectionError(status, message string, cause error) *ConnectionError {
 	return &ConnectionError{Status: status, Message: message, Cause: cause}
 }
+
+type addr struct {
+	address string
+	network string
+}
+
+func (a *addr) String() string {
+	return a.address
+}
+
+func (a *addr) Network() string {
+	return a.network
+}
+
+// NewAddr returns a net.Addr that holds an address of the form `host:port` with a domain name or IP as host.
+// Used for SOCKS addressing.
+func NewAddr(address, network string) net.Addr {
+	return &addr{
+		address: address,
+		network: network,
+	}
+}

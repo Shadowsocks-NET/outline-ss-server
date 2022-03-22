@@ -121,7 +121,7 @@ func TestShadowsocksClient_ListenUDP(t *testing.T) {
 	}
 	defer conn.Close()
 	conn.SetReadDeadline(time.Now().Add(time.Second * 5))
-	pcrw := &packetConnReadWriter{PacketConn: conn, targetAddr: NewAddr(testTargetAddr, "udp")}
+	pcrw := &packetConnReadWriter{PacketConn: conn, targetAddr: onet.NewAddr(testTargetAddr, "udp")}
 	expectEchoPayload(pcrw, ss.MakeTestPayload(1024), make([]byte, 1024), t)
 
 	proxy.Close()
@@ -173,7 +173,7 @@ func BenchmarkShadowsocksClient_ListenUDP(b *testing.B) {
 	buf := make([]byte, service.UDPPacketBufferSize)
 	for n := 0; n < b.N; n++ {
 		payload := ss.MakeTestPayload(1024)
-		pcrw := &packetConnReadWriter{PacketConn: conn, targetAddr: NewAddr(testTargetAddr, "udp")}
+		pcrw := &packetConnReadWriter{PacketConn: conn, targetAddr: onet.NewAddr(testTargetAddr, "udp")}
 		b.StartTimer()
 		expectEchoPayload(pcrw, payload, buf, b)
 		b.StopTimer()
@@ -252,7 +252,7 @@ func startShadowsocksUDPEchoServer(expectedTgtAddr string, t testing.TB) (net.Co
 				t.Logf("Failed to read from UDP conn: %v", err)
 				return
 			}
-			buf, err := ss.Unpack(clientBuf, cipherBuf[:n], cipher)
+			_, buf, err := ss.Unpack(clientBuf, cipherBuf[:n], cipher)
 			if err != nil {
 				t.Fatalf("Failed to decrypt: %v", err)
 			}

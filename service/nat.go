@@ -194,7 +194,7 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 				ses.pid++
 			default:
 				headerStart = bodyStart - socksAddrLen
-				ss.WriteUDPAddrToSocksAddr(pkt[headerStart:], raddr)
+				socks.WriteUDPAddrAsSocksAddr(pkt[headerStart:], raddr)
 			}
 
 			// `plainTextBuf` concatenates the SOCKS address and body:

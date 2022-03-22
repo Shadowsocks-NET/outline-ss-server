@@ -17,13 +17,13 @@ type UDPTunnel struct {
 	multiplexUDP  bool
 	natTimeout    time.Duration
 
-	client       Client
-	conn         *net.UDPConn
-	packetParser PacketParser
+	client        Client
+	conn          *net.UDPConn
+	packetAdapter PacketAdapter
 }
 
 func (s *UDPTunnel) Name() string {
-	return fmt.Sprint("UDP ", s.packetParser.Name(), " service")
+	return fmt.Sprint("UDP ", s.packetAdapter.Name(), " service")
 }
 
 func (s *UDPTunnel) Start() error {
@@ -61,7 +61,7 @@ func (s *UDPTunnel) listen() {
 			continue
 		}
 
-		payloadStart, payloadLength, detachedSocksAddr, err := s.packetParser.ParsePacket(packetBuf, ShadowsocksPacketConnFrontReserve, n)
+		payloadStart, payloadLength, detachedSocksAddr, err := s.packetAdapter.ParsePacket(packetBuf, ShadowsocksPacketConnFrontReserve, n)
 		if err != nil {
 			log.Print(err)
 			continue
@@ -76,7 +76,7 @@ func (s *UDPTunnel) listen() {
 				continue
 			}
 
-			proxyConn = nm.Add(clientAddr, s.conn, oobCache, spc)
+			proxyConn = nm.Add(clientAddr, s.conn, oobCache, spc, s.packetAdapter)
 		} else {
 			proxyConn.oobCache = oobCache
 		}
@@ -95,43 +95,54 @@ func (s *UDPTunnel) Stop() error {
 	return nil
 }
 
-// PacketParser parses an incoming packet and returns payload start index, payload length,
-// a detached socks address (if applicable), or an error.
-//
-// The detached socks address is only returned when the payload does not start with a socks address.
-type PacketParser interface {
+// PacketAdapter translates packets between a local interface and the proxy interface.
+type PacketAdapter interface {
 	Name() string
+
+	// ParsePacket parses an incoming packet and returns payload start index, payload length,
+	// a detached socks address (if applicable), or an error.
+	//
+	// The detached socks address is only returned when the payload does not start with a socks address.
 	ParsePacket(pkt []byte, start, length int) (payloadStart, payloadLength int, detachedSocksAddr []byte, err error)
+
+	// EncapsulatePacket encapsulates the decrypted packet from proxy
+	// into a new form so it's ready to be sent on the local interface.
+	// The encapsulation must not extend beyond the range of the full decrypted packet.
+	EncapsulatePacket(decryptedFullPacket []byte, socksAddrStart, payloadStart, payloadLength int) (pkt []byte, err error)
 }
 
-// SimpleTunnelPacketParser simply relays packets between clientConn and proxyConn.
-type SimpleTunnelPacketParser struct {
+// SimpleTunnelPacketAdapter simply relays packets between clientConn and proxyConn.
+type SimpleTunnelPacketAdapter struct {
 	remoteSocksAddr socks.Addr
 }
 
-func NewSimpleTunnelPacketParser(remoteSocksAddr socks.Addr) *SimpleTunnelPacketParser {
-	return &SimpleTunnelPacketParser{
+func NewSimpleTunnelPacketAdapter(remoteSocksAddr socks.Addr) *SimpleTunnelPacketAdapter {
+	return &SimpleTunnelPacketAdapter{
 		remoteSocksAddr: remoteSocksAddr,
 	}
 }
 
-func (p *SimpleTunnelPacketParser) Name() string {
+func (p *SimpleTunnelPacketAdapter) Name() string {
 	return "simple tunnel"
 }
 
-func (p *SimpleTunnelPacketParser) ParsePacket(_ []byte, start, length int) (payloadStart, payloadLength int, detachedSocksAddr []byte, err error) {
+func (p *SimpleTunnelPacketAdapter) ParsePacket(_ []byte, start, length int) (payloadStart, payloadLength int, detachedSocksAddr []byte, err error) {
 	return start, length, p.remoteSocksAddr, nil
 }
 
-// SimpleSocks5PacketParser is a minimal implementation of SOCKS5 UDP server.
-// It unconditionally accepts SOCKS5 UDP packets, no matter a corresponding UDP association exists or not.
-type SimpleSocks5PacketParser struct{}
+func (p *SimpleTunnelPacketAdapter) EncapsulatePacket(decryptedFullPacket []byte, _, payloadStart, payloadLength int) (pkt []byte, err error) {
+	return decryptedFullPacket[payloadStart : payloadStart+payloadLength], nil
+}
 
-func (p *SimpleSocks5PacketParser) Name() string {
+// SimpleSocks5PacketAdapter is a minimal implementation of SOCKS5 UDP server.
+// It unconditionally accepts SOCKS5 UDP packets, no matter a corresponding UDP association exists or not.
+type SimpleSocks5PacketAdapter struct{}
+
+func (p *SimpleSocks5PacketAdapter) Name() string {
 	return "simple SOCKS5"
 }
 
-func (p *SimpleSocks5PacketParser) ParsePacket(pkt []byte, start, length int) (payloadStart, payloadLength int, detachedSocksAddr []byte, err error) {
+func (p *SimpleSocks5PacketAdapter) ParsePacket(pkt []byte, start, length int) (payloadStart, payloadLength int, detachedSocksAddr []byte, err error) {
 	payloadStart = start + 3
 	if len(pkt) <= payloadStart {
 		return 0, 0, nil, ss.ErrShortPacket
@@ -152,14 +163,24 @@ func (p *SimpleSocks5PacketParser) ParsePacket(pkt []byte, start, length int) (p
 	return
 }
 
-// ShadowsocksNonePacketParser implements the 'none' mode of Shadowsocks.
-type ShadowsocksNonePacketParser struct{}
+func (p *SimpleSocks5PacketAdapter) EncapsulatePacket(decryptedFullPacket []byte, socksAddrStart, payloadStart, payloadLength int) (pkt []byte, err error) {
+	start := socksAddrStart - 3
+	// RSV
+	decryptedFullPacket[start] = 0
+	decryptedFullPacket[start+1] = 0
+	// FRAG
+	decryptedFullPacket[start+2] = 0
+	return decryptedFullPacket[start : payloadStart+payloadLength], nil
+}
 
-func (p *ShadowsocksNonePacketParser) Name() string {
+// ShadowsocksNonePacketAdapter implements the 'none' mode of Shadowsocks.
+type ShadowsocksNonePacketAdapter struct{}
+
+func (p *ShadowsocksNonePacketAdapter) Name() string {
 	return "Shadowsocks none"
 }
 
-func (p *ShadowsocksNonePacketParser) ParsePacket(pkt []byte, start, length int) (payloadStart, payloadLength int, detachedSocksAddr []byte, err error) {
+func (p *ShadowsocksNonePacketAdapter) ParsePacket(pkt []byte, start, length int) (payloadStart, payloadLength int, detachedSocksAddr []byte, err error) {
 	// Validate socks address.
 	_, err = socks.SplitAddr(pkt[start:])
 	if err != nil {
@@ -171,13 +192,17 @@ func (p *ShadowsocksNonePacketParser) ParsePacket(pkt []byte, start, length int)
 	return
 }
 
+func (p *ShadowsocksNonePacketAdapter) EncapsulatePacket(decryptedFullPacket []byte, socksAddrStart, payloadStart, payloadLength int) (pkt []byte, err error) {
+	return decryptedFullPacket[socksAddrStart : payloadStart+payloadLength], nil
+}
+
 func NewUDPSimpleTunnelService(tunnelListenAddress string, tunnelRemoteSocksAddr socks.Addr, multiplexUDP bool, natTimeout time.Duration, client Client) Service {
 	return &UDPTunnel{
 		listenAddress: tunnelListenAddress,
 		multiplexUDP:  multiplexUDP,
 		natTimeout:    natTimeout,
 		client:        client,
-		packetParser:  NewSimpleTunnelPacketParser(tunnelRemoteSocksAddr),
+		packetAdapter: NewSimpleTunnelPacketAdapter(tunnelRemoteSocksAddr),
 	}
 }
 
@@ -187,7 +212,7 @@ func NewUDPSimpleSocks5Service(socks5ListenAddress string, multiplexUDP bool, na
 		multiplexUDP:  multiplexUDP,
 		natTimeout:    natTimeout,
 		client:        client,
-		packetParser:  &SimpleSocks5PacketParser{},
+		packetAdapter: &SimpleSocks5PacketAdapter{},
 	}
 }
 
@@ -197,6 +222,6 @@ func NewUDPShadowsocksNoneService(ssNoneListenAddress string, multiplexUDP bool,
 		multiplexUDP:  multiplexUDP,
 		natTimeout:    natTimeout,
 		client:        client,
-		packetParser:  &ShadowsocksNonePacketParser{},
+		packetAdapter: &ShadowsocksNonePacketAdapter{},
 	}
 }

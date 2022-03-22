@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"strconv"
+
+	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 )
 
 // SOCKS request commands as defined in RFC 1928 section 4.
@@ -65,6 +67,58 @@ func (a Addr) String() string {
 	return net.JoinHostPort(host, port)
 }
 
+func (a Addr) Addr(network string) (net.Addr, error) {
+	var ip net.IP
+	var port int
+
+	switch a[0] {
+	case AtypDomainName:
+		return onet.NewAddr(a.String(), network), nil
+	case AtypIPv4:
+		ip = net.IP(a[1 : 1+4])
+		port = int(binary.BigEndian.Uint16(a[1+4 : 1+4+2]))
+	case AtypIPv6:
+		ip = net.IP(a[1 : 1+16])
+		port = int(binary.BigEndian.Uint16(a[1+16 : 1+16+2]))
+	default:
+		return nil, fmt.Errorf("unknown atyp %v", a[0])
+	}
+
+	switch network {
+	case "tcp", "tcp4", "tcp6":
+		return &net.TCPAddr{
+			IP:   ip,
+			Port: port,
+		}, nil
+	case "udp", "udp4", "udp6":
+		return &net.UDPAddr{
+			IP:   ip,
+			Port: port,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown network %s", network)
+	}
+}
+
+func (a Addr) UDPAddr() (*net.UDPAddr, error) {
+	switch a[0] {
+	case AtypDomainName:
+		return net.ResolveUDPAddr("udp", a.String())
+	case AtypIPv4:
+		return &net.UDPAddr{
+			IP:   net.IP(a[1 : 1+4]),
+			Port: int(binary.BigEndian.Uint16(a[1+4 : 1+4+2])),
+		}, nil
+	case AtypIPv6:
+		return &net.UDPAddr{
+			IP:   net.IP(a[1 : 1+16]),
+			Port: int(binary.BigEndian.Uint16(a[1+16 : 1+16+2])),
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown atyp %v", a[0])
+	}
+}
+
 // WriteAddr parses an address string into a socks address
 // and writes to the destination slice.
 //
@@ -108,6 +162,27 @@ func WriteAddr(dst []byte, s string) (n int, host string, port int, err error) {
 	n += 2
 	port = int(portnum)
 
+	return
+}
+
+// WriteUDPAddrAsSocksAddr converts a UDP address
+// into socks address and writes to the buffer.
+//
+// No buffer length checks are performed.
+// Make sure the buffer can hold the socks address.
+func WriteUDPAddrAsSocksAddr(b []byte, addr *net.UDPAddr) (n int) {
+	n = 1
+
+	if ip4 := addr.IP.To4(); ip4 != nil {
+		b[0] = AtypIPv4
+		n += copy(b[n:], ip4)
+	} else {
+		b[0] = AtypIPv6
+		n += copy(b[n:], addr.IP)
+	}
+
+	binary.BigEndian.PutUint16(b[n:], uint16(addr.Port))
+	n += 2
 	return
 }
 
