@@ -2,7 +2,6 @@ package client
 
 import (
 	"errors"
-	"log"
 	"net"
 	"os"
 	"sync"
@@ -10,6 +9,7 @@ import (
 
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
+	"go.uber.org/zap"
 )
 
 type natconn struct {
@@ -98,6 +98,10 @@ func (c *natconn) LocalAddr() net.Addr {
 	return c.proxyConn.LocalAddr()
 }
 
+func (c *natconn) RemoteAddr() net.Addr {
+	return c.proxyConn.RemoteAddr()
+}
+
 func (c *natconn) Close() error {
 	return c.proxyConn.Close()
 }
@@ -112,19 +116,38 @@ func (c *natconn) timedCopy() {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
 				return
 			}
-			log.Print(err)
+			logger.Warn("Failed to read from proxy",
+				zap.Stringer("listenAddress", c.clientConn.LocalAddr()),
+				zap.Stringer("clientAddress", c.clientAddr),
+				zap.Stringer("proxyConnLocalAddress", c.proxyConn.LocalAddr()),
+				zap.Stringer("proxyConnRemoteAddress", c.proxyConn.RemoteAddr()),
+				zap.Error(err),
+			)
 			continue
 		}
 
 		writeBuf, err := c.packetAdapter.EncapsulatePacket(packetBuf, socksAddrStart, payloadStart, payloadLength)
 		if err != nil {
-			log.Print(err)
+			logger.Warn("Failed to encapsulate decrypted proxy packet for sending on clientConn",
+				zap.Stringer("listenAddress", c.clientConn.LocalAddr()),
+				zap.Stringer("clientAddress", c.clientAddr),
+				zap.Stringer("proxyConnLocalAddress", c.proxyConn.LocalAddr()),
+				zap.Stringer("proxyConnRemoteAddress", c.proxyConn.RemoteAddr()),
+				zap.Stringer("packetAdapter", c.packetAdapter),
+				zap.Error(err),
+			)
 			continue
 		}
 
 		_, _, err = c.clientConn.WriteMsgUDP(writeBuf, c.oobCache, c.clientAddr)
 		if err != nil {
-			log.Print(err)
+			logger.Warn("Failed to write to clientConn",
+				zap.Stringer("listenAddress", c.clientConn.LocalAddr()),
+				zap.Stringer("clientAddress", c.clientAddr),
+				zap.Stringer("proxyConnLocalAddress", c.proxyConn.LocalAddr()),
+				zap.Stringer("proxyConnRemoteAddress", c.proxyConn.RemoteAddr()),
+				zap.Error(err),
+			)
 		}
 	}
 }

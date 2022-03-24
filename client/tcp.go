@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 	"github.com/database64128/tfo-go"
+	"go.uber.org/zap"
 )
 
 type TCPTunnel struct {
@@ -24,70 +24,117 @@ type TCPTunnel struct {
 	handshaker Handshaker
 }
 
-func (s *TCPTunnel) Name() string {
-	return fmt.Sprint("TCP ", s.handshaker.Name(), " relay service")
+func (s *TCPTunnel) String() string {
+	return fmt.Sprint("TCP ", s.handshaker.String(), " relay service")
 }
 
 func (s *TCPTunnel) Start() error {
-	go s.listen()
-	log.Printf("Started %s listening on %s", s.Name(), s.listenAddress)
-	return nil
-}
-
-func (s *TCPTunnel) listen() {
 	lc := tfo.ListenConfig{
 		DisableTFO: !s.listenerTFO,
 	}
 	l, err := lc.Listen(context.Background(), "tcp", s.listenAddress)
 	if err != nil {
-		log.Print(err)
-		return
+		return err
 	}
-	defer l.Close()
-
 	s.listener = l.(*net.TCPListener)
 
-	for {
-		clientConn, err := l.(*net.TCPListener).AcceptTCP()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			log.Print(err)
-			continue
-		}
+	go func() {
+		defer s.listener.Close()
 
-		go func() {
-			defer clientConn.Close()
-
-			socksaddr, err := s.handshaker.Handshake(clientConn)
+		for {
+			clientConn, err := l.(*net.TCPListener).AcceptTCP()
 			if err != nil {
-				log.Print(err)
-				return
-			}
-			if socksaddr == nil {
-				// Keep the connection open until EOF.
-				// Example use case: SOCKS5 UDP ASSOCIATE command.
-				b := make([]byte, 1)
-				_, err = io.ReadFull(clientConn, b)
-				if err != nil && err != io.ErrUnexpectedEOF {
-					log.Print(err)
+				if errors.Is(err, net.ErrClosed) {
+					return
 				}
-				return
+				logger.Warn("Failed to accept TCP connection",
+					zap.Stringer("service", s),
+					zap.String("listenAddress", s.listenAddress),
+					zap.Error(err),
+				)
+				continue
 			}
 
-			proxyConn, err := s.client.DialTCP(nil, socksaddr, s.dialerTFO)
-			if err != nil {
-				log.Print(err)
-				return
-			}
-			defer proxyConn.Close()
+			go s.handleConn(clientConn)
+		}
+	}()
+	logger.Info("Started listener", zap.Stringer("service", s), zap.String("listenAddress", s.listenAddress))
+	return nil
+}
 
-			err = relay(clientConn, proxyConn)
-			if err != nil {
-				log.Print(err)
-			}
-		}()
+func (s *TCPTunnel) handleConn(clientConn *net.TCPConn) {
+	defer clientConn.Close()
+
+	socksaddr, err := s.handshaker.Handshake(clientConn)
+	if err != nil {
+		logger.Warn("Failed to handshake with client",
+			zap.Stringer("service", s),
+			zap.Stringer("clientConnLocalAddress", clientConn.LocalAddr()),
+			zap.Stringer("clientConnRemoteAddress", clientConn.RemoteAddr()),
+			zap.Error(err),
+		)
+		return
+	}
+	if socksaddr == nil {
+		// Keep the connection open until EOF.
+		// Example use case: SOCKS5 UDP ASSOCIATE command.
+		logger.Debug("Keeping TCP connection open for UDP association",
+			zap.Stringer("service", s),
+			zap.Stringer("clientConnLocalAddress", clientConn.LocalAddr()),
+			zap.Stringer("clientConnRemoteAddress", clientConn.RemoteAddr()),
+		)
+
+		b := make([]byte, 1)
+		_, err = io.ReadFull(clientConn, b)
+		if err != nil && err != io.ErrUnexpectedEOF {
+			logger.Warn("TCP connection for UDP association failed",
+				zap.Stringer("service", s),
+				zap.Stringer("clientConnLocalAddress", clientConn.LocalAddr()),
+				zap.Stringer("clientConnRemoteAddress", clientConn.RemoteAddr()),
+				zap.Error(err),
+			)
+		}
+		return
+	}
+
+	logger.Debug("Dialing target",
+		zap.Stringer("service", s),
+		zap.Stringer("clientConnLocalAddress", clientConn.LocalAddr()),
+		zap.Stringer("clientConnRemoteAddress", clientConn.RemoteAddr()),
+		zap.Stringer("targetAddress", socksaddr),
+		zap.Bool("dialerTFO", s.dialerTFO),
+	)
+
+	proxyConn, err := s.client.DialTCP(nil, socksaddr, s.dialerTFO)
+	if err != nil {
+		logger.Warn("Failed to dial target via proxy",
+			zap.Stringer("service", s),
+			zap.Stringer("clientConnLocalAddress", clientConn.LocalAddr()),
+			zap.Stringer("clientConnRemoteAddress", clientConn.RemoteAddr()),
+			zap.Stringer("targetAddress", socksaddr),
+			zap.Error(err),
+		)
+		return
+	}
+	defer proxyConn.Close()
+
+	logger.Info("Relaying",
+		zap.Stringer("service", s),
+		zap.Stringer("clientConnRemoteAddress", clientConn.RemoteAddr()),
+		zap.Stringer("proxyConnRemoteAddress", proxyConn.RemoteAddr()),
+		zap.Stringer("targetAddress", socksaddr),
+	)
+
+	err = relay(clientConn, proxyConn)
+	if err != nil {
+		logger.Warn("TCP relay failed",
+			zap.Stringer("service", s),
+			zap.Stringer("clientConnLocalAddress", clientConn.LocalAddr()),
+			zap.Stringer("clientConnRemoteAddress", clientConn.RemoteAddr()),
+			zap.Stringer("proxyConnLocalAddress", proxyConn.LocalAddr()),
+			zap.Stringer("proxyConnRemoteAddress", proxyConn.RemoteAddr()),
+			zap.Error(err),
+		)
 	}
 }
 
@@ -116,7 +163,7 @@ func relay(leftConn, rightConn onet.DuplexConn) error {
 
 func (s *TCPTunnel) Stop() error {
 	if s.listener != nil {
-		s.listener.Close()
+		return s.listener.Close()
 	}
 	return nil
 }
@@ -128,7 +175,7 @@ func (s *TCPTunnel) Stop() error {
 //
 // If both the returned socks address and error are nil, the connection is kept open until EOF.
 type Handshaker interface {
-	Name() string
+	String() string
 	Handshake(*net.TCPConn) (socks.Addr, error)
 }
 
@@ -143,7 +190,7 @@ func NewSimpleTunnelHandshaker(remoteSocksAddr socks.Addr) *SimpleTunnelHandshak
 	}
 }
 
-func (h *SimpleTunnelHandshaker) Name() string {
+func (h *SimpleTunnelHandshaker) String() string {
 	return "simple tunnel"
 }
 
@@ -165,7 +212,7 @@ func NewSimpleSocks5Handshaker(enableTCP, enableUDP bool) *SimpleSocks5Handshake
 	}
 }
 
-func (h *SimpleSocks5Handshaker) Name() string {
+func (h *SimpleSocks5Handshaker) String() string {
 	return "simple SOCKS5"
 }
 
@@ -243,7 +290,7 @@ func replyWithStatus(conn *net.TCPConn, socks5err byte) error {
 // ShadowsocksNoneHandshaker implements the 'none' mode of Shadowsocks.
 type ShadowsocksNoneHandshaker struct{}
 
-func (h *ShadowsocksNoneHandshaker) Name() string {
+func (h *ShadowsocksNoneHandshaker) String() string {
 	return "Shadowsocks none"
 }
 

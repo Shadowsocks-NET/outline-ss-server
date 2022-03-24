@@ -1,71 +1,61 @@
-// Copyright 2018 Jigsaw Operations LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     https://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-package service
+package net
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"syscall"
 	"unsafe"
 
-	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"golang.org/x/sys/unix"
 )
 
-func ListenUDP(network string, laddr *net.UDPAddr) (onet.UDPPacketConn, error) {
+var ErrEmptyOob = errors.New("length of oob is 0")
+
+// ListenUDP wraps Go's net.ListenConfig.ListenPacket and
+// sets IP_PKTINFO, IPV6_RECVPKTINFO socket options on the returned socket.
+func ListenUDP(network string, laddr *net.UDPAddr) (conn UDPPacketConn, err error, serr error) {
 	lc := &net.ListenConfig{
 		Control: func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
-				// Always set IP_PKTINFO
+				// Set IP_PKTINFO for both v4 and v6.
 				if err := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1); err != nil {
-					logger.Errorf("failed to set socket option IP_PKTINFO: %v", err)
-					return
+					serr = fmt.Errorf("failed to set socket option IP_PKTINFO: %w", err)
 				}
-				logger.Debugf("successfully set IP_PKTINFO on %s", network)
 
 				if network == "udp6" {
 					if err := unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_RECVPKTINFO, 1); err != nil {
-						logger.Errorf("failed to set socket option IPV6_RECVPKTINFO: %v", err)
-						return
+						serr = fmt.Errorf("failed to set socket option IPV6_RECVPKTINFO: %w", err)
 					}
-					logger.Debugf("successfully set IPV6_RECVPKTINFO on %s", network)
 				}
 			})
 		},
 	}
 
-	conn, err := lc.ListenPacket(context.Background(), network, laddr.String())
+	pconn, err := lc.ListenPacket(context.Background(), network, laddr.String())
 	if err != nil {
-		return nil, err
-	} else {
-		return conn.(onet.UDPPacketConn), err
+		return
 	}
+	conn = pconn.(UDPPacketConn)
+	return
 }
 
-func GetOobForCache(clientOob []byte) []byte {
+// GetOobForCache filters out irrelevant OOB messages
+// and returns only IP_PKTINFO or IPV6_PKTINFO socket control messages.
+//
+// Errors returned by this function can be safely ignored,
+// or printed as debug logs.
+func GetOobForCache(clientOob []byte) ([]byte, error) {
 	switch len(clientOob) {
 	case unix.SizeofCmsghdr + unix.SizeofInet4Pktinfo:
-		return getOobForCache4(clientOob)
+		return getOobForCache4(clientOob), nil
 	case unix.SizeofCmsghdr + unix.SizeofInet6Pktinfo:
-		return getOobForCache6(clientOob)
+		return getOobForCache6(clientOob), nil
 	case 0:
-		logger.Debug("getOobForCache processed empty oob")
-		return nil
+		return nil, ErrEmptyOob
 	default:
-		logger.Debugf("unknown oob length: %d", len(clientOob))
-		return nil
+		return nil, fmt.Errorf("unknown oob length: %d", len(clientOob))
 	}
 }
 
@@ -77,7 +67,6 @@ type oob4 struct {
 func getOobForCache4(clientOob4 []byte) []byte {
 	cmsg := (*oob4)(unsafe.Pointer(&clientOob4))
 	if cmsg.cmsghdr.Level == unix.IPPROTO_IP && cmsg.cmsghdr.Type == unix.IP_PKTINFO {
-		logger.Debug("successfully cached oob type IP_PKTINFO")
 		return (*[unix.SizeofCmsghdr + unix.SizeofInet4Pktinfo]byte)(unsafe.Pointer(&oob4{
 			cmsghdr: unix.Cmsghdr{
 				Level: unix.IPPROTO_IP,
@@ -89,10 +78,8 @@ func getOobForCache4(clientOob4 []byte) []byte {
 				Spec_dst: cmsg.pktinfo.Spec_dst,
 			},
 		}))[:]
-	} else {
-		logger.Debugf("unknown client oob level %d type %d", cmsg.cmsghdr.Level, cmsg.cmsghdr.Type)
-		return nil
 	}
+	return nil
 }
 
 type oob6 struct {
@@ -103,7 +90,6 @@ type oob6 struct {
 func getOobForCache6(clientOob6 []byte) []byte {
 	cmsg := (*oob6)(unsafe.Pointer(&clientOob6))
 	if cmsg.cmsghdr.Level == unix.IPPROTO_IPV6 && cmsg.cmsghdr.Type == unix.IPV6_PKTINFO {
-		logger.Debug("successfully cached oob type IPV6_PKTINFO")
 		return (*[unix.SizeofCmsghdr + unix.SizeofInet6Pktinfo]byte)(unsafe.Pointer(&oob6{
 			cmsghdr: unix.Cmsghdr{
 				Level: unix.IPPROTO_IPV6,
@@ -115,8 +101,6 @@ func getOobForCache6(clientOob6 []byte) []byte {
 				Ifindex: cmsg.pktinfo.Ifindex,
 			},
 		}))[:]
-	} else {
-		logger.Debugf("unknown client oob level %d type %d", cmsg.cmsghdr.Level, cmsg.cmsghdr.Type)
-		return nil
 	}
+	return nil
 }

@@ -3,13 +3,14 @@ package client
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"time"
 
+	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
+	"go.uber.org/zap"
 )
 
 type UDPTunnel struct {
@@ -22,82 +23,134 @@ type UDPTunnel struct {
 	packetAdapter PacketAdapter
 }
 
-func (s *UDPTunnel) Name() string {
-	return fmt.Sprint("UDP ", s.packetAdapter.Name(), " service")
+func (s *UDPTunnel) String() string {
+	return fmt.Sprint("UDP ", s.packetAdapter.String(), " service")
 }
 
 func (s *UDPTunnel) Start() error {
-	go s.listen()
-	log.Printf("Started %s listening on %s", s.Name(), s.listenAddress)
-	return nil
-}
-
-func (s *UDPTunnel) listen() {
 	laddr, err := net.ResolveUDPAddr("udp", s.listenAddress)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	conn, err := service.ListenUDP("udp", laddr)
+	conn, err, serr := onet.ListenUDP("udp", laddr)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	defer conn.Close()
+	if serr != nil {
+		logger.Warn("Failed to set IP_PKTINFO, IPV6_RECVPKTINFO socket options",
+			zap.Stringer("service", s),
+			zap.String("listenAddress", s.listenAddress),
+			zap.Error(serr),
+		)
+	}
 	s.conn = conn.(*net.UDPConn)
 
-	nm := newNATmap(s.natTimeout)
-	defer nm.Close()
+	go func() {
+		defer s.conn.Close()
 
-	packetBuf := make([]byte, service.UDPPacketBufferSize)
-	oobBuf := make([]byte, service.UDPOOBBufferSize)
+		nm := newNATmap(s.natTimeout)
+		defer nm.Close()
 
-	for {
-		n, oobn, _, clientAddr, err := s.conn.ReadMsgUDP(packetBuf[ShadowsocksPacketConnFrontReserve:], oobBuf)
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			log.Print(err)
-			continue
-		}
+		packetBuf := make([]byte, service.UDPPacketBufferSize)
+		oobBuf := make([]byte, service.UDPOOBBufferSize)
 
-		payloadStart, payloadLength, detachedSocksAddr, err := s.packetAdapter.ParsePacket(packetBuf, ShadowsocksPacketConnFrontReserve, n)
-		if err != nil {
-			log.Print(err)
-			continue
-		}
-
-		oobCache := service.GetOobForCache(oobBuf[:oobn])
-		proxyConn := nm.GetByClientAddress(clientAddr.String())
-		if proxyConn == nil {
-			spc, err := s.client.ListenUDP(nil)
+		for {
+			n, oobn, _, clientAddr, err := s.conn.ReadMsgUDP(packetBuf[ShadowsocksPacketConnFrontReserve:], oobBuf)
 			if err != nil {
-				log.Print(err)
+				if errors.Is(err, net.ErrClosed) {
+					break
+				}
+				logger.Warn("Failed to read from UDPConn",
+					zap.Stringer("service", s),
+					zap.String("listenAddress", s.listenAddress),
+					zap.Error(err),
+				)
 				continue
 			}
 
-			proxyConn = nm.Add(clientAddr, s.conn, oobCache, spc, s.packetAdapter)
-		} else {
-			proxyConn.oobCache = oobCache
-		}
+			payloadStart, payloadLength, detachedSocksAddr, err := s.packetAdapter.ParsePacket(packetBuf, ShadowsocksPacketConnFrontReserve, n)
+			if err != nil {
+				logger.Warn("Failed to parse client packet",
+					zap.Stringer("service", s),
+					zap.String("listenAddress", s.listenAddress),
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Error(err),
+				)
+				continue
+			}
 
-		_, err = proxyConn.WriteToZeroCopy(packetBuf, payloadStart, payloadLength, detachedSocksAddr)
-		if err != nil {
-			log.Print(err)
+			oobCache, err := onet.GetOobForCache(oobBuf[:oobn])
+			if err != nil {
+				logger.Debug("Failed to process OOB",
+					zap.Stringer("service", s),
+					zap.String("listenAddress", s.listenAddress),
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Error(err),
+				)
+			}
+
+			proxyConn := nm.GetByClientAddress(clientAddr.String())
+			if proxyConn == nil {
+				logger.Info("New UDP session",
+					zap.Stringer("service", s),
+					zap.String("listenAddress", s.listenAddress),
+					zap.Stringer("clientAddress", clientAddr),
+				)
+
+				spc, err := s.client.ListenUDP(nil)
+				if err != nil {
+					logger.Warn("Failed to open UDP proxy session",
+						zap.Stringer("service", s),
+						zap.String("listenAddress", s.listenAddress),
+						zap.Stringer("clientAddress", clientAddr),
+						zap.Error(err),
+					)
+					continue
+				}
+
+				proxyConn = nm.Add(clientAddr, s.conn, oobCache, spc, s.packetAdapter)
+			} else {
+				logger.Debug("found UDP session in NAT table",
+					zap.Stringer("service", s),
+					zap.String("listenAddress", s.listenAddress),
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Stringer("proxyConnLocalAddress", proxyConn.LocalAddr()),
+					zap.Stringer("proxyConnRemoteAddress", proxyConn.RemoteAddr()),
+					zap.Duration("defaultTimeout", proxyConn.defaultTimeout),
+					zap.Time("readDeadline", proxyConn.readDeadline),
+				)
+
+				proxyConn.oobCache = oobCache
+			}
+
+			_, err = proxyConn.WriteToZeroCopy(packetBuf, payloadStart, payloadLength, detachedSocksAddr)
+			if err != nil {
+				logger.Warn("Failed to relay packet",
+					zap.Stringer("service", s),
+					zap.String("listenAddress", s.listenAddress),
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Stringer("proxyConnLocalAddress", proxyConn.LocalAddr()),
+					zap.Stringer("proxyConnRemoteAddress", proxyConn.RemoteAddr()),
+					zap.Error(err),
+				)
+			}
 		}
-	}
+	}()
+	logger.Info("Started listener", zap.Stringer("service", s), zap.String("listenAddress", s.listenAddress))
+	return nil
 }
 
 func (s *UDPTunnel) Stop() error {
 	if s.conn != nil {
-		s.conn.Close()
+		return s.conn.Close()
 	}
 	return nil
 }
 
 // PacketAdapter translates packets between a local interface and the proxy interface.
 type PacketAdapter interface {
-	Name() string
+	String() string
 
 	// ParsePacket parses an incoming packet and returns payload start index, payload length,
 	// a detached socks address (if applicable), or an error.
@@ -122,7 +175,7 @@ func NewSimpleTunnelPacketAdapter(remoteSocksAddr socks.Addr) *SimpleTunnelPacke
 	}
 }
 
-func (p *SimpleTunnelPacketAdapter) Name() string {
+func (p *SimpleTunnelPacketAdapter) String() string {
 	return "simple tunnel"
 }
 
@@ -138,7 +191,7 @@ func (p *SimpleTunnelPacketAdapter) EncapsulatePacket(decryptedFullPacket []byte
 // It unconditionally accepts SOCKS5 UDP packets, no matter a corresponding UDP association exists or not.
 type SimpleSocks5PacketAdapter struct{}
 
-func (p *SimpleSocks5PacketAdapter) Name() string {
+func (p *SimpleSocks5PacketAdapter) String() string {
 	return "simple SOCKS5"
 }
 
@@ -176,7 +229,7 @@ func (p *SimpleSocks5PacketAdapter) EncapsulatePacket(decryptedFullPacket []byte
 // ShadowsocksNonePacketAdapter implements the 'none' mode of Shadowsocks.
 type ShadowsocksNonePacketAdapter struct{}
 
-func (p *ShadowsocksNonePacketAdapter) Name() string {
+func (p *ShadowsocksNonePacketAdapter) String() string {
 	return "Shadowsocks none"
 }
 

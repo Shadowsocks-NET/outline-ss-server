@@ -28,15 +28,20 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
-	logging "github.com/op/go-logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 const maxUDPPacketSize = 64 * 1024
 
 func init() {
-	logging.SetLevel(logging.INFO, "")
+	logger, err := zap.NewDevelopment()
+	if err != nil {
+		panic(err)
+	}
+	client.SetLogger(logger)
+	service.SetLogger(logger)
 }
 
 func startTCPEchoServer(t testing.TB) (*net.TCPListener, *sync.WaitGroup) {

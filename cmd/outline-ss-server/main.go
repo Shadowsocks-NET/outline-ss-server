@@ -10,48 +10,35 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Shadowsocks-NET/outline-ss-server/logging"
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/database64128/tfo-go"
-	"github.com/op/go-logging"
 	"github.com/oschwald/geoip2-golang"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"golang.org/x/term"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
 
 var (
-	logger *logging.Logger
-
-	// Set by goreleaser default ldflags. See https://goreleaser.com/customization/build/
 	version = "dev"
+	logger  *zap.Logger
 )
 
 const (
 	// 59 seconds is most common timeout for servers that do not respond to invalid requests
+	//TODO: Consider removing this since we now use a random timeout.
 	tcpReadTimeout time.Duration = 59 * time.Second
 
 	// A UDP NAT timeout of at least 5 minutes is recommended in RFC 4787 Section 4.3.
 	defaultNatTimeout time.Duration = 5 * time.Minute
 )
-
-func init() {
-	var prefix = "%{level:.1s}%{time:2006-01-02T15:04:05.000Z07:00} %{pid} %{shortfile}]"
-	if term.IsTerminal(int(os.Stderr.Fd())) {
-		// Add color only if the output is the terminal
-		prefix = strings.Join([]string{"%{color}", prefix, "%{color:reset}"}, "")
-	}
-	logging.SetFormatter(logging.MustStringFormatter(strings.Join([]string{prefix, " %{message}"}, "")))
-	logging.SetBackend(logging.NewLogBackend(os.Stderr, "", 0))
-	logger = logging.MustGetLogger("")
-}
 
 type ssPort struct {
 	tcpService service.TCPService
@@ -78,11 +65,16 @@ func (s *SSServer) startPort(portNum int) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to start TCP on port %v: %v", portNum, err)
 	}
-	udpPacketConn, err := service.ListenUDP("udp", &net.UDPAddr{Port: portNum})
+	udpPacketConn, err, serr := onet.ListenUDP("udp", &net.UDPAddr{Port: portNum})
 	if err != nil {
 		return fmt.Errorf("failed to start UDP on port %v: %v", portNum, err)
 	}
-	logger.Infof("Listening TCP and UDP on port %v", portNum)
+	if serr != nil {
+		logger.Warn("Failed to set IP_PKTINFO, IPV6_RECVPKTINFO socket options",
+			zap.Error(serr),
+		)
+	}
+	logger.Info("Started TCP and UDP listeners", zap.Int("port", portNum))
 	port := &ssPort{cipherList: service.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
 	port.tcpService = service.NewTCPService(port.cipherList, &s.replayCache, s.saltPool, s.m, tcpReadTimeout, s.dialerTFO)
@@ -111,7 +103,7 @@ func (s *SSServer) removePort(portNum int) error {
 	if udpErr != nil {
 		return fmt.Errorf("failed to close packetConn on %v: %v", portNum, udpErr)
 	}
-	logger.Infof("Stopped TCP and UDP on port %v", portNum)
+	logger.Info("Stopped TCP and UDP listeners", zap.Int("port", portNum))
 	return nil
 }
 
@@ -154,7 +146,7 @@ func (s *SSServer) loadConfig(filename string) error {
 	for portNum, cipherList := range portCiphers {
 		s.ports[portNum].cipherList.Update(cipherList)
 	}
-	logger.Infof("Loaded %v access keys", len(config.Keys))
+	logger.Info("Loaded access keys", zap.Int("keys", len(config.Keys)))
 	s.m.SetNumAccessKeys(len(config.Keys), len(portCiphers))
 	return nil
 }
@@ -191,7 +183,7 @@ func RunSSServer(filename string, natTimeout time.Duration, sm metrics.Shadowsoc
 		for range sigHup {
 			logger.Info("Updating config")
 			if err := server.loadConfig(filename); err != nil {
-				logger.Errorf("Could not reload config: %v", err)
+				logger.Error("Failed to reload config", zap.Error(err))
 			}
 		}
 	}()
@@ -218,81 +210,103 @@ func readConfig(filename string) (*Config, error) {
 }
 
 func main() {
-	var flags struct {
-		ConfigFile      string
-		MetricsAddr     string
-		IPCountryDB     string
+	var (
+		configFile      string
+		metricsAddr     string
+		ipCountryDbPath string
 		natTimeout      time.Duration
 		replayHistory   int
-		BlockPrivateNet bool
-		TCPFastOpen     bool
-		ListenerTFO     bool
-		DialerTFO       bool
-		Verbose         bool
-		Version         bool
-	}
-	flag.StringVar(&flags.ConfigFile, "config", "", "Configuration filename")
-	flag.StringVar(&flags.MetricsAddr, "metrics", "", "Address for the Prometheus metrics")
-	flag.StringVar(&flags.IPCountryDB, "ip_country_db", "", "Path to the ip-to-country mmdb file")
-	flag.DurationVar(&flags.natTimeout, "udptimeout", defaultNatTimeout, "UDP tunnel timeout")
-	flag.IntVar(&flags.replayHistory, "replay_history", 0, "Replay buffer size (# of handshakes)")
-	flag.BoolVar(&flags.BlockPrivateNet, "block_private_net", false, "Block access to private IP addresses")
-	flag.BoolVar(&flags.TCPFastOpen, "tfo", false, "Enables TFO for both TCP listener and dialer")
-	flag.BoolVar(&flags.ListenerTFO, "tfo_listener", false, "Enables TFO for TCP listener")
-	flag.BoolVar(&flags.DialerTFO, "tfo_dialer", false, "Enables TFO for TCP dialer")
-	flag.BoolVar(&flags.Verbose, "verbose", false, "Enables verbose logging output")
-	flag.BoolVar(&flags.Version, "version", false, "The version of the server")
+		blockPrivateNet bool
+		tfo             bool
+		listenerTFO     bool
+		dialerTFO       bool
+		ver             bool
+
+		suppressTimestamps bool
+		logLevel           string
+
+		err error
+	)
+
+	flag.StringVar(&configFile, "config", "", "Configuration filename")
+	flag.StringVar(&metricsAddr, "metrics", "", "Address for the Prometheus metrics")
+	flag.StringVar(&ipCountryDbPath, "ip_country_db", "", "Path to the ip-to-country mmdb file")
+	flag.DurationVar(&natTimeout, "udptimeout", defaultNatTimeout, "UDP tunnel timeout")
+	flag.IntVar(&replayHistory, "replay_history", 0, "Replay buffer size (# of handshakes)")
+	flag.BoolVar(&blockPrivateNet, "block_private_net", false, "Block access to private IP addresses")
+	flag.BoolVar(&ver, "version", false, "The version of the server")
+
+	flag.BoolVar(&tfo, "tfo", false, "Enables TFO for both TCP listener and dialer")
+	flag.BoolVar(&listenerTFO, "tfoListener", false, "Enables TFO for TCP listener")
+	flag.BoolVar(&dialerTFO, "tfoDialer", false, "Enables TFO for TCP dialer")
+
+	flag.BoolVar(&suppressTimestamps, "suppressTimestamps", false, "Omit timestamps in logs")
+	flag.StringVar(&logLevel, "logLevel", "info", "Set custom log level. Available levels: debug, info, warn, error, dpanic, panic, fatal")
 
 	flag.Parse()
 
-	if flags.Verbose {
-		logging.SetLevel(logging.DEBUG, "")
-	} else {
-		logging.SetLevel(logging.INFO, "")
-	}
-
-	if flags.Version {
+	if ver {
 		fmt.Println(version)
 		return
 	}
 
-	if flags.ConfigFile == "" {
+	if configFile == "" {
 		flag.Usage()
 		return
 	}
 
-	if flags.MetricsAddr != "" {
+	if suppressTimestamps {
+		log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
+	}
+
+	logger, err = logging.NewProductionConsole(suppressTimestamps, logLevel)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer logger.Sync()
+	service.SetLogger(logger)
+
+	if metricsAddr != "" {
 		http.Handle("/metrics", promhttp.Handler())
 		go func() {
-			logger.Fatal(http.ListenAndServe(flags.MetricsAddr, nil))
+			err := http.ListenAndServe(metricsAddr, nil)
+			if err != nil {
+				logger.Fatal("Failed to start metrics HTTP server", zap.Error(err))
+			}
 		}()
-		logger.Infof("Metrics on http://%v/metrics", flags.MetricsAddr)
+		logger.Info(fmt.Sprintf("Started metrics http server at http://%s/metrics", metricsAddr))
 	}
 
 	var ipCountryDB *geoip2.Reader
-	var err error
-	if flags.IPCountryDB != "" {
-		logger.Infof("Using IP-Country database at %v", flags.IPCountryDB)
-		ipCountryDB, err = geoip2.Open(flags.IPCountryDB)
+	if ipCountryDbPath != "" {
+		ipCountryDB, err = geoip2.Open(ipCountryDbPath)
 		if err != nil {
-			log.Fatalf("Could not open geoip database at %v: %v", flags.IPCountryDB, err)
+			logger.Fatal("Failed to open GeoIP database",
+				zap.String("path", ipCountryDbPath),
+				zap.Error(err),
+			)
 		}
+		logger.Info("Loaded GeoIP database from file", zap.String("path", ipCountryDbPath))
 		defer ipCountryDB.Close()
 	}
 	m := metrics.NewPrometheusShadowsocksMetrics(ipCountryDB, prometheus.DefaultRegisterer)
 	m.SetBuildInfo(version)
 
-	if flags.TCPFastOpen {
-		flags.ListenerTFO = true
-		flags.DialerTFO = true
+	if tfo {
+		listenerTFO = true
+		dialerTFO = true
 	}
 
-	_, err = RunSSServer(flags.ConfigFile, flags.natTimeout, m, flags.replayHistory, flags.BlockPrivateNet, flags.ListenerTFO, flags.DialerTFO)
+	s, err := RunSSServer(configFile, natTimeout, m, replayHistory, blockPrivateNet, listenerTFO, dialerTFO)
 	if err != nil {
-		logger.Fatal(err)
+		logger.Fatal("Failed to start Shadowsocks server", zap.Error(err))
 	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	sig := <-sigCh
+
+	logger.Info("Received signal, stopping...", zap.Stringer("signal", sig))
+
+	s.Stop()
 }

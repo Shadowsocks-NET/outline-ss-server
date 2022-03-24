@@ -29,12 +29,16 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
-	logging "github.com/op/go-logging"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 func init() {
-	logging.SetLevel(logging.INFO, "")
+	logger, err := zap.NewDevelopment()
+	if err != nil {
+		panic(err)
+	}
+	SetLogger(logger)
 }
 
 func makeLocalhostListener(t testing.TB) *net.TCPListener {
@@ -366,7 +370,7 @@ func TestProbeClientBytesBasicTruncated(t *testing.T) {
 	s.GracefulStop()
 	statusCount := testMetrics.countStatuses()
 	require.Equal(t, 50, statusCount["ERR_CIPHER"])
-	require.Equal(t, 19+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, 19+16, statusCount["ERR_READ_HEADER"])
 	require.Equal(t, 2, statusCount["OK"]) // On the chunk boundaries.
 	require.Equal(t, len(initialBytes)-50-19-16-2, statusCount["ERR_RELAY_CLIENT"])
 	// We only count as probes failures in the first 50 bytes.
@@ -398,7 +402,7 @@ func TestProbeClientBytesBasicModified(t *testing.T) {
 	s.GracefulStop()
 	statusCount := testMetrics.countStatuses()
 	require.Equal(t, 50, statusCount["ERR_CIPHER"])
-	require.Equal(t, 19+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, 19+16, statusCount["ERR_READ_HEADER"])
 	require.Equal(t, len(initialBytes)-50-19-16, statusCount["ERR_RELAY_CLIENT"])
 	require.Equal(t, 50, len(testMetrics.probeData))
 	discardListener.Close()
@@ -427,7 +431,7 @@ func TestProbeClientBytesCoalescedModified(t *testing.T) {
 	s.GracefulStop()
 	statusCount := testMetrics.countStatuses()
 	require.Equal(t, 50, statusCount["ERR_CIPHER"])
-	require.Equal(t, len(initialBytes)-50, statusCount["ERR_READ_ADDRESS"]+statusCount["ERR_RELAY_CLIENT"])
+	require.Equal(t, len(initialBytes)-50, statusCount["ERR_READ_HEADER"]+statusCount["ERR_RELAY_CLIENT"])
 	discardListener.Close()
 	discardWait.Wait()
 }
@@ -468,7 +472,7 @@ func TestProbeServerBytesModified(t *testing.T) {
 	s.GracefulStop()
 	statusCount := testMetrics.countStatuses()
 	require.Equal(t, 50, statusCount["ERR_CIPHER"])
-	require.Equal(t, 19+16, statusCount["ERR_READ_ADDRESS"])
+	require.Equal(t, 19+16, statusCount["ERR_READ_HEADER"])
 	require.Equal(t, 50, len(testMetrics.probeData))
 	discardListener.Close()
 	discardWait.Wait()
@@ -603,82 +607,6 @@ func TestReverseReplayDefense(t *testing.T) {
 		}
 	} else {
 		t.Error("Replay should have reported an error status")
-	}
-}
-
-// Test 49, 50, and 51 bytes to ensure they have the same behavior.
-// 50 bytes used to be the cutoff for different behavior.
-func TestTCPProbeTimeout(t *testing.T) {
-	probeExpectTimeout(t, 49)
-	probeExpectTimeout(t, 50)
-	probeExpectTimeout(t, 51)
-}
-
-func probeExpectTimeout(t *testing.T, payloadSize int) {
-	const testTimeout = 200 * time.Millisecond
-
-	listener := makeLocalhostListener(t)
-	cipherList, err := MakeTestCiphers(ss.MakeTestSecrets(5))
-	require.Nil(t, err, "MakeTestCiphers failed: %v", err)
-	testMetrics := &probeTestMetrics{}
-	s := NewTCPService(cipherList, nil, nil, testMetrics, testTimeout, false)
-
-	testPayload := ss.MakeTestPayload(payloadSize)
-	ch := make(chan error, 1)
-	go func() {
-		timerStart := time.Now()
-		conn, err := net.Dial("tcp", listener.Addr().String())
-		if err != nil {
-			ch <- fmt.Errorf("Failed to dial %v: %v", listener.Addr(), err)
-			return
-		}
-		conn.Write(testPayload)
-		buf := make([]byte, 1024)
-		bytesRead, err := conn.Read(buf) // will hang until connection is closed
-		elapsedTime := time.Since(timerStart)
-		switch {
-		case err != io.EOF:
-			ch <- fmt.Errorf("Expected error EOF, got %v", err)
-		case bytesRead > 0:
-			ch <- fmt.Errorf("Expected to read 0 bytes, got %v bytes", bytesRead)
-		case elapsedTime < testTimeout || elapsedTime > testTimeout*2:
-			ch <- fmt.Errorf("Expected elapsed time close to %v, got %v", testTimeout, elapsedTime)
-		default:
-			// ok
-			ch <- nil
-		}
-	}()
-
-	go s.Serve(listener)
-	err = <-ch
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.GracefulStop()
-
-	if len(testMetrics.probeData) == 1 {
-		data := testMetrics.probeData[0]
-		if data.ClientProxy != int64(payloadSize) {
-			t.Errorf("Unexpected probe data: %v, expected %d", data, payloadSize)
-		}
-	} else {
-		t.Error("Bad handshake should have triggered probe detection")
-	}
-	if len(testMetrics.probeStatus) == 1 {
-		status := testMetrics.probeStatus[0]
-		if status != "ERR_CIPHER" {
-			t.Errorf("Unexpected TCP probe status: %s", status)
-		}
-	} else {
-		t.Error("Bad handshake should have reported an error status")
-	}
-	if len(testMetrics.closeStatus) == 1 {
-		status := testMetrics.closeStatus[0]
-		if status != "ERR_CIPHER" {
-			t.Errorf("Unexpected TCP close status: %s", status)
-		}
-	} else {
-		t.Error("Bad handshake should have reported an error status")
 	}
 }
 

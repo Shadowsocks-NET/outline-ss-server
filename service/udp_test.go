@@ -26,8 +26,8 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
-	logging "github.com/op/go-logging"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
 )
 
 const timeout = 5 * time.Minute
@@ -38,7 +38,12 @@ var dnsAddr = net.UDPAddr{IP: []byte{192, 0, 2, 3}, Port: 53}
 var natCipher *ss.Cipher
 
 func init() {
-	logging.SetLevel(logging.INFO, "")
+	logger, err := zap.NewDevelopment()
+	if err != nil {
+		panic(err)
+	}
+	SetLogger(logger)
+
 	natCipher, _ = ss.NewCipher(ss.TestCipher, "test password")
 }
 
@@ -60,6 +65,14 @@ func makePacketConn() *fakePacketConn {
 		send: make(chan packet, 1),
 		recv: make(chan packet),
 	}
+}
+
+func (conn *fakePacketConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{}
+}
+
+func (conn *fakePacketConn) RemoteAddr() net.Addr {
+	return &net.UDPAddr{}
 }
 
 func (conn *fakePacketConn) SetReadDeadline(deadline time.Time) error {

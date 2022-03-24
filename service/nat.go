@@ -11,6 +11,7 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
+	"go.uber.org/zap"
 	wgreplay "golang.zx2c4.com/wireguard/replay"
 )
 
@@ -176,8 +177,6 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 				lastSeenAddr = ses.lastSeenAddr
 			}
 
-			debugUDPAddr(lastSeenAddr, "Got response from %v", raddr)
-
 			socksAddrLen := socks.SocksAddressIPv6Length
 			if raddr.IP.To4() != nil {
 				socksAddrLen = socks.SocksAddressIPv4Length
@@ -237,7 +236,11 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 		}()
 		status := "OK"
 		if connError != nil {
-			logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
+			logger.Warn(connError.Message,
+				zap.Stringer("listenAddress", c.lastSeenConn.LocalAddr()),
+				zap.Stringer("clientAddress", lastSeenAddr),
+				zap.Error(connError.Cause),
+			)
 			status = connError.Status
 		}
 		if expired {

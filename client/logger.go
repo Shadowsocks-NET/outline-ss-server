@@ -1,4 +1,4 @@
-package service
+package client
 
 import "go.uber.org/zap"
 

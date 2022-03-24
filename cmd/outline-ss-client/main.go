@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/Shadowsocks-NET/outline-ss-server/client"
+	"github.com/Shadowsocks-NET/outline-ss-server/logging"
 	"github.com/Shadowsocks-NET/outline-ss-server/service"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
+	"go.uber.org/zap"
 )
 
 const (
@@ -43,8 +45,11 @@ func main() {
 	var multiplexUDP bool
 	var natTimeout time.Duration
 
+	var suppressTimestamps bool
+	var logLevel string
+
 	flag.StringVar(&address, "address", "", "shadowsocks server address host:port")
-	flag.StringVar(&method, "method", "chacha20-ietf-poly1305", "shadowsocks server method")
+	flag.StringVar(&method, "method", "2022-blake3-aes-256-gcm", "shadowsocks server method")
 	flag.StringVar(&psk, "psk", "", "shadowsocks server pre-shared key")
 
 	flag.StringVar(&tunnelListenAddress, "tunnelListenAddress", "", "shadowsocks tunnel local listen address")
@@ -61,11 +66,14 @@ func main() {
 	flag.BoolVar(&ssNoneEnableUDP, "ssNoneEnableUDP", false, "Enables Shadowsocks None UDP proxy")
 
 	flag.BoolVar(&TCPFastOpen, "tfo", false, "Enables TFO for both TCP listener and dialer")
-	flag.BoolVar(&listenerTFO, "tfo_listener", false, "Enables TFO for TCP listener")
-	flag.BoolVar(&dialerTFO, "tfo_dialer", false, "Enables TFO for TCP listener")
+	flag.BoolVar(&listenerTFO, "tfoListener", false, "Enables TFO for TCP listener")
+	flag.BoolVar(&dialerTFO, "tfoDialer", false, "Enables TFO for TCP listener")
 
 	flag.BoolVar(&multiplexUDP, "muxUDP", false, "Whether to multiplex all UDP sessions into one UDPConn")
 	flag.DurationVar(&natTimeout, "natTimeout", defaultNatTimeout, "UDP NAT timeout")
+
+	flag.BoolVar(&suppressTimestamps, "suppressTimestamps", false, "Omit timestamps in logs")
+	flag.StringVar(&logLevel, "logLevel", "info", "Set custom log level. Available levels: debug, info, warn, error, dpanic, panic, fatal")
 
 	flag.Parse()
 
@@ -74,11 +82,22 @@ func main() {
 		dialerTFO = true
 	}
 
+	if suppressTimestamps {
+		log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
+	}
+
+	logger, err := logging.NewProductionConsole(suppressTimestamps, logLevel)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer logger.Sync()
+	client.SetLogger(logger)
+
 	saltPool := service.NewSaltPool()
 
 	c, err := client.NewClient(address, method, psk, saltPool)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal("Failed to create Shadowsocks client", zap.Error(err))
 	}
 
 	var services []client.Service
@@ -87,43 +106,82 @@ func main() {
 	if tunnelRemoteAddress != "" {
 		tunnelRemoteSocksAddr, err = socks.ParseAddr(tunnelRemoteAddress)
 		if err != nil {
-			log.Fatal(err)
+			logger.Fatal("Failed to parse tunnel remote address",
+				zap.String("tunnelRemoteAddress", tunnelRemoteAddress),
+				zap.Error(err),
+			)
 		}
 	}
 
 	if tunnelTCP {
 		s := client.NewTCPSimpleTunnelService(tunnelListenAddress, tunnelRemoteSocksAddr, listenerTFO, dialerTFO, c)
-		s.Start()
+		err = s.Start()
+		if err != nil {
+			logger.Fatal("Failed to start service",
+				zap.Stringer("service", s),
+				zap.Error(err),
+			)
+		}
 		services = append(services, s)
 	}
 
 	if tunnelUDP {
 		s := client.NewUDPSimpleTunnelService(tunnelListenAddress, tunnelRemoteSocksAddr, multiplexUDP, natTimeout, c)
-		s.Start()
+		err = s.Start()
+		if err != nil {
+			logger.Fatal("Failed to start service",
+				zap.Stringer("service", s),
+				zap.Error(err),
+			)
+		}
 		services = append(services, s)
 	}
 
 	if socks5EnableTCP {
 		s := client.NewTCPSimpleSocks5Service(socks5ListenAddress, socks5EnableTCP, socks5EnableUDP, listenerTFO, dialerTFO, c)
-		s.Start()
+		err = s.Start()
+		if err != nil {
+			logger.Fatal("Failed to start service",
+				zap.Stringer("service", s),
+				zap.Error(err),
+			)
+		}
 		services = append(services, s)
 	}
 
 	if socks5EnableUDP {
 		s := client.NewUDPSimpleSocks5Service(socks5ListenAddress, multiplexUDP, natTimeout, c)
-		s.Start()
+		err = s.Start()
+		if err != nil {
+			logger.Fatal("Failed to start service",
+				zap.Stringer("service", s),
+				zap.Error(err),
+			)
+		}
 		services = append(services, s)
 	}
 
 	if ssNoneEnableTCP {
 		s := client.NewTCPShadowsocksNoneService(ssNoneListenAddress, listenerTFO, dialerTFO, c)
-		s.Start()
+		err = s.Start()
+		if err != nil {
+			logger.Fatal("Failed to start service",
+				zap.Stringer("service", s),
+				zap.Error(err),
+			)
+		}
 		services = append(services, s)
 	}
 
 	if ssNoneEnableUDP {
 		s := client.NewUDPShadowsocksNoneService(ssNoneListenAddress, multiplexUDP, natTimeout, c)
-		s.Start()
+		err = s.Start()
+		if err != nil {
+			logger.Fatal("Failed to start service",
+				zap.Stringer("service", s),
+				zap.Error(err),
+			)
+		}
 		services = append(services, s)
 	}
 
@@ -131,10 +189,10 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 
-	log.Printf("Received %s, stopping...", sig.String())
+	logger.Info("Received signal, stopping...", zap.Stringer("signal", sig))
 
 	for _, s := range services {
 		s.Stop()
-		log.Printf("Stopped %s", s.Name())
+		logger.Info("Stopped service", zap.Stringer("service", s))
 	}
 }

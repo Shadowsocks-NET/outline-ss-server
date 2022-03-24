@@ -21,36 +21,19 @@ import (
 	"fmt"
 	"math"
 	"net"
-	"runtime/debug"
 	"sync"
 	"time"
 
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
-	logging "github.com/op/go-logging"
+	"go.uber.org/zap"
 )
 
 const (
 	UDPPacketBufferSize = 64 * 1024
 	UDPOOBBufferSize    = 0x10 + 0x14 // unix.SizeofCmsghdr + unix.SizeofInet6Pktinfo
 )
-
-// Wrapper for logger.Debugf during UDP proxying.
-func debugUDP(tag string, template string, val interface{}) {
-	// This is an optimization to reduce unnecessary allocations due to an interaction
-	// between Go's inlining/escape analysis and varargs functions like logger.Debugf.
-	if logger.IsEnabledFor(logging.DEBUG) {
-		logger.Debugf("UDP(%s): "+template, tag, val)
-	}
-}
-
-func debugUDPAddr(addr net.Addr, template string, val interface{}) {
-	if logger.IsEnabledFor(logging.DEBUG) {
-		// Avoid calling addr.String() unless debugging is enabled.
-		debugUDP(addr.String(), template, val)
-	}
-}
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
@@ -115,13 +98,6 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 	stopped := false
 	for !stopped {
 		func() (connError *onet.ConnectionError) {
-			defer func() {
-				if r := recover(); r != nil {
-					logger.Errorf("Panic in UDP loop: %v", r)
-					debug.PrintStack()
-				}
-			}()
-
 			// Attempt to read an upstream packet.
 			clientProxyBytes, clientConnOobBytes, _, clientAddr, err := clientConn.ReadMsgUDP(cipherBuf, oobBuf)
 			if err != nil {
@@ -139,26 +115,34 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 			var keyID string
 			var proxyTargetBytes int
 			var timeToCipher time.Duration
+			clientLocalAddr := s.clientConn.LocalAddr().(*net.UDPAddr)
 
 			defer func() {
 				status := "OK"
 				if connError != nil {
-					logger.Debugf("UDP Error: %v: %v", connError.Message, connError.Cause)
 					status = connError.Status
 				}
 				s.m.AddUDPPacketFromClient(clientLocation, keyID, status, clientProxyBytes, proxyTargetBytes, timeToCipher)
 			}()
 
 			if err != nil {
+				logger.Warn("Failed to read from clientConn",
+					zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+					zap.Error(err),
+				)
 				return onet.NewConnectionError("ERR_READ", "Failed to read from client", err)
-			}
-			if logger.IsEnabledFor(logging.DEBUG) {
-				defer logger.Debugf("UDP(%v): done", clientAddr)
-				logger.Debugf("UDP(%v): Outbound packet has %d bytes", clientAddr, clientProxyBytes)
 			}
 
 			cipherData := cipherBuf[:clientProxyBytes]
-			oobCache := GetOobForCache(oobBuf[:clientConnOobBytes])
+			oobCache, err := onet.GetOobForCache(oobBuf[:clientConnOobBytes])
+			if err != nil {
+				logger.Debug("Failed to process OOB",
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+					zap.Error(err),
+				)
+			}
+
 			var sid uint64
 			var ses *session
 			var isNewSession bool
@@ -169,9 +153,17 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 				var locErr error
 				clientLocation, locErr = s.m.GetLocation(clientAddr)
 				if locErr != nil {
-					logger.Warningf("Failed location lookup: %v", locErr)
+					logger.Warn("Location lookup failed",
+						zap.Stringer("clientAddress", clientAddr),
+						zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+						zap.Error(err),
+					)
 				}
-				debugUDPAddr(clientAddr, "Got location \"%s\"", clientLocation)
+				logger.Debug("Location lookup success",
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+					zap.String("clientLocation", clientLocation),
+				)
 
 				var textData []byte
 				var c *ss.Cipher
@@ -180,17 +172,24 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 				timeToCipher = time.Since(unpackStart)
 
 				if err != nil {
+					logger.Debug("Failed to unpack initial packet",
+						zap.Stringer("clientAddress", clientAddr),
+						zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+						zap.String("clientLocation", clientLocation),
+						zap.Error(err),
+					)
 					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack initial packet", err)
 				}
 
 				var onetErr *onet.ConnectionError
 				cipherConfig := c.Config()
-				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData, cipherConfig, clientAddr, sid, ses, isNewSession, nm); onetErr != nil {
+				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData, cipherConfig, clientAddr, clientLocalAddr, clientLocation, sid, ses, isNewSession, nm); onetErr != nil {
 					return onetErr
 				}
 
 				udpConn, err := net.ListenUDP("udp", nil)
 				if err != nil {
+					logger.Error("Failed to create UDP socket", zap.Error(err))
 					return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
 				}
 
@@ -203,27 +202,24 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 			} else {
 				clientLocation = targetConn.clientLocation
 				var textData []byte
-				var err error
+				var onetErr *onet.ConnectionError
 
 				unpackStart := time.Now()
-				textData, sid, ses, isNewSession, err = decryptAndGetOrCreateSession(targetConn.keyID, targetConn.cipher, clientAddr, nil, cipherData, cipherData[:16], nm)
+				textData, sid, ses, isNewSession, onetErr = decryptAndGetOrCreateSession(targetConn.keyID, targetConn.cipher, clientAddr, nil, cipherData, cipherData[:16], nm)
 				timeToCipher = time.Since(unpackStart)
-				if err != nil {
-					return onet.NewConnectionError("ERR_CIPHER", "Failed to unpack data from client", err)
+				if onetErr != nil {
+					return onetErr
 				}
 
 				// The key ID is known with confidence once decryption succeeds.
 				keyID = targetConn.keyID
 
-				var onetErr *onet.ConnectionError
-				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData, targetConn.cipher.Config(), clientAddr, sid, ses, isNewSession, nm); onetErr != nil {
+				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData, targetConn.cipher.Config(), clientAddr, clientLocalAddr, clientLocation, sid, ses, isNewSession, nm); onetErr != nil {
 					return onetErr
 				}
 
 				targetConn.oobCache = oobCache
 			}
-
-			debugUDPAddr(clientAddr, "Proxy exit %v", targetConn.LocalAddr())
 
 			switch {
 			case targetConn.cipher.Config().IsSpec2022:
@@ -234,6 +230,12 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 			}
 
 			if err != nil {
+				logger.Debug("Failed to write to targetConn",
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+					zap.Stringer("targetAddress", tgtUDPAddr),
+					zap.Error(err),
+				)
 				return onet.NewConnectionError("ERR_WRITE", "Failed to write to target", err)
 			}
 
@@ -265,7 +267,10 @@ func (s *udpService) findAccessKeyUDP(clientAddr *net.UDPAddr, dst, src []byte, 
 			continue
 		}
 
-		debugUDP(id, "Found cipher at index %d", ci)
+		logger.Debug("Found cipher entry",
+			zap.Int("index", ci),
+			zap.String("id", id),
+		)
 		// Move the active cipher to the front, so that the search is quicker next time.
 		s.ciphers.MarkUsedByClientIP(entry, clientAddr.IP)
 		return buf, id, c, sid, ses, isNewSession, nil
@@ -278,7 +283,8 @@ func (s *udpService) findAccessKeyUDP(clientAddr *net.UDPAddr, dst, src []byte, 
 // When called by findAccessKeyUDP, dst and src do not overlap, separateHeader must be nil,
 // so we allocate a temporary slice to store the decrypted separate header.
 // When called by Serve, dst is nil. separateHeader must point to src[:16] so an in-place decryption is done on the buffer.
-func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAddr, dst, src, separateHeader []byte, nm *natmap) (buf []byte, sid uint64, ses *session, isNewSession bool, err error) {
+func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAddr, dst, src, separateHeader []byte, nm *natmap) (buf []byte, sid uint64, ses *session, isNewSession bool, onetErr *onet.ConnectionError) {
+	var err error
 	cipherConfig := c.Config()
 
 	switch {
@@ -290,7 +296,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 		// Decrypt separate header
 		err = ss.DecryptSeparateHeader(c, separateHeader, src)
 		if err != nil {
-			debugUDP(id, "Failed to decrypt separate header: %w", err)
+			onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to decrypt separate header", err)
 			return
 		}
 
@@ -302,7 +308,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 			var aead cipher.AEAD
 			aead, err = c.NewAEAD(separateHeader[:8])
 			if err != nil {
-				debugUDP(id, "Failed to create AEAD: %w", err)
+				onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to create AEAD", err)
 				return
 			}
 			// Create session.
@@ -311,14 +317,14 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 
 		buf, err = ss.UnpackAesWithSeparateHeader(dst, src, separateHeader, c, ses.aead)
 		if err != nil {
-			debugUDP(id, "Failed to unpack: %v", err)
+			onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to unpack", err)
 			return
 		}
 
 	case cipherConfig.IsSpec2022:
 		_, buf, err = ss.Unpack(dst, src, c)
 		if err != nil {
-			debugUDP(id, "Failed to unpack: %v", err)
+			onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to unpack", err)
 			return
 		}
 
@@ -332,7 +338,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 	default:
 		_, buf, err = ss.Unpack(dst, src, c)
 		if err != nil {
-			debugUDP(id, "Failed to unpack: %v", err)
+			onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to unpack", err)
 			return
 		}
 	}
@@ -343,18 +349,31 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 // Given the decrypted contents of a UDP packet, return
 // the payload and the destination address, or an error if
 // this packet cannot or should not be forwarded.
-func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfig, clientAddr *net.UDPAddr, sid uint64, ses *session, isNewSession bool, nm *natmap) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
+func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfig, clientAddr, clientLocalAddr *net.UDPAddr, clientLocation string, sid uint64, ses *session, isNewSession bool, nm *natmap) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
 	_, socksAddr, payload, err := ss.ParseUDPHeader(textData, ss.HeaderTypeClientPacket, cipherConfig)
 	if err != nil {
+		logger.Warn("Failed to parse header",
+			zap.Stringer("clientAddress", clientAddr),
+			zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+			zap.String("clientLocation", clientLocation),
+			zap.Error(err),
+		)
 		return nil, nil, onet.NewConnectionError("ERR_READ_HEADER", "Failed to read packet header", err)
 	}
 
 	tgtUDPAddr, err := socksAddr.UDPAddr()
 	if err != nil {
+		logger.Warn("Failed to resolve UDPAddr",
+			zap.Stringer("clientAddress", clientAddr),
+			zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+			zap.Stringer("targetAddress", socksAddr),
+			zap.Error(err),
+		)
 		return nil, nil, onet.NewConnectionError("ERR_RESOLVE_ADDRESS", fmt.Sprintf("Failed to resolve target address %v", socksAddr.String()), err)
 	}
 	if s.targetIPValidator != nil {
 		if err := s.targetIPValidator(tgtUDPAddr.IP); err != nil {
+			logger.Debug("Rejected target IP", zap.Stringer("targetAddress", tgtUDPAddr), zap.Error(err.Cause))
 			return nil, nil, err
 		}
 	}
@@ -385,6 +404,14 @@ func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfi
 		}
 
 		if !ses.filter.ValidateCounter(pid, limit) {
+			logger.Warn("Detected replay: repeated packet ID",
+				zap.Stringer("clientAddress", clientAddr),
+				zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+				zap.String("clientLocation", clientLocation),
+				zap.Stringer("targetAddress", socksAddr),
+				zap.Uint64("pid", pid),
+				zap.Error(err),
+			)
 			return nil, nil, onet.NewConnectionError("ERR_PACKET_REPLAY", "Detected packet replay", nil)
 		}
 

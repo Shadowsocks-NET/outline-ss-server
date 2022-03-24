@@ -201,6 +201,9 @@ func (c *ssClient) ListenUDP(laddr *net.UDPAddr) (ShadowsocksPacketConn, error) 
 type ShadowsocksPacketConn interface {
 	net.PacketConn
 
+	// RemoteAddr returns the remote proxy's address.
+	RemoteAddr() net.Addr
+
 	// ReadFromZeroCopy eliminates copying by requiring that a big enough buffer is passed for reading.
 	ReadFromZeroCopy(b []byte) (socksAddrStart, payloadStart, payloadLength int, err error)
 
@@ -255,6 +258,10 @@ func newPacketConn(proxyConn *net.UDPConn, c *ss.Cipher) (*packetConn, error) {
 		filter:  &wgreplay.Filter{},
 		aead:    aead,
 	}, nil
+}
+
+func (c *packetConn) RemoteAddr() net.Addr {
+	return c.UDPConn.RemoteAddr()
 }
 
 // WriteTo encrypts `b` and writes to `addr` through the proxy.
