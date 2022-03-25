@@ -24,7 +24,7 @@ type UDPTunnel struct {
 }
 
 func (s *UDPTunnel) String() string {
-	return fmt.Sprint("UDP ", s.packetAdapter.String(), " service")
+	return fmt.Sprint("UDP ", s.packetAdapter.String(), " relay service")
 }
 
 func (s *UDPTunnel) Start() error {
