@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 )
 
@@ -36,78 +35,79 @@ const (
 )
 
 var (
-	ErrBadTimestamp            = errors.New("time diff is over 30 seconds")
-	ErrTypeMismatch            = errors.New("header type mismatch")
-	ErrPaddingLengthOutOfRange = errors.New("padding length is less than 0 or greater than 900")
-	ErrClientSaltMismatch      = errors.New("client salt in response header does not match request")
-	ErrSessionIDMismatch       = errors.New("unexpected session ID")
-
-	tcpReqHeaderPool = slicepool.MakePool(TCPReqHeaderMaxLength)
+	ErrIncompleteHeaderInFirstChunk = errors.New("header in first chunk is missing or incomplete")
+	ErrPaddingExceedChunkBorder     = errors.New("padding in first chunk is shorter than advertised")
+	ErrBadTimestamp                 = errors.New("time diff is over 30 seconds")
+	ErrTypeMismatch                 = errors.New("header type mismatch")
+	ErrPaddingLengthOutOfRange      = errors.New("padding length is less than 0 or greater than 900")
+	ErrClientSaltMismatch           = errors.New("client salt in response header does not match request")
+	ErrSessionIDMismatch            = errors.New("unexpected session ID")
 )
 
-func ParseTCPReqHeader(r io.Reader, cipherConfig CipherConfig, htype byte) (string, error) {
-	if !cipherConfig.IsSpec2022 {
-		a, err := socks.AddrFromReader(r)
-		if err != nil {
-			return "", err
+// ParseTCPReqHeader reads the first payload chunk, validates the header,
+// and returns the target address, initial payload, or an error.
+//
+// For Shadowsocks 2022, the first payload chunk MUST contain
+// either a non-zero-length padding or initial payload, or both (not recommended client behavior but allowed).
+// If the padding length is 0 and there's no initial payload, an error is returned.
+func ParseTCPReqHeader(r Reader, cipherConfig CipherConfig, htype byte) (string, []byte, error) {
+	// Read first payload chunk.
+	if err := r.EnsureLeftover(); err != nil {
+		return "", nil, err
+	}
+	b := r.LeftoverZeroCopy()
+
+	var offset int
+
+	if cipherConfig.IsSpec2022 {
+		if len(b) < 1+8 {
+			return "", nil, ErrIncompleteHeaderInFirstChunk
 		}
-		return a.String(), nil
+
+		// Verify type
+		if b[0] != htype {
+			return "", nil, ErrTypeMismatch
+		}
+
+		// Verify timestamp
+		epoch := int64(binary.BigEndian.Uint64(b[1 : 1+8]))
+		nowEpoch := time.Now().Unix()
+		diff := epoch - nowEpoch
+		if diff < -30 || diff > 30 {
+			return "", nil, ErrBadTimestamp
+		}
+
+		offset = 1 + 8
 	}
-
-	lazySlice := tcpReqHeaderPool.LazySlice()
-	b := lazySlice.Acquire()
-	defer lazySlice.Release()
-
-	// Read type & timestamp
-	_, err := io.ReadFull(r, b[:1+8])
-	if err != nil {
-		return "", fmt.Errorf("failed to read type and timestamp: %w", err)
-	}
-
-	// Verify type
-	if b[0] != htype {
-		return "", ErrTypeMismatch
-	}
-
-	// Verify timestamp
-	epoch := int64(binary.BigEndian.Uint64(b[1 : 1+8]))
-	nowEpoch := time.Now().Unix()
-	diff := epoch - nowEpoch
-	if diff < -30 || diff > 30 {
-		return "", ErrBadTimestamp
-	}
-
-	offset := 1 + 8
 
 	// Read socks address
-	n, err := socks.ReadAddr(b[offset:], r)
+	socksaddr, err := socks.SplitAddr(b[offset:])
 	if err != nil {
-		return "", fmt.Errorf("failed to read socks address: %w", err)
+		return "", nil, fmt.Errorf("failed to read socks address: %w", err)
 	}
-	socksaddr := socks.Addr(b[offset : offset+n])
-	offset += n
+	offset += len(socksaddr)
 
-	// Read padding length
-	_, err = io.ReadFull(r, b[offset:offset+2])
-	if err != nil {
-		return "", fmt.Errorf("failed to read padding length: %w", err)
-	}
+	if cipherConfig.IsSpec2022 {
+		// Make sure the remaining length > 2 (padding length + either padding or payload)
+		if len(b)-offset <= 2 {
+			return "", nil, ErrIncompleteHeaderInFirstChunk
+		}
 
-	// Verify padding length
-	paddingLen := int(binary.BigEndian.Uint16(b[offset : offset+2]))
-	if paddingLen < MinPaddingLength || paddingLen > MaxPaddingLength {
-		return "", ErrPaddingLengthOutOfRange
-	}
+		// Verify padding length
+		paddingLen := int(binary.BigEndian.Uint16(b[offset : offset+2]))
+		if paddingLen < MinPaddingLength || paddingLen > MaxPaddingLength {
+			return "", nil, ErrPaddingLengthOutOfRange
+		}
+		offset += 2
 
-	// Read padding
-	if paddingLen > 0 {
-		_, err := io.ReadFull(r, b[offset+2:offset+2+paddingLen])
-		if err != nil {
-			return "", fmt.Errorf("failed to read padding: %w", err)
+		// Skip padding.
+		offset += paddingLen
+		if offset >= len(b) {
+			return "", nil, ErrPaddingExceedChunkBorder
 		}
 	}
 
-	return socksaddr.String(), nil
+	return socksaddr.String(), b[offset:], nil
 }
 
 func WriteTCPReqHeader(dst, socksaddr []byte, addPadding bool, cipherConfig CipherConfig) (n int) {

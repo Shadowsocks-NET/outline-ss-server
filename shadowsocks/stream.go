@@ -443,7 +443,16 @@ type Reader interface {
 	io.Reader
 	io.WriterTo
 
+	// Salt returns the salt used by this instance to derive the subkey.
 	Salt() []byte
+
+	// EnsureLeftover makes sure that the leftover slice is not nil.
+	// If it's nil, a read is attempted and the result is returned.
+	EnsureLeftover() error
+
+	// LeftoverZeroCopy returns the leftover slice without copying.
+	// The content of the returned slice won't change until next read.
+	LeftoverZeroCopy() []byte
 }
 
 // readConverter adapts from ChunkReader, with source-controlled
@@ -479,8 +488,14 @@ func (c *readConverter) Salt() []byte {
 	return c.cr.Salt()
 }
 
+func (c *readConverter) LeftoverZeroCopy() (leftover []byte) {
+	leftover = c.leftover
+	c.leftover = nil
+	return
+}
+
 func (c *readConverter) Read(b []byte) (int, error) {
-	if err := c.ensureLeftover(); err != nil {
+	if err := c.EnsureLeftover(); err != nil {
 		return 0, err
 	}
 	n := copy(b, c.leftover)
@@ -490,7 +505,7 @@ func (c *readConverter) Read(b []byte) (int, error) {
 
 func (c *readConverter) WriteTo(w io.Writer) (written int64, err error) {
 	for {
-		if err = c.ensureLeftover(); err != nil {
+		if err = c.EnsureLeftover(); err != nil {
 			if err == io.EOF {
 				err = nil
 			}
@@ -508,7 +523,7 @@ func (c *readConverter) WriteTo(w io.Writer) (written int64, err error) {
 // Ensures that c.leftover is nonempty.  If leftover is empty, this method
 // waits for incoming data and decrypts it.
 // Returns an error only if c.leftover could not be populated.
-func (c *readConverter) ensureLeftover() error {
+func (c *readConverter) EnsureLeftover() error {
 	if len(c.leftover) > 0 {
 		return nil
 	}

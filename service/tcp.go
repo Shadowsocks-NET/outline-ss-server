@@ -278,7 +278,7 @@ func (s *tcpService) handleConnection(clientTCPConn tfo.Conn) {
 		}
 
 		ssr := ss.NewShadowsocksReader(clientReader, cipherEntry.Cipher)
-		tgtAddr, err := ss.ParseTCPReqHeader(ssr, cipherEntry.Cipher.Config(), ss.HeaderTypeClientStream)
+		tgtAddr, initPayload, err := ss.ParseTCPReqHeader(ssr, cipherEntry.Cipher.Config(), ss.HeaderTypeClientStream)
 		if err != nil {
 			logger.Warn("Failed to parse header",
 				zap.Stringer("clientConnLocalAddress", clientLocalAddr),
@@ -341,6 +341,20 @@ func (s *tcpService) handleConnection(clientTCPConn tfo.Conn) {
 				zap.Error(err),
 			)
 			return onet.NewConnectionError("ERR_CREATE_SS_WRITER", "Failed to create Shadowsocks writer", err)
+		}
+
+		// Write initial payload.
+		if len(initPayload) > 0 {
+			_, err = tgtConn.Write(initPayload)
+			if err != nil {
+				logger.Warn("Failed to write initial payload client -> target",
+					zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+					zap.Stringer("clientConnRemoteAddress", clientRemoteAddr),
+					zap.String("targetAddress", tgtAddr),
+					zap.Error(err),
+				)
+				return onet.NewConnectionError("ERR_WRITE_INIT_PAYLOAD", "Failed to write initial payload", err)
+			}
 		}
 
 		fromClientErrCh := make(chan error)
