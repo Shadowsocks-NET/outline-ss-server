@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand"
 	"net"
 	"strconv"
@@ -50,7 +49,7 @@ var (
 // For Shadowsocks 2022, the first payload chunk MUST contain
 // either a non-zero-length padding or initial payload, or both (not recommended client behavior but allowed).
 // If the padding length is 0 and there's no initial payload, an error is returned.
-func ParseTCPReqHeader(r Reader, cipherConfig CipherConfig, htype byte) (string, []byte, error) {
+func ParseTCPReqHeader(r Reader, cipherConfig CipherConfig) (string, []byte, error) {
 	// Read first payload chunk.
 	if err := r.EnsureLeftover(); err != nil {
 		return "", nil, err
@@ -65,7 +64,7 @@ func ParseTCPReqHeader(r Reader, cipherConfig CipherConfig, htype byte) (string,
 		}
 
 		// Verify type
-		if b[0] != htype {
+		if b[0] != HeaderTypeClientStream {
 			return "", nil, ErrTypeMismatch
 		}
 
@@ -139,22 +138,25 @@ func WriteTCPReqHeader(dst, socksaddr []byte, addPadding bool, cipherConfig Ciph
 	return
 }
 
-func ParseTCPRespHeader(r io.Reader, clientSalt []byte, cipherConfig CipherConfig) error {
+func ParseTCPRespHeader(r Reader, clientSalt []byte, cipherConfig CipherConfig) ([]byte, error) {
 	if !cipherConfig.IsSpec2022 {
-		return nil
+		return nil, nil
 	}
 
-	b := make([]byte, 1+8+len(clientSalt))
+	// Read first payload chunk.
+	if err := r.EnsureLeftover(); err != nil {
+		return nil, err
+	}
+	b := r.LeftoverZeroCopy()
 
-	// Read response header
-	_, err := io.ReadFull(r, b)
-	if err != nil {
-		return fmt.Errorf("failed to read response header: %w", err)
+	headerLen := 1 + 8 + len(clientSalt)
+	if len(b) < headerLen {
+		return nil, ErrIncompleteHeaderInFirstChunk
 	}
 
 	// Verify type
 	if b[0] != HeaderTypeServerStream {
-		return ErrTypeMismatch
+		return nil, ErrTypeMismatch
 	}
 
 	// Verify timestamp
@@ -162,16 +164,16 @@ func ParseTCPRespHeader(r io.Reader, clientSalt []byte, cipherConfig CipherConfi
 	nowEpoch := time.Now().Unix()
 	diff := epoch - nowEpoch
 	if diff < -30 || diff > 30 {
-		return ErrBadTimestamp
+		return nil, ErrBadTimestamp
 	}
 
 	// Verify client salt
-	n := bytes.Compare(clientSalt, b[1+8:])
+	n := bytes.Compare(clientSalt, b[1+8:headerLen])
 	if n != 0 {
-		return ErrClientSaltMismatch
+		return nil, ErrClientSaltMismatch
 	}
 
-	return nil
+	return b[headerLen:], nil
 }
 
 func WriteTCPRespHeader(dst, clientSalt []byte, cipherConfig CipherConfig) (n int) {

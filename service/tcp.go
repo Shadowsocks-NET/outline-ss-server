@@ -278,7 +278,7 @@ func (s *tcpService) handleConnection(clientTCPConn tfo.Conn) {
 		}
 
 		ssr := ss.NewShadowsocksReader(clientReader, cipherEntry.Cipher)
-		tgtAddr, initPayload, err := ss.ParseTCPReqHeader(ssr, cipherEntry.Cipher.Config(), ss.HeaderTypeClientStream)
+		tgtAddr, initPayload, err := ss.ParseTCPReqHeader(ssr, cipherEntry.Cipher.Config())
 		if err != nil {
 			logger.Warn("Failed to parse header",
 				zap.Stringer("clientConnLocalAddress", clientLocalAddr),

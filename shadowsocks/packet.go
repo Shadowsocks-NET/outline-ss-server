@@ -27,7 +27,6 @@ import (
 	wgreplay "golang.zx2c4.com/wireguard/replay"
 )
 
-// ErrShortPacket is identical to shadowaead.ErrShortPacket
 var ErrShortPacket = errors.New("short packet")
 
 // Pack encrypts a Shadowsocks-UDP packet and returns a slice containing the encrypted packet.

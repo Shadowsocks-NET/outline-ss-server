@@ -124,45 +124,64 @@ type duplexConnAdaptor struct {
 	saltPool          *service.SaltPool
 }
 
-func (dc *duplexConnAdaptor) readHeader() error {
-	err := ss.ParseTCPRespHeader(dc.r, dc.w.Salt(), dc.cipherConfig)
+func (dc *duplexConnAdaptor) readHeader() ([]byte, error) {
+	initPayload, err := ss.ParseTCPRespHeader(dc.r, dc.w.Salt(), dc.cipherConfig)
 	if err != nil {
 		dc.Close()
-		return err
+		return nil, err
 	}
 
 	// 2022 spec: check salt
 	if dc.cipherConfig.IsSpec2022 && !dc.saltPool.Add(*(*[32]byte)(dc.r.Salt())) {
 		io.Copy(io.Discard, dc.r)
 		dc.Close()
-		return ErrRepeatedSalt
+		return nil, ErrRepeatedSalt
 	}
 
-	return nil
+	return initPayload, nil
 }
 
-func (dc *duplexConnAdaptor) Read(b []byte) (int, error) {
+func (dc *duplexConnAdaptor) Read(b []byte) (n int, err error) {
 	if !dc.isHeaderProcessed {
-		err := dc.readHeader()
+		var initPayload []byte
+		initPayload, err = dc.readHeader()
 		if err != nil {
 			return 0, err
 		}
 		dc.isHeaderProcessed = true
+
+		if len(initPayload) > 0 {
+			n = copy(b, initPayload)
+			if n < len(initPayload) {
+				err = io.ErrShortBuffer
+			}
+			return
+		}
 	}
 
 	return dc.r.Read(b)
 }
 
-func (dc *duplexConnAdaptor) WriteTo(w io.Writer) (int64, error) {
+func (dc *duplexConnAdaptor) WriteTo(w io.Writer) (n int64, err error) {
 	if !dc.isHeaderProcessed {
-		err := dc.readHeader()
+		initPayload, err := dc.readHeader()
 		if err != nil {
 			return 0, err
 		}
 		dc.isHeaderProcessed = true
+
+		if len(initPayload) > 0 {
+			wn, err := w.Write(initPayload)
+			n = int64(wn)
+			if err != nil {
+				return n, err
+			}
+		}
 	}
 
-	return io.Copy(w, dc.r)
+	cn, err := io.Copy(w, dc.r)
+	n += cn
+	return
 }
 
 func (dc *duplexConnAdaptor) CloseRead() error {
