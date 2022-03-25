@@ -187,6 +187,12 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 					return onetErr
 				}
 
+				logger.Info("New UDP session",
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+					zap.Stringer("targetAddress", tgtUDPAddr),
+				)
+
 				udpConn, err := net.ListenUDP("udp", nil)
 				if err != nil {
 					logger.Error("Failed to create UDP socket", zap.Error(err))
