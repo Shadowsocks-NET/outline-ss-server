@@ -38,6 +38,9 @@ func main() {
 	var ssNoneEnableTCP bool
 	var ssNoneEnableUDP bool
 
+	var httpListenAddress string
+	var httpEnable bool
+
 	var TCPFastOpen bool
 	var listenerTFO bool
 	var dialerTFO bool
@@ -64,6 +67,9 @@ func main() {
 	flag.StringVar(&ssNoneListenAddress, "ssNoneListenAddress", "", "Shadowsocks None proxy listen address")
 	flag.BoolVar(&ssNoneEnableTCP, "ssNoneEnableTCP", false, "Enables Shadowsocks None TCP proxy")
 	flag.BoolVar(&ssNoneEnableUDP, "ssNoneEnableUDP", false, "Enables Shadowsocks None UDP proxy")
+
+	flag.StringVar(&httpListenAddress, "httpListenAddress", "", "HTTP/1.1 CONNECT proxy listen address")
+	flag.BoolVar(&httpEnable, "httpEnable", false, "Enables HTTP/1.1 CONNECT proxy")
 
 	flag.BoolVar(&TCPFastOpen, "tfo", false, "Enables TFO for both TCP listener and dialer")
 	flag.BoolVar(&listenerTFO, "tfoListener", false, "Enables TFO for TCP listener")
@@ -151,6 +157,18 @@ func main() {
 
 	if socks5EnableUDP {
 		s := client.NewUDPSimpleSocks5Service(socks5ListenAddress, multiplexUDP, natTimeout, c)
+		err = s.Start()
+		if err != nil {
+			logger.Fatal("Failed to start service",
+				zap.Stringer("service", s),
+				zap.Error(err),
+			)
+		}
+		services = append(services, s)
+	}
+
+	if httpEnable {
+		s := client.NewTCPSimpleHttpConnectService(httpListenAddress, listenerTFO, dialerTFO, c)
 		err = s.Start()
 		if err != nil {
 			logger.Fatal("Failed to start service",

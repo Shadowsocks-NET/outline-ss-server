@@ -1,12 +1,14 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 
 	onet "github.com/Shadowsocks-NET/outline-ss-server/net"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
@@ -287,6 +289,47 @@ func replyWithStatus(conn *net.TCPConn, socks5err byte) error {
 	return err
 }
 
+type SimpleHttpConnectHandshaker struct{}
+
+func (h *SimpleHttpConnectHandshaker) String() string {
+	return "simple HTTP/1.1 CONNECT"
+}
+
+func (h *SimpleHttpConnectHandshaker) Handshake(conn *net.TCPConn) (socks.Addr, error) {
+	br := bufio.NewReader(conn)
+	req, err := http.ReadRequest(br)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.Method != http.MethodConnect {
+		if err := send418(conn); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("unsupported HTTP method %s", req.Method)
+	}
+
+	socksAddr, err := socks.ParseAddr(req.Host)
+	if err != nil {
+		if err := send418(conn); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("bad Host header %s", req.Host)
+	}
+
+	if _, err := fmt.Fprint(conn, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+		return nil, err
+	}
+	return socksAddr, nil
+}
+
+func send418(w io.Writer) error {
+	if _, err := fmt.Fprint(w, "HTTP/1.1 418 I'm a teapot\r\n\r\n"); err != nil {
+		return err
+	}
+	return nil
+}
+
 // ShadowsocksNoneHandshaker implements the 'none' mode of Shadowsocks.
 type ShadowsocksNoneHandshaker struct{}
 
@@ -315,6 +358,16 @@ func NewTCPSimpleSocks5Service(socks5ListenAddress string, enableTCP, enableUDP,
 		dialerTFO:     dialerTFO,
 		client:        client,
 		handshaker:    NewSimpleSocks5Handshaker(enableTCP, enableUDP),
+	}
+}
+
+func NewTCPSimpleHttpConnectService(httpListenAddress string, listenerTFO, dialerTFO bool, client Client) Service {
+	return &TCPTunnel{
+		listenAddress: httpListenAddress,
+		listenerTFO:   listenerTFO,
+		dialerTFO:     dialerTFO,
+		client:        client,
+		handshaker:    &SimpleHttpConnectHandshaker{},
 	}
 }
 
