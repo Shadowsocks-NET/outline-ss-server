@@ -105,7 +105,7 @@ func ParseTCPReqHeader(r Reader, cipherConfig CipherConfig) (string, []byte, err
 
 		// Skip padding.
 		offset += paddingLen
-		if offset >= len(b) {
+		if offset > len(b) {
 			return "", nil, ErrPaddingExceedChunkBorder
 		}
 	}
@@ -298,7 +298,7 @@ func WriteRandomPadding(b []byte, targetPort int, max int) int {
 		return 2
 	}
 
-	paddingLen := rand.Intn(max)
+	paddingLen := rand.Intn(max + 1)
 	binary.BigEndian.PutUint16(b, uint16(paddingLen))
 	return 2 + paddingLen
 }
