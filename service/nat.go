@@ -129,9 +129,9 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
-		bodyStart = 8 + 8 + 1 + 8 + 2 + ss.MaxPaddingLength + socks.SocksAddressIPv6Length
+		bodyStart = ss.UDPServerMessageHeaderFixedLength + ss.MaxPaddingLength + socks.SocksAddressIPv6Length
 	case cipherConfig.IsSpec2022:
-		bodyStart = 24 + 8 + 8 + 1 + 8 + 2 + ss.MaxPaddingLength + socks.SocksAddressIPv6Length
+		bodyStart = 24 + ss.UDPServerMessageHeaderFixedLength + ss.MaxPaddingLength + socks.SocksAddressIPv6Length
 	default:
 		bodyStart = saltSize + socks.SocksAddressIPv6Length
 	}
@@ -188,9 +188,9 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 				if raddr.Port == 53 {
 					paddingLen = rand.Intn(ss.MaxPaddingLength + 1)
 				}
-				headerStart = bodyStart - 8 - 8 - 1 - 8 - 2 - paddingLen - socksAddrLen
-				ss.WriteUDPHeader(pkt[headerStart:], ss.HeaderTypeServerPacket, ses.sid, ses.pid, raddr, nil, paddingLen)
-				ses.pid++
+				headerStart = bodyStart - ss.UDPServerMessageHeaderFixedLength - paddingLen - socksAddrLen
+				ss.WriteUDPHeader(pkt[headerStart:], ss.HeaderTypeServerPacket, ses.ssid, ses.spid, ses.csid, raddr, nil, paddingLen)
+				ses.spid++
 			default:
 				headerStart = bodyStart - socksAddrLen
 				socks.WriteUDPAddrAsSocksAddr(pkt[headerStart:], raddr)
@@ -219,7 +219,7 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 
 			switch {
 			case cipherConfig.UDPHasSeparateHeader:
-				buf, err = ss.PackAesWithSeparateHeader(packBuf, plaintextBuf, c.cipher, ses.aead)
+				buf, err = ss.PackAesWithSeparateHeader(packBuf, plaintextBuf, c.cipher, ses.saead)
 			default:
 				buf, err = ss.Pack(packBuf, plaintextBuf, c.cipher)
 			}
@@ -276,7 +276,7 @@ func (m *natmap) GetByClientAddress(key string) *natconn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) GetBySessionID(sid uint64) *session {
+func (m *natmap) GetByClientSessionID(sid uint64) *session {
 	m.RLock()
 	defer m.RUnlock()
 	return m.sidConn[sid]
@@ -366,11 +366,14 @@ func (m *natmap) Close() error {
 }
 
 type session struct {
-	// sid stores session ID for Shadowsocks 2022 Edition methods.
-	sid []byte
+	// csid stores client session ID for Shadowsocks 2022 Edition methods.
+	csid []byte
 
-	// pid stores packet ID for Shadowsocks 2022 Edition methods.
-	pid uint64
+	// ssid stores server session ID for Shadowsocks 2022 Edition methods.
+	ssid []byte
+
+	// spid stores server packet ID for Shadowsocks 2022 Edition methods.
+	spid uint64
 
 	// Stores reference to target conn.
 	targetConn onet.UDPPacketConn
@@ -382,21 +385,27 @@ type session struct {
 	// Unix epoch timestamp when the last client packet was received.
 	lastSeenTime int64
 
-	// Provides sliding window replay protection.
-	filter *wgreplay.Filter
+	// cfilter is the client session's sliding window filter.
+	// It rejects duplicate or out-of-window incoming client packets.
+	cfilter *wgreplay.Filter
 
 	// Only used by 2022-blake3-aes-256-gcm.
-	// Initialized with session subkey.
-	aead cipher.AEAD
+	// Initialized with client session subkey.
+	caead cipher.AEAD
+
+	// Only used by 2022-blake3-aes-256-gcm.
+	// Initialized with server session subkey.
+	saead cipher.AEAD
 }
 
-func newSession(sid []byte, lastSeenAddr *net.UDPAddr, aead cipher.AEAD) *session {
+func newSession(csid, ssid []byte, caead, saead cipher.AEAD, lastSeenAddr *net.UDPAddr) *session {
 	return &session{
-		sid:          sid,
-		pid:          ss.SeparateHeaderMinServerPacketID, // Server packet ID starts from 2^63.
+		csid:         csid,
+		ssid:         ssid,
 		lastSeenAddr: lastSeenAddr,
 		lastSeenTime: time.Now().Unix(),
-		filter:       &wgreplay.Filter{},
-		aead:         aead,
+		cfilter:      &wgreplay.Filter{},
+		caead:        caead,
+		saead:        saead,
 	}
 }

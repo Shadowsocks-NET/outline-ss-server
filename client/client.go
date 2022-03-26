@@ -1,9 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"crypto/cipher"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"time"
@@ -30,7 +34,8 @@ const (
 	// was ~1 ms.)  If no client payload is received by this time, we connect without it.
 	helloWait = 100 * time.Millisecond
 
-	ShadowsocksPacketConnFrontReserve = 24 + 8 + 8 + 1 + 8 + 2 + ss.MaxPaddingLength + socks.MaxAddrLen
+	// Defines the space to reserve in front of a slice for making an outgoing Shadowsocks client message.
+	ShadowsocksPacketConnFrontReserve = 24 + ss.UDPClientMessageHeaderFixedLength + ss.MaxPaddingLength + socks.MaxAddrLen
 )
 
 var (
@@ -229,8 +234,8 @@ type ShadowsocksPacketConn interface {
 	// WriteToZeroCopy minimizes copying by requiring that enough space is reserved in b.
 	// The socks address is still being copied into the buffer.
 	//
-	// You should reserve 24 + 8 + 8 + 1 + 8 + 2 + ss.MaxPaddingLength + socks.MaxAddrLen in the beginning,
-	// and cipher.TagSize() in the end.
+	// You should reserve 24 + ss.UDPClientMessageHeaderFixedLength + ss.MaxPaddingLength + socks.MaxAddrLen
+	// in the beginning, and cipher.TagSize() in the end.
 	//
 	// start points to where the actual payload (excluding header) starts.
 	// length is payload length.
@@ -241,41 +246,64 @@ type packetConn struct {
 	*net.UDPConn
 	cipher *ss.Cipher
 
-	// sid stores session ID for Shadowsocks 2022 Edition methods.
-	sid []byte
+	// csid stores client session ID for Shadowsocks 2022 Edition methods.
+	csid []byte
 
-	// pid stores packet ID for Shadowsocks 2022 Edition methods.
-	pid uint64
+	// cpid stores client packet ID for Shadowsocks 2022 Edition methods.
+	cpid uint64
 
-	// Provides sliding window replay protection.
-	filter *wgreplay.Filter
-
+	// caead is the client session's AEAD cipher.
 	// Only used by 2022-blake3-aes-256-gcm.
-	// Initialized with session subkey.
-	aead cipher.AEAD
+	// Initialized with client session subkey.
+	caead cipher.AEAD
+
+	// cssid stores the current server session ID for Shadowsocks 2022 Edition methods.
+	cssid []byte
+
+	// csaead is the current server session's AEAD cipher.
+	// Only used by 2022-blake3-aes-256-gcm.
+	// Initialized with the current server session subkey.
+	csaead cipher.AEAD
+
+	// csfilter is the current server session's sliding window filter.
+	csfilter *wgreplay.Filter
+
+	// ossid stores the old server session ID for Shadowsocks 2022 Edition methods.
+	ossid []byte
+
+	// osaead is the oldl server session's AEAD cipher.
+	// Only used by 2022-blake3-aes-256-gcm.
+	// Initialized with the old server session subkey.
+	osaead cipher.AEAD
+
+	// osfilter is the old server session's sliding window filter.
+	osfilter *wgreplay.Filter
+
+	// osLastSeenTime is the last time when we received a packet from the old server session.
+	osLastSeenTime time.Time
 }
 
 func newPacketConn(proxyConn *net.UDPConn, c *ss.Cipher) (*packetConn, error) {
 	// Random session ID
-	sid := make([]byte, 8)
-	err := ss.Blake3KeyedHashSaltGenerator.GetSalt(sid)
+	csid := make([]byte, 8)
+	err := ss.Blake3KeyedHashSaltGenerator.GetSalt(csid)
 	if err != nil {
 		return nil, err
 	}
 
-	// Separate header AEAD
-	var aead cipher.AEAD
-	aead, err = c.NewAEAD(sid)
+	// Separate header client AEAD
+	var caead cipher.AEAD
+	caead, err = c.NewAEAD(csid)
 	if err != nil {
 		return nil, err
 	}
 
 	return &packetConn{
-		UDPConn: proxyConn,
-		cipher:  c,
-		sid:     sid,
-		filter:  &wgreplay.Filter{},
-		aead:    aead,
+		UDPConn:  proxyConn,
+		cipher:   c,
+		csid:     csid,
+		csfilter: &wgreplay.Filter{},
+		caead:    caead,
 	}, nil
 }
 
@@ -303,12 +331,12 @@ func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	}
 
 	// Write header
-	n, err := ss.WriteClientUDPHeader(cipherBuf[headerStart:], cipherConfig, c.sid, c.pid, addr, 1452)
+	n, err := ss.WriteClientUDPHeader(cipherBuf[headerStart:], cipherConfig, c.csid, c.cpid, addr, 1452)
 	if err != nil {
 		return 0, err
 	}
 	if cipherConfig.IsSpec2022 {
-		c.pid++
+		c.cpid++
 	}
 
 	// Copy payload
@@ -319,7 +347,7 @@ func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
-		buf, err = ss.PackAesWithSeparateHeader(cipherBuf, cipherBuf[headerStart:headerStart+plaintextLen], c.cipher, c.aead)
+		buf, err = ss.PackAesWithSeparateHeader(cipherBuf, cipherBuf[headerStart:headerStart+plaintextLen], c.cipher, c.caead)
 	default:
 		buf, err = ss.Pack(cipherBuf, cipherBuf[headerStart:headerStart+plaintextLen], c.cipher)
 	}
@@ -347,10 +375,10 @@ func (c *packetConn) WriteToZeroCopy(b []byte, start, length int, socksAddr []by
 
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
-		headerStart = socksAddrStart - paddingLen - 2 - 8 - 1 - 8 - 8
+		headerStart = socksAddrStart - paddingLen - ss.UDPClientMessageHeaderFixedLength
 		packetStart = headerStart
 	case cipherConfig.IsSpec2022:
-		headerStart = socksAddrStart - paddingLen - 2 - 8 - 1 - 8 - 8
+		headerStart = socksAddrStart - paddingLen - ss.UDPClientMessageHeaderFixedLength
 		packetStart = headerStart - 24
 	default:
 		headerStart = socksAddrStart
@@ -360,8 +388,8 @@ func (c *packetConn) WriteToZeroCopy(b []byte, start, length int, socksAddr []by
 	// Write header
 	switch {
 	case cipherConfig.IsSpec2022:
-		ss.WriteUDPHeader(b[headerStart:], ss.HeaderTypeClientPacket, c.sid, c.pid, nil, socksAddr, paddingLen)
-		c.pid++
+		ss.WriteUDPHeader(b[headerStart:], ss.HeaderTypeClientPacket, c.csid, c.cpid, nil, nil, socksAddr, paddingLen)
+		c.cpid++
 	default:
 		copy(b[headerStart:], socksAddr)
 	}
@@ -369,7 +397,7 @@ func (c *packetConn) WriteToZeroCopy(b []byte, start, length int, socksAddr []by
 	var buf []byte
 	switch {
 	case cipherConfig.UDPHasSeparateHeader:
-		buf, err = ss.PackAesWithSeparateHeader(b[packetStart:], b[headerStart:start+length], c.cipher, c.aead)
+		buf, err = ss.PackAesWithSeparateHeader(b[packetStart:], b[headerStart:start+length], c.cipher, c.caead)
 	default:
 		buf, err = ss.Pack(b[packetStart:], b[headerStart:start+length], c.cipher)
 	}
@@ -394,7 +422,7 @@ func (c *packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	}
 
 	// Decrypt in-place.
-	_, socksAddr, payload, err := ss.UnpackAndValidatePacket(c.cipher, c.aead, c.filter, c.sid, nil, cipherBuf[:n])
+	_, socksAddr, payload, err := c.unpackAndValidatePacket(nil, cipherBuf[:n])
 	if err != nil {
 		return 0, nil, err
 	}
@@ -418,8 +446,145 @@ func (c *packetConn) ReadFromZeroCopy(b []byte) (socksAddrStart, payloadStart, p
 		return
 	}
 
-	socksAddrStart, socksAddr, payload, err := ss.UnpackAndValidatePacket(c.cipher, c.aead, c.filter, c.sid, nil, b[:n])
+	socksAddrStart, socksAddr, payload, err := c.unpackAndValidatePacket(nil, b[:n])
 	payloadStart = socksAddrStart + len(socksAddr)
 	payloadLength = len(payload)
+	return
+}
+
+// unpackAndValidatePacket unpacks an encrypted packet, validates the packet,
+// and returns the payload (without header) and the address.
+func (c *packetConn) unpackAndValidatePacket(dst, src []byte) (socksAddrStart int, socksAddr socks.Addr, payload []byte, err error) {
+	cipherConfig := c.cipher.Config()
+	var plaintextStart int
+	var buf []byte
+
+	const (
+		currentServerSession = iota
+		oldServerSession
+		newServerSession
+	)
+
+	var sessionStatus int
+	var ssid []byte
+	var saead cipher.AEAD
+	var sfilter *wgreplay.Filter
+
+	switch {
+	case cipherConfig.UDPHasSeparateHeader:
+		if dst == nil {
+			dst = src
+		}
+
+		// Decrypt separate header
+		err = ss.DecryptSeparateHeader(c.cipher, dst, src)
+		if err != nil {
+			return
+		}
+
+		// Check server session id
+		switch {
+		case bytes.Equal(c.cssid, dst[:8]): // is current server session
+			sessionStatus = currentServerSession
+			ssid = c.cssid
+			saead = c.csaead
+			sfilter = c.csfilter
+		case bytes.Equal(c.ossid, dst[:8]): // is old server session
+			sessionStatus = oldServerSession
+			ssid = c.ossid
+			saead = c.osaead
+			sfilter = c.osfilter
+		default: // is a new server session
+			// When a server session changes, there's a replay window of less than 60 seconds,
+			// during which an adversary can replay packets with a valid timestamp from the old session.
+			// To protect against such attacks, and to simplify implementation and save resources,
+			// we only save information for one previous session.
+			//
+			// In an unlikely event where the server session changed more than once within 60s,
+			// we simply drop new server sessions.
+			if time.Since(c.osLastSeenTime) < 60*time.Second {
+				err = ss.ErrTooManyServerSessions
+				return
+			}
+			sessionStatus = newServerSession
+			ssid = dst[:8]
+			saead, err = c.cipher.NewAEAD(ssid)
+			if err != nil {
+				return
+			}
+			// Delay sfilter creation after validation to avoid a possibly unnecessary allocation.
+		}
+
+		// Unpack
+		buf, err = ss.UnpackAesWithSeparateHeader(dst, src, nil, c.cipher, saead)
+		if err != nil {
+			return
+		}
+
+	case cipherConfig.IsSpec2022:
+		plaintextStart, buf, err = ss.Unpack(dst, src, c.cipher)
+		if err != nil {
+			return
+		}
+
+		// Check server session id
+		switch {
+		case bytes.Equal(c.cssid, buf[:8]): // is current server session
+			sessionStatus = currentServerSession
+			ssid = c.cssid
+			sfilter = c.csfilter
+		case bytes.Equal(c.ossid, buf[:8]): // is old server session
+			sessionStatus = oldServerSession
+			ssid = c.ossid
+			sfilter = c.osfilter
+		default: // is a new server session
+			if time.Since(c.osLastSeenTime) < 60*time.Second {
+				err = ss.ErrTooManyServerSessions
+				return
+			}
+			sessionStatus = newServerSession
+			ssid = buf[:8]
+			// Delay sfilter creation after validation to avoid a possibly unnecessary allocation.
+		}
+
+	default:
+		plaintextStart, buf, err = ss.Unpack(dst, src, c.cipher)
+		if err != nil {
+			return
+		}
+	}
+
+	socksAddrStart, socksAddr, payload, err = ss.ParseUDPHeader(buf, ss.HeaderTypeServerPacket, c.csid, cipherConfig)
+	if err != nil {
+		return
+	}
+	socksAddrStart += plaintextStart
+
+	if cipherConfig.IsSpec2022 {
+		pid := binary.BigEndian.Uint64(buf[8:])
+		if sessionStatus == newServerSession {
+			sfilter = &wgreplay.Filter{}
+		}
+		if !sfilter.ValidateCounter(pid, math.MaxUint64) {
+			err = fmt.Errorf("detected replay packet, server session id %v, packet id %d", ssid, pid)
+			return
+		}
+		switch sessionStatus {
+		case oldServerSession:
+			// Update old session's last seen time.
+			c.osLastSeenTime = time.Now()
+		case newServerSession:
+			// Move current to old.
+			c.ossid = c.cssid
+			c.osaead = c.csaead
+			c.osfilter = c.csfilter
+			c.osLastSeenTime = time.Now()
+			// Save temporary vars to current.
+			c.cssid = ssid
+			c.csaead = saead
+			c.csfilter = sfilter
+		}
+	}
+
 	return
 }

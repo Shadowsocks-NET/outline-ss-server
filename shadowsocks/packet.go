@@ -15,16 +15,9 @@
 package shadowsocks
 
 import (
-	"bytes"
 	"crypto/cipher"
-	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
-	"math"
-
-	"github.com/Shadowsocks-NET/outline-ss-server/socks"
-	wgreplay "golang.zx2c4.com/wireguard/replay"
 )
 
 var ErrShortPacket = errors.New("short packet")
@@ -148,73 +141,4 @@ func UnpackAesWithSeparateHeader(dst, pkt, separateHeader []byte, cipher *Cipher
 	}
 
 	return buf, nil
-}
-
-// UnpackAndValidatePacket unpacks an encrypted packet, validates the packet,
-// and returns the payload (without header) and the address.
-//
-// This function is intended to be called by a client receiving from server.
-func UnpackAndValidatePacket(c *Cipher, separateHeaderAEAD cipher.AEAD, filter *wgreplay.Filter, sid, dst, src []byte) (socksAddrStart int, socksAddr socks.Addr, payload []byte, err error) {
-	cipherConfig := c.Config()
-	var plaintextStart int
-	var buf []byte
-
-	switch {
-	case cipherConfig.UDPHasSeparateHeader:
-		if dst == nil {
-			dst = src
-		}
-
-		// Decrypt separate header
-		err = DecryptSeparateHeader(c, dst, src)
-		if err != nil {
-			return
-		}
-
-		// Check session id
-		if !bytes.Equal(sid, dst[:8]) {
-			err = ErrSessionIDMismatch
-			return
-		}
-
-		// Unpack
-		buf, err = UnpackAesWithSeparateHeader(dst, src, nil, c, separateHeaderAEAD)
-		if err != nil {
-			return
-		}
-
-	case cipherConfig.IsSpec2022:
-		plaintextStart, buf, err = Unpack(dst, src, c)
-		if err != nil {
-			return
-		}
-
-		// Check session id
-		if !bytes.Equal(sid, buf[:8]) {
-			err = ErrSessionIDMismatch
-			return
-		}
-
-	default:
-		plaintextStart, buf, err = Unpack(dst, src, c)
-		if err != nil {
-			return
-		}
-	}
-
-	socksAddrStart, socksAddr, payload, err = ParseUDPHeader(buf, HeaderTypeServerPacket, cipherConfig)
-	if err != nil {
-		return
-	}
-	socksAddrStart += plaintextStart
-
-	if cipherConfig.IsSpec2022 {
-		pid := binary.BigEndian.Uint64(buf[8:])
-		if !filter.ValidateCounter(pid, math.MaxUint64) {
-			err = fmt.Errorf("detected replay packet id %d", pid)
-			return
-		}
-	}
-
-	return
 }

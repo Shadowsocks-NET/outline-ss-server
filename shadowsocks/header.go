@@ -29,8 +29,11 @@ const (
 	// type + 64-bit timestamp + max salt length
 	TCPRespHeaderMaxLength = 1 + 8 + 32
 
-	SeparateHeaderMinClientPacketID = 0
-	SeparateHeaderMinServerPacketID = 1 << 63
+	// server session id + packet id + type + timestamp + client session id + padding length
+	UDPServerMessageHeaderFixedLength = 8 + 8 + 1 + 8 + 8 + 2
+
+	// client session id + packet id + type + timestamp + padding length
+	UDPClientMessageHeaderFixedLength = 8 + 8 + 1 + 8 + 2
 )
 
 var (
@@ -40,7 +43,8 @@ var (
 	ErrTypeMismatch                 = errors.New("header type mismatch")
 	ErrPaddingLengthOutOfRange      = errors.New("padding length is less than 0 or greater than 900")
 	ErrClientSaltMismatch           = errors.New("client salt in response header does not match request")
-	ErrSessionIDMismatch            = errors.New("unexpected session ID")
+	ErrClientSessionIDMismatch      = errors.New("client session ID in server message header does not match current session")
+	ErrTooManyServerSessions        = errors.New("server session changed more than once during the last minute")
 )
 
 // ParseTCPReqHeader reads the first payload chunk, validates the header,
@@ -168,8 +172,7 @@ func ParseTCPRespHeader(r Reader, clientSalt []byte, cipherConfig CipherConfig) 
 	}
 
 	// Verify client salt
-	n := bytes.Compare(clientSalt, b[1+8:headerLen])
-	if n != 0 {
+	if !bytes.Equal(clientSalt, b[1+8:headerLen]) {
 		return nil, ErrClientSaltMismatch
 	}
 
@@ -192,7 +195,8 @@ func WriteTCPRespHeader(dst, clientSalt []byte, cipherConfig CipherConfig) (n in
 }
 
 // For spec 2022, this function only parses the decrypted AEAD header.
-func ParseUDPHeader(plaintext []byte, htype byte, cipherConfig CipherConfig) (socksAddrStart int, socksAddr socks.Addr, payload []byte, err error) {
+// csid is the expected client session id, used when verifying a server packet.
+func ParseUDPHeader(plaintext []byte, htype byte, csid []byte, cipherConfig CipherConfig) (socksAddrStart int, socksAddr socks.Addr, payload []byte, err error) {
 	var offset int
 
 	if cipherConfig.IsSpec2022 {
@@ -223,6 +227,21 @@ func ParseUDPHeader(plaintext []byte, htype byte, cipherConfig CipherConfig) (so
 		}
 
 		offset += 8
+
+		// Verify client session ID
+		if csid != nil {
+			if len(plaintext) < offset+8 {
+				err = fmt.Errorf("packet too short to contain client session ID: %d", len(plaintext))
+				return
+			}
+
+			if !bytes.Equal(csid, plaintext[offset:offset+8]) {
+				err = ErrClientSessionIDMismatch
+				return
+			}
+
+			offset += 8
+		}
 
 		// Verify padding length
 		if len(plaintext) < offset+2 {
@@ -286,13 +305,15 @@ func WriteRandomPadding(b []byte, targetPort int, max int) int {
 
 // WriteUDPHeader fills a Shadowsocks 2022 UDP header into the buffer.
 // Make sure to increment packet ID upon returning.
+// To write a client header, pass csid as sid, and nil as csid.
+// To write a server header, pass ssid as sid, and csid as csid.
 // Pass either targetUDPAddr or targetSocksAddr.
 //
 // For legacy Shadowsocks, call WriteUDPAddrToSocksAddr directly.
 //
 // No buffer length checks are performed.
 // Make sure the buffer can hold the socks address.
-func WriteUDPHeader(plaintext []byte, htype byte, sid []byte, pid uint64, targetUDPAddr *net.UDPAddr, targetSocksAddr []byte, paddingLen int) (n int) {
+func WriteUDPHeader(plaintext []byte, htype byte, sid []byte, pid uint64, csid []byte, targetUDPAddr *net.UDPAddr, targetSocksAddr []byte, paddingLen int) (n int) {
 	// Write session ID
 	n = copy(plaintext[:8], sid)
 
@@ -308,6 +329,9 @@ func WriteUDPHeader(plaintext []byte, htype byte, sid []byte, pid uint64, target
 	nowEpoch := time.Now().Unix()
 	binary.BigEndian.PutUint64(plaintext[n:n+8], uint64(nowEpoch))
 	n += 8
+
+	// Write client session ID
+	n += copy(plaintext[n:], csid)
 
 	// Write padding length and optionally padding
 	n += WritePadding(plaintext[n:], paddingLen)
@@ -331,7 +355,7 @@ func WriteUDPHeader(plaintext []byte, htype byte, sid []byte, pid uint64, target
 // Make sure the buffer can hold the socks address.
 func WriteClientUDPHeader(plaintext []byte, cipherConfig CipherConfig, sid []byte, pid uint64, targetAddr net.Addr, maxPacketSize int) (n int, err error) {
 	if cipherConfig.IsSpec2022 {
-		n += WriteUDPHeader(plaintext[n:], HeaderTypeClientPacket, sid, pid, nil, nil, 0)
+		n += WriteUDPHeader(plaintext[n:], HeaderTypeClientPacket, sid, pid, nil, nil, nil, 0)
 		// Go back so we can rewrite/overwrite padding length.
 		n -= 2
 	}

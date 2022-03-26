@@ -16,6 +16,7 @@ package service
 
 import (
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -289,7 +290,7 @@ func (s *udpService) findAccessKeyUDP(clientAddr *net.UDPAddr, dst, src []byte, 
 // When called by findAccessKeyUDP, dst and src do not overlap, separateHeader must be nil,
 // so we allocate a temporary slice to store the decrypted separate header.
 // When called by Serve, dst is nil. separateHeader must point to src[:16] so an in-place decryption is done on the buffer.
-func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAddr, dst, src, separateHeader []byte, nm *natmap) (buf []byte, sid uint64, ses *session, isNewSession bool, onetErr *onet.ConnectionError) {
+func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAddr, dst, src, separateHeader []byte, nm *natmap) (buf []byte, csid uint64, ses *session, isNewSession bool, onetErr *onet.ConnectionError) {
 	var err error
 	cipherConfig := c.Config()
 
@@ -307,21 +308,36 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 		}
 
 		// Look up session table to see if we already have an AEAD instance for this session.
-		sid = binary.BigEndian.Uint64(separateHeader)
-		ses = nm.GetBySessionID(sid)
+		csid = binary.BigEndian.Uint64(separateHeader)
+		ses = nm.GetByClientSessionID(csid)
 		isNewSession = ses == nil
 		if isNewSession {
-			var aead cipher.AEAD
-			aead, err = c.NewAEAD(separateHeader[:8])
+			var caead cipher.AEAD
+			caead, err = c.NewAEAD(separateHeader[:8])
 			if err != nil {
-				onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to create AEAD", err)
+				onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to create client AEAD", err)
 				return
 			}
+
+			ssid := make([]byte, 8)
+			_, err = rand.Read(ssid)
+			if err != nil {
+				onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to generate random server session ID", err)
+				return
+			}
+
+			var saead cipher.AEAD
+			saead, err = c.NewAEAD(ssid)
+			if err != nil {
+				onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to create server AEAD", err)
+				return
+			}
+
 			// Create session.
-			ses = newSession(separateHeader[:8], clientAddr, aead)
+			ses = newSession(separateHeader[:8], ssid, caead, saead, clientAddr)
 		}
 
-		buf, err = ss.UnpackAesWithSeparateHeader(dst, src, separateHeader, c, ses.aead)
+		buf, err = ss.UnpackAesWithSeparateHeader(dst, src, separateHeader, c, ses.caead)
 		if err != nil {
 			onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to unpack", err)
 			return
@@ -334,11 +350,17 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 			return
 		}
 
-		sid = binary.BigEndian.Uint64(buf[:8])
-		ses = nm.GetBySessionID(sid)
+		csid = binary.BigEndian.Uint64(buf[:8])
+		ses = nm.GetByClientSessionID(csid)
 		isNewSession = ses == nil
 		if isNewSession {
-			ses = newSession(buf[:8], clientAddr, nil)
+			ssid := make([]byte, 8)
+			_, err = rand.Read(ssid)
+			if err != nil {
+				onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to generate random server session ID", err)
+				return
+			}
+			ses = newSession(buf[:8], ssid, nil, nil, clientAddr)
 		}
 
 	default:
@@ -356,7 +378,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 // the payload and the destination address, or an error if
 // this packet cannot or should not be forwarded.
 func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfig, clientAddr, clientLocalAddr *net.UDPAddr, clientLocation string, sid uint64, ses *session, isNewSession bool, nm *natmap) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
-	_, socksAddr, payload, err := ss.ParseUDPHeader(textData, ss.HeaderTypeClientPacket, cipherConfig)
+	_, socksAddr, payload, err := ss.ParseUDPHeader(textData, ss.HeaderTypeClientPacket, nil, cipherConfig)
 	if err != nil {
 		logger.Warn("Failed to parse header",
 			zap.Stringer("clientAddress", clientAddr),
@@ -401,15 +423,7 @@ func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfi
 		// For new sessions, this means the received packet is checked into the filter.
 		pid := binary.BigEndian.Uint64(textData[8:])
 
-		var limit uint64
-		switch {
-		case cipherConfig.UDPHasSeparateHeader:
-			limit = ss.SeparateHeaderMinServerPacketID
-		default:
-			limit = math.MaxUint64
-		}
-
-		if !ses.filter.ValidateCounter(pid, limit) {
+		if !ses.cfilter.ValidateCounter(pid, math.MaxUint64) {
 			logger.Warn("Detected replay: repeated packet ID",
 				zap.Stringer("clientAddress", clientAddr),
 				zap.Stringer("clientConnLocalAddress", clientLocalAddr),
