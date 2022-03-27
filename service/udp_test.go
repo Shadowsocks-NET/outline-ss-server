@@ -180,7 +180,7 @@ func sendToDiscard(payloads [][]byte, validator onet.TargetIPValidator) *natTest
 	cipher := ciphers.SnapshotForClientIP(nil)[0].Value.(*CipherEntry).Cipher
 	clientConn := makePacketConn()
 	metrics := &natTestMetrics{}
-	service := NewUDPService(timeout, ciphers, metrics)
+	service := NewUDPService(timeout, ciphers, metrics, true)
 	service.SetTargetIPValidator(validator)
 	go service.Serve(clientConn)
 
@@ -539,7 +539,7 @@ func TestUDPDoubleServe(t *testing.T) {
 	}
 	testMetrics := &natTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	s := NewUDPService(testTimeout, cipherList, testMetrics)
+	s := NewUDPService(testTimeout, cipherList, testMetrics, true)
 
 	c := make(chan error)
 	for i := 0; i < 2; i++ {
@@ -573,7 +573,7 @@ func TestUDPEarlyStop(t *testing.T) {
 	}
 	testMetrics := &natTestMetrics{}
 	const testTimeout = 200 * time.Millisecond
-	s := NewUDPService(testTimeout, cipherList, testMetrics)
+	s := NewUDPService(testTimeout, cipherList, testMetrics, true)
 
 	if err := s.Stop(); err != nil {
 		t.Error(err)

@@ -2,8 +2,10 @@ package socks
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"strconv"
 
@@ -100,10 +102,10 @@ func (a Addr) Addr(network string) (net.Addr, error) {
 	}
 }
 
-func (a Addr) UDPAddr() (*net.UDPAddr, error) {
+func (a Addr) UDPAddr(preferIPv6 bool) (*net.UDPAddr, error) {
 	switch a[0] {
 	case AtypDomainName:
-		return net.ResolveUDPAddr("udp", a.String())
+		return resolveUDPAddr(a.String(), preferIPv6)
 	case AtypIPv4:
 		return &net.UDPAddr{
 			IP:   net.IP(a[1 : 1+4]),
@@ -117,6 +119,62 @@ func (a Addr) UDPAddr() (*net.UDPAddr, error) {
 	default:
 		return nil, fmt.Errorf("unknown atyp %v", a[0])
 	}
+}
+
+// resolveUDPAddr resolves an address in domain:port format into *net.UDPAddr.
+// ip:port is not supported.
+func resolveUDPAddr(address string, preferIPv6 bool) (*net.UDPAddr, error) {
+	if !preferIPv6 {
+		return net.ResolveUDPAddr("udp", address)
+	}
+
+	// Although !preferIPv6 was short-circuited to use net.ResolveUDPAddr(),
+	// the following code is generic and takes preferIPv6 into account.
+
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	portNum, err := net.LookupPort("udp", port)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, err
+	}
+
+	// We can't actually do fallbacks here.
+	// If preferIPv6 is true, v6 -> primaries, v4 -> fallbacks.
+	// And vice versa.
+	// Then we select a random IP from primaries, or fallbacks if primaries is empty.
+	var primaries, fallbacks []net.IP
+
+	for _, ipc := range ips {
+		ip4 := ipc.To4()
+		switch {
+		case preferIPv6 && ip4 == nil || !preferIPv6 && ip4 != nil: // Prefer 6/4 and got 6/4
+			primaries = append(primaries, ipc)
+		case preferIPv6 && ip4 != nil || !preferIPv6 && ip4 == nil: // Prefer 6/4 and got 4/6
+			fallbacks = append(fallbacks, ipc)
+		}
+	}
+
+	var ip net.IP
+
+	switch {
+	case len(primaries) > 0:
+		ip = primaries[rand.Intn(len(primaries))]
+	case len(fallbacks) > 0:
+		ip = fallbacks[rand.Intn(len(fallbacks))]
+	default:
+		return nil, errors.New("lookup returned no addresses and no error")
+	}
+
+	return &net.UDPAddr{
+		IP:   ip,
+		Port: portNum,
+	}, nil
 }
 
 // WriteAddr parses an address string into a socks address

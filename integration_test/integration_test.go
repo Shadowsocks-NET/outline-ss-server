@@ -258,7 +258,7 @@ func TestUDPEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	testMetrics := &fakeUDPMetrics{fakeLocation: "QQ"}
-	proxy := service.NewUDPService(time.Hour, cipherList, testMetrics)
+	proxy := service.NewUDPService(time.Hour, cipherList, testMetrics, true)
 	go proxy.Serve(proxyConn)
 
 	client, err := client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[0], nil)
@@ -345,7 +345,7 @@ func BenchmarkUDPEcho(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{})
+	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{}, true)
 	go proxy.Serve(proxyConn)
 
 	client, err := client.NewClient(proxyConn.LocalAddr().String(), ss.TestCipher, secrets[0], nil)
@@ -385,7 +385,7 @@ func BenchmarkUDPManyKeys(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{})
+	proxy := service.NewUDPService(time.Hour, cipherList, &metrics.NoOpMetrics{}, true)
 	go proxy.Serve(proxyConn)
 
 	var clients [numKeys]client.Client

@@ -57,14 +57,16 @@ type udpService struct {
 	m                 metrics.ShadowsocksMetrics
 	running           sync.WaitGroup
 	targetIPValidator onet.TargetIPValidator
+	preferIPv6        bool
 }
 
 // NewUDPService creates a UDPService
-func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics) UDPService {
+func NewUDPService(natTimeout time.Duration, cipherList CipherList, m metrics.ShadowsocksMetrics, preferIPv6 bool) UDPService {
 	return &udpService{
 		natTimeout: natTimeout,
 		ciphers:    cipherList,
 		m:          m,
+		preferIPv6: preferIPv6,
 	}
 }
 
@@ -389,7 +391,7 @@ func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfi
 		return nil, nil, onet.NewConnectionError("ERR_READ_HEADER", "Failed to read packet header", err)
 	}
 
-	tgtUDPAddr, err := socksAddr.UDPAddr()
+	tgtUDPAddr, err := socksAddr.UDPAddr(s.preferIPv6)
 	if err != nil {
 		logger.Warn("Failed to resolve UDPAddr",
 			zap.Stringer("clientAddress", clientAddr),

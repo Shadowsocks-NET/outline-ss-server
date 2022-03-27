@@ -55,6 +55,7 @@ type SSServer struct {
 	blockPrivateNet bool
 	listenerTFO     bool
 	dialerTFO       bool
+	udpPreferIPv6   bool
 }
 
 func (s *SSServer) startPort(portNum int) (err error) {
@@ -78,7 +79,7 @@ func (s *SSServer) startPort(portNum int) (err error) {
 	port := &ssPort{cipherList: service.NewCipherList()}
 	// TODO: Register initial data metrics at zero.
 	port.tcpService = service.NewTCPService(port.cipherList, &s.replayCache, s.saltPool, s.m, tcpReadTimeout, s.dialerTFO)
-	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m)
+	port.udpService = service.NewUDPService(s.natTimeout, port.cipherList, s.m, s.udpPreferIPv6)
 	if s.blockPrivateNet {
 		port.tcpService.SetTargetIPValidator(onet.RequirePublicIP)
 		port.udpService.SetTargetIPValidator(onet.RequirePublicIP)
@@ -162,7 +163,7 @@ func (s *SSServer) Stop() error {
 }
 
 // RunSSServer starts a shadowsocks server running, and returns the server or an error.
-func RunSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int, blockPrivateNet, listenerTFO, dialerTFO bool) (*SSServer, error) {
+func RunSSServer(filename string, natTimeout time.Duration, sm metrics.ShadowsocksMetrics, replayHistory int, blockPrivateNet, listenerTFO, dialerTFO, udpPreferIPv6 bool) (*SSServer, error) {
 	server := &SSServer{
 		natTimeout:      natTimeout,
 		m:               sm,
@@ -172,6 +173,7 @@ func RunSSServer(filename string, natTimeout time.Duration, sm metrics.Shadowsoc
 		blockPrivateNet: blockPrivateNet,
 		listenerTFO:     listenerTFO,
 		dialerTFO:       dialerTFO,
+		udpPreferIPv6:   udpPreferIPv6,
 	}
 	err := server.loadConfig(filename)
 	if err != nil {
@@ -220,6 +222,7 @@ func main() {
 		tfo             bool
 		listenerTFO     bool
 		dialerTFO       bool
+		udpPreferIPv6   bool
 		ver             bool
 
 		suppressTimestamps bool
@@ -239,6 +242,8 @@ func main() {
 	flag.BoolVar(&tfo, "tfo", false, "Enables TFO for both TCP listener and dialer")
 	flag.BoolVar(&listenerTFO, "tfoListener", false, "Enables TFO for TCP listener")
 	flag.BoolVar(&dialerTFO, "tfoDialer", false, "Enables TFO for TCP dialer")
+
+	flag.BoolVar(&udpPreferIPv6, "udpPreferIPv6", false, "Prefer IPv6 addresses when resolving domain names for UDP targets")
 
 	flag.BoolVar(&suppressTimestamps, "suppressTimestamps", false, "Omit timestamps in logs")
 	flag.StringVar(&logLevel, "logLevel", "info", "Set custom log level. Available levels: debug, info, warn, error, dpanic, panic, fatal")
@@ -297,7 +302,7 @@ func main() {
 		dialerTFO = true
 	}
 
-	s, err := RunSSServer(configFile, natTimeout, m, replayHistory, blockPrivateNet, listenerTFO, dialerTFO)
+	s, err := RunSSServer(configFile, natTimeout, m, replayHistory, blockPrivateNet, listenerTFO, dialerTFO, udpPreferIPv6)
 	if err != nil {
 		logger.Fatal("Failed to start Shadowsocks server", zap.Error(err))
 	}
