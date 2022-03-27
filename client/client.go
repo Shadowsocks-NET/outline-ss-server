@@ -18,6 +18,7 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/slicepool"
 	"github.com/Shadowsocks-NET/outline-ss-server/socks"
 	"github.com/database64128/tfo-go"
+	"go.uber.org/zap"
 	wgreplay "golang.zx2c4.com/wireguard/replay"
 )
 
@@ -507,7 +508,8 @@ func (c *packetConn) unpackAndValidatePacket(dst, src []byte) (socksAddrStart in
 				return
 			}
 			sessionStatus = newServerSession
-			ssid = dst[:8]
+			ssid = make([]byte, 8)
+			copy(ssid, dst[:8])
 			saead, err = c.cipher.NewAEAD(ssid)
 			if err != nil {
 				return
@@ -515,8 +517,16 @@ func (c *packetConn) unpackAndValidatePacket(dst, src []byte) (socksAddrStart in
 			// Delay sfilter creation after validation to avoid a possibly unnecessary allocation.
 		}
 
+		logger.Debug("Checked server session ID",
+			zap.Int("sessionStatus", sessionStatus),
+			zap.Binary("dst[:8]", dst[:8]),
+			zap.Binary("serverSessionID", ssid),
+			zap.Binary("currentServerSessionID", c.cssid),
+			zap.Binary("oldServerSessionID", c.ossid),
+		)
+
 		// Unpack
-		buf, err = ss.UnpackAesWithSeparateHeader(dst, src, nil, c.cipher, saead)
+		buf, err = ss.UnpackAesWithSeparateHeader(dst, src, nil, saead)
 		if err != nil {
 			return
 		}
@@ -543,9 +553,18 @@ func (c *packetConn) unpackAndValidatePacket(dst, src []byte) (socksAddrStart in
 				return
 			}
 			sessionStatus = newServerSession
-			ssid = buf[:8]
+			ssid = make([]byte, 8)
+			copy(ssid, buf[:8])
 			// Delay sfilter creation after validation to avoid a possibly unnecessary allocation.
 		}
+
+		logger.Debug("Checked server session ID",
+			zap.Int("sessionStatus", sessionStatus),
+			zap.Binary("buf[:8]", buf[:8]),
+			zap.Binary("serverSessionID", ssid),
+			zap.Binary("currentServerSessionID", c.cssid),
+			zap.Binary("oldServerSessionID", c.ossid),
+		)
 
 	default:
 		plaintextStart, buf, err = ss.Unpack(dst, src, c.cipher)

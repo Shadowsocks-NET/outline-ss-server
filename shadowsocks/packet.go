@@ -117,9 +117,10 @@ func Unpack(dst, pkt []byte, cipher *Cipher) (plaintextStart int, plaintext []by
 }
 
 // Unpack function for 2022-blake3-aes-256-gcm.
-// If separateHeader is nil, DecryptHeaderInPlace MUST be called before passing the ciphertext.
+// If separateHeader is nil, DecryptSeparateheader MUST be called to decrypte the separate header in-place
+// before passing the ciphertext.
 // The returned buffer includes the separate header.
-func UnpackAesWithSeparateHeader(dst, pkt, separateHeader []byte, cipher *Cipher, unpackAEAD cipher.AEAD) ([]byte, error) {
+func UnpackAesWithSeparateHeader(dst, pkt, separateHeader []byte, unpackAEAD cipher.AEAD) ([]byte, error) {
 	if len(pkt) <= 16+unpackAEAD.Overhead() {
 		return nil, ErrShortPacket
 	}

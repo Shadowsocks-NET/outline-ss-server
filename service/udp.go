@@ -339,7 +339,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 			ses = newSession(separateHeader[:8], ssid, caead, saead, clientAddr)
 		}
 
-		buf, err = ss.UnpackAesWithSeparateHeader(dst, src, separateHeader, c, ses.caead)
+		buf, err = ss.UnpackAesWithSeparateHeader(dst, src, separateHeader, ses.caead)
 		if err != nil {
 			onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to unpack", err)
 			return
