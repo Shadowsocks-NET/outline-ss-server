@@ -262,8 +262,12 @@ func setupNAT() (*fakePacketConn, *fakePacketConn, *natconn) {
 	nat := newNATmap(timeout, &natTestMetrics{}, &sync.WaitGroup{})
 	clientConn := makePacketConn()
 	targetConn := makePacketConn()
-	nat.Add(&clientAddr, clientConn, nil, natCipher, targetConn, "ZZ", "key id", nil)
-	entry := nat.GetByClientAddress(clientAddr.String())
+	ses := newSession(nil, nil, timeout, nil, nil)
+	ses.lastSeenAddr = &clientAddr
+	ses.targetConn = targetConn
+	entry := nat.AddNatEntry(&clientAddr, clientConn, nil, natCipher, "ZZ", "key id", ses)
+	nat.StartNatconn(&clientAddr, entry, natCipher.Config())
+	entry = nat.GetByClientAddress(clientAddr.String())
 	return clientConn, targetConn, entry
 }
 
@@ -272,7 +276,7 @@ func TestNATGet(t *testing.T) {
 	if entry == nil {
 		t.Fatal("Failed to find target conn")
 	}
-	if entry.targetConn != targetConn {
+	if entry.session.targetConn != targetConn {
 		t.Error("Mismatched connection returned")
 	}
 }
@@ -487,12 +491,13 @@ func BenchmarkUDPUnpackRepeat(b *testing.B) {
 	s := &udpService{
 		ciphers: cipherList,
 	}
+	nm := newNATmap(timeout, nil, nil)
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		cipherNumber := n % numCiphers
 		addr := addrs[cipherNumber]
 		packet := packets[cipherNumber]
-		_, _, _, _, _, _, err := s.findAccessKeyUDP(addr, testBuf, packet, nil)
+		_, _, _, _, _, _, err := s.findAccessKeyUDP(addr, testBuf, packet, nm)
 		if err != nil {
 			b.Error(err)
 		}
@@ -522,10 +527,11 @@ func BenchmarkUDPUnpackSharedKey(b *testing.B) {
 	s := &udpService{
 		ciphers: cipherList,
 	}
+	nm := newNATmap(timeout, nil, nil)
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		addr := addrs[n%numIPs]
-		_, _, _, _, _, _, err := s.findAccessKeyUDP(addr, testBuf, packet, nil)
+		_, _, _, _, _, _, err := s.findAccessKeyUDP(addr, testBuf, packet, nm)
 		if err != nil {
 			b.Error(err)
 		}

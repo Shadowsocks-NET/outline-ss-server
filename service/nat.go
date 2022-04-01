@@ -16,9 +16,15 @@ import (
 )
 
 type natconn struct {
-	// For legacy Shadowsocks servers, this stores reference to target conn.
-	// For Shadowsocks 2022 servers, use the targetConn in session instead.
-	targetConn onet.UDPPacketConn
+	// For legacy Shadowsocks servers, each natconn is mapped to one session,
+	// which is referenced here.
+	//
+	// For Shadowsocks 2022 servers, look up the session table instead.
+	session *session
+
+	// swg is session wait group. Wait until no sessions exist on this natconn,
+	// then this natconn can be removed.
+	swg sync.WaitGroup
 
 	// Reference to access key's cipher.
 	cipher *ss.Cipher
@@ -29,92 +35,24 @@ type natconn struct {
 	// for every downstream packet in a UDP-based connection.
 	clientLocation string
 
-	// NAT timeout to apply for non-DNS packets.
-	defaultTimeout time.Duration
-
-	// Current read deadline of PacketConn.  Used to avoid decreasing the
-	// deadline.  Initially zero.
-	readDeadline time.Time
-
-	// If the connection has only sent one DNS query, it will close
-	// if it receives a DNS response.
-	fastClose sync.Once
-
 	// oobCache stores the interface index and IP where the requests are received from the client.
 	// This is used to send UDP packets from the correct interface and IP.
 	oobCache []byte
-
-	// The fixed client address where the first packet of the session was received from.
-	// Only meaningful for legacy Shadowsocks.
-	// For Shadowsocks 2022, use lastSeenAddr in session.
-	lastSeenAddr *net.UDPAddr
 
 	// The UDPConn where the last client packet was received from.
 	lastSeenConn onet.UDPPacketConn
 }
 
-func isDNS(addr *net.UDPAddr) bool {
-	return addr.Port == 53
-}
-
-func (c *natconn) onWrite(addr *net.UDPAddr) {
-	// Fast close is only allowed if there has been exactly one write,
-	// and it was a DNS query.
-	isDNS := isDNS(addr)
-	isFirstWrite := c.readDeadline.IsZero()
-	if !isDNS || !isFirstWrite {
-		// Disable fast close.  (Idempotent.)
-		c.fastClose.Do(func() {})
-	}
-
-	timeout := c.defaultTimeout
-	if isDNS {
-		// Shorten timeout as required by RFC 5452 Section 10.
-		timeout = 17 * time.Second
-	}
-
-	newDeadline := time.Now().Add(timeout)
-	if newDeadline.After(c.readDeadline) {
-		c.readDeadline = newDeadline
-		c.SetReadDeadline(newDeadline)
-	}
-}
-
-func (c *natconn) onRead(addr *net.UDPAddr) {
-	c.fastClose.Do(func() {
-		if isDNS(addr) {
-			// The next ReadFrom() should time out immediately.
-			c.SetReadDeadline(time.Now())
-		}
-	})
-}
-
 func (c *natconn) WriteToUDP(buf []byte, dst *net.UDPAddr) (int, error) {
-	c.onWrite(dst)
-	return c.targetConn.WriteToUDP(buf, dst)
+	return c.session.WriteToUDP(buf, dst)
 }
 
 func (c *natconn) ReadFromUDP(buf []byte) (int, *net.UDPAddr, error) {
-	n, addr, err := c.targetConn.ReadFromUDP(buf)
-	if err == nil {
-		c.onRead(addr)
-	}
-	return n, addr, err
+	return c.session.ReadFromUDP(buf)
 }
 
-func (c *natconn) SetReadDeadline(t time.Time) error {
-	return c.targetConn.SetReadDeadline(t)
-}
-
-func (c *natconn) LocalAddr() net.Addr {
-	return c.targetConn.LocalAddr()
-}
-
-func (c *natconn) Close() error {
-	return c.targetConn.Close()
-}
-
-// copy from target to client until read timeout
+// timedCopy copies from targetConn to clientConn until read timeout.
+// Pass Shadowsocks 2022 session as ses.
 func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 	// pkt is used for in-place encryption of downstream UDP packets, with the layout
 	// [padding?][salt][address][body][tag][extra]
@@ -122,7 +60,6 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 	pkt := make([]byte, UDPPacketBufferSize)
 	saltSize := c.cipher.SaltSize()
 	cipherConfig := c.cipher.Config()
-	lastSeenAddr := c.lastSeenAddr
 
 	// Leave enough room at the beginning of the packet for a max-length header (i.e. IPv6).
 	var bodyStart int
@@ -140,6 +77,7 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 
 	for {
 		var bodyLen, proxyClientBytes int
+		var lastSeenAddr *net.UDPAddr
 		connError := func() (connError *onet.ConnectionError) {
 			var (
 				raddr       *net.UDPAddr
@@ -155,11 +93,10 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 			readBuf := pkt[bodyStart:]
 			switch {
 			case cipherConfig.IsSpec2022:
-				bodyLen, raddr, err = ses.targetConn.ReadFromUDP(readBuf)
-				if err == nil {
-					c.onRead(raddr)
-				}
+				lastSeenAddr = ses.lastSeenAddr
+				bodyLen, raddr, err = ses.ReadFromUDP(readBuf)
 			default:
+				lastSeenAddr = c.session.lastSeenAddr
 				bodyLen, raddr, err = c.ReadFromUDP(readBuf)
 			}
 			if err != nil {
@@ -170,11 +107,6 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 					}
 				}
 				return onet.NewConnectionError("ERR_READ", "Failed to read from target", err)
-			}
-
-			// Refresh lastSeenAddr from session.
-			if cipherConfig.IsSpec2022 {
-				lastSeenAddr = ses.lastSeenAddr
 			}
 
 			socksAddrLen := socks.SocksAddressIPv6Length
@@ -276,21 +208,19 @@ func (m *natmap) GetByClientAddress(key string) *natconn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) GetByClientSessionID(sid uint64) *session {
+func (m *natmap) GetByClientSessionID(csid uint64) *session {
 	m.RLock()
 	defer m.RUnlock()
-	return m.sidConn[sid]
+	return m.sidConn[csid]
 }
 
-func (m *natmap) set(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, targetConn onet.UDPPacketConn, cipher *ss.Cipher, keyID, clientLocation string, oobCache []byte) *natconn {
+func (m *natmap) AddNatEntry(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte, cipher *ss.Cipher, clientLocation, keyID string, ses *session) *natconn {
 	entry := &natconn{
-		targetConn:     targetConn,
+		session:        ses,
 		cipher:         cipher,
 		keyID:          keyID,
 		clientLocation: clientLocation,
-		defaultTimeout: m.timeout,
 		oobCache:       oobCache,
-		lastSeenAddr:   clientAddr,
 		lastSeenConn:   clientConn,
 	}
 
@@ -301,54 +231,43 @@ func (m *natmap) set(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, tar
 	return entry
 }
 
-func (m *natmap) del(key string) *natconn {
-	m.Lock()
-	defer m.Unlock()
-
-	entry, ok := m.keyConn[key]
-	if ok {
-		delete(m.keyConn, key)
-		return entry
-	}
-	return nil
-}
-
-func (m *natmap) Add(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte, cipher *ss.Cipher, targetConn onet.UDPPacketConn, clientLocation, keyID string, ses *session) *natconn {
-	entry := m.set(clientAddr, clientConn, targetConn, cipher, keyID, clientLocation, oobCache)
-
+func (m *natmap) StartNatconn(clientAddr *net.UDPAddr, entry *natconn, cipherConfig ss.CipherConfig) {
 	m.metrics.AddUDPNatEntry()
 	m.running.Add(1)
 	go func() {
-		entry.timedCopy(ses, m.metrics)
-		m.metrics.RemoveUDPNatEntry()
-		if pc := m.del(clientAddr.String()); pc != nil {
-			pc.Close()
+		switch {
+		case cipherConfig.IsSpec2022:
+			entry.swg.Wait()
+		default:
+			entry.timedCopy(nil, m.metrics)
+			entry.session.targetConn.Close()
 		}
+
+		m.Lock()
+		delete(m.keyConn, clientAddr.String())
+		m.Unlock()
+
+		m.metrics.RemoveUDPNatEntry()
 		m.running.Done()
 	}()
-	return entry
 }
 
-func (m *natmap) AddSession(sid uint64, ses *session) {
+func (m *natmap) AddSession(csid uint64, ses *session, entry *natconn) {
 	m.Lock()
-	defer m.Unlock()
+	m.sidConn[csid] = ses
+	m.Unlock()
 
-	m.sidConn[sid] = ses
+	entry.swg.Add(1)
+	go func() {
+		entry.timedCopy(ses, m.metrics)
+		ses.targetConn.Close()
 
-	m.cleanUpSessions()
-}
+		m.Lock()
+		delete(m.sidConn, csid)
+		m.Unlock()
 
-// cleanUpSessions enumerates through the session table
-// and removes sessions that satisfy these conditions:
-// - last seen over 30 seconds ago.
-// - have no corresponding NAT entry.
-func (m *natmap) cleanUpSessions() {
-	nowEpoch := time.Now().Unix()
-	for sid, ses := range m.sidConn {
-		if nowEpoch-ses.lastSeenTime > 30 && m.keyConn[ses.lastSeenAddr.String()] == nil {
-			delete(m.sidConn, sid)
-		}
-	}
+		entry.swg.Done()
+	}()
 }
 
 func (m *natmap) Close() error {
@@ -358,7 +277,14 @@ func (m *natmap) Close() error {
 	var err error
 	now := time.Now()
 	for _, pc := range m.keyConn {
-		if e := pc.SetReadDeadline(now); e != nil {
+		if pc.session != nil {
+			if e := pc.session.targetConn.SetReadDeadline(now); e != nil {
+				err = e
+			}
+		}
+	}
+	for _, ses := range m.sidConn {
+		if e := ses.targetConn.SetReadDeadline(now); e != nil {
 			err = e
 		}
 	}
@@ -377,6 +303,17 @@ type session struct {
 
 	// Stores reference to target conn.
 	targetConn onet.UDPPacketConn
+
+	// NAT timeout to apply for non-DNS packets.
+	defaultTimeout time.Duration
+
+	// Current read deadline of targetConn. Used to avoid decreasing the
+	// deadline. Initially zero.
+	readDeadline time.Time
+
+	// If the connection has only sent one DNS query, it will close
+	// if it receives a DNS response.
+	fastClose sync.Once
 
 	// The UDPAddr where the last client packet was received from.
 	// Use this.String() as key to look up the NAT table.
@@ -398,14 +335,63 @@ type session struct {
 	saead cipher.AEAD
 }
 
-func newSession(csid, ssid []byte, caead, saead cipher.AEAD, lastSeenAddr *net.UDPAddr) *session {
+func newSession(csid, ssid []byte, defaultTimeout time.Duration, caead, saead cipher.AEAD) *session {
 	return &session{
-		csid:         csid,
-		ssid:         ssid,
-		lastSeenAddr: lastSeenAddr,
-		lastSeenTime: time.Now().Unix(),
-		cfilter:      &wgreplay.Filter{},
-		caead:        caead,
-		saead:        saead,
+		csid:           csid,
+		ssid:           ssid,
+		defaultTimeout: defaultTimeout,
+		lastSeenTime:   time.Now().Unix(),
+		cfilter:        &wgreplay.Filter{},
+		caead:          caead,
+		saead:          saead,
 	}
+}
+
+func isDNS(addr *net.UDPAddr) bool {
+	return addr.Port == 53
+}
+
+func (s *session) onWrite(addr *net.UDPAddr) {
+	// Fast close is only allowed if there has been exactly one write,
+	// and it was a DNS query.
+	isDNS := isDNS(addr)
+	isFirstWrite := s.readDeadline.IsZero()
+	if !isDNS || !isFirstWrite {
+		// Disable fast close.  (Idempotent.)
+		s.fastClose.Do(func() {})
+	}
+
+	timeout := s.defaultTimeout
+	if isDNS {
+		// Shorten timeout as required by RFC 5452 Section 10.
+		timeout = 17 * time.Second
+	}
+
+	newDeadline := time.Now().Add(timeout)
+	if newDeadline.After(s.readDeadline) {
+		s.readDeadline = newDeadline
+		s.targetConn.SetReadDeadline(newDeadline)
+	}
+}
+
+func (s *session) onRead(addr *net.UDPAddr) {
+	s.fastClose.Do(func() {
+		if isDNS(addr) {
+			// The next ReadFrom() should time out immediately.
+			s.targetConn.SetReadDeadline(time.Now())
+		}
+	})
+}
+
+func (s *session) WriteToUDP(buf []byte, dst *net.UDPAddr) (int, error) {
+	s.onWrite(dst)
+	return s.targetConn.WriteToUDP(buf, dst)
+}
+
+func (s *session) ReadFromUDP(buf []byte) (int, *net.UDPAddr, error) {
+	n, addr, err := s.targetConn.ReadFromUDP(buf)
+	if err == nil {
+		s.onRead(addr)
+	}
+	return n, addr, err
 }

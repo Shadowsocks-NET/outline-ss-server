@@ -186,7 +186,7 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 
 				var onetErr *onet.ConnectionError
 				cipherConfig := c.Config()
-				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData, cipherConfig, clientAddr, clientLocalAddr, clientLocation, sid, ses, isNewSession, nm); onetErr != nil {
+				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData, cipherConfig, clientAddr, clientLocalAddr, clientLocation, ses, isNewSession, nm); onetErr != nil {
 					return onetErr
 				}
 
@@ -203,18 +203,23 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 				}
 
 				// Store reference to targetConn
+				ses.targetConn = udpConn
+				ses.lastSeenAddr = clientAddr
+
+				targetConn = nm.AddNatEntry(clientAddr, clientConn, oobCache, c, clientLocation, keyID, ses)
+
 				if cipherConfig.IsSpec2022 {
-					ses.targetConn = udpConn
+					nm.AddSession(sid, ses, targetConn)
 				}
 
-				targetConn = nm.Add(clientAddr, clientConn, oobCache, c, udpConn, clientLocation, keyID, ses)
+				nm.StartNatconn(clientAddr, targetConn, cipherConfig)
 			} else {
 				clientLocation = targetConn.clientLocation
 				var textData []byte
 				var onetErr *onet.ConnectionError
 
 				unpackStart := time.Now()
-				textData, sid, ses, isNewSession, onetErr = decryptAndGetOrCreateSession(targetConn.keyID, targetConn.cipher, clientAddr, nil, cipherData, cipherData[:16], nm)
+				textData, sid, ses, isNewSession, onetErr = decryptAndGetOrCreateSession(targetConn.keyID, targetConn.cipher, nil, cipherData, cipherData[:16], nm, targetConn.session)
 				timeToCipher = time.Since(unpackStart)
 				if onetErr != nil {
 					return onetErr
@@ -223,17 +228,35 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 				// The key ID is known with confidence once decryption succeeds.
 				keyID = targetConn.keyID
 
-				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData, targetConn.cipher.Config(), clientAddr, clientLocalAddr, clientLocation, sid, ses, isNewSession, nm); onetErr != nil {
+				if payload, tgtUDPAddr, onetErr = s.validatePacket(textData, targetConn.cipher.Config(), clientAddr, clientLocalAddr, clientLocation, ses, isNewSession, nm); onetErr != nil {
 					return onetErr
 				}
 
 				targetConn.oobCache = oobCache
+				ses.lastSeenAddr = clientAddr
+
+				if isNewSession {
+					// This code path is only reachable for Shadowsocks 2022.
+					logger.Info("New UDP session",
+						zap.Stringer("clientAddress", clientAddr),
+						zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+						zap.Stringer("targetAddress", tgtUDPAddr),
+					)
+
+					udpConn, err := net.ListenUDP("udp", nil)
+					if err != nil {
+						logger.Error("Failed to create UDP socket", zap.Error(err))
+						return onet.NewConnectionError("ERR_CREATE_SOCKET", "Failed to create UDP socket", err)
+					}
+
+					ses.targetConn = udpConn
+					nm.AddSession(sid, ses, targetConn)
+				}
 			}
 
 			switch {
 			case targetConn.cipher.Config().IsSpec2022:
-				targetConn.onWrite(tgtUDPAddr)
-				proxyTargetBytes, err = ses.targetConn.WriteToUDP(payload, tgtUDPAddr)
+				proxyTargetBytes, err = ses.WriteToUDP(payload, tgtUDPAddr)
 			default:
 				proxyTargetBytes, err = targetConn.WriteToUDP(payload, tgtUDPAddr)
 			}
@@ -271,7 +294,7 @@ func (s *udpService) findAccessKeyUDP(clientAddr *net.UDPAddr, dst, src []byte, 
 	for ci, entry := range snapshot {
 		id, c := entry.Value.(*CipherEntry).ID, entry.Value.(*CipherEntry).Cipher
 
-		buf, sid, ses, isNewSession, err := decryptAndGetOrCreateSession(id, c, clientAddr, dst, src, nil, nm)
+		buf, sid, ses, isNewSession, err := decryptAndGetOrCreateSession(id, c, dst, src, nil, nm, nil)
 		if err != nil {
 			continue
 		}
@@ -289,10 +312,14 @@ func (s *udpService) findAccessKeyUDP(clientAddr *net.UDPAddr, dst, src []byte, 
 }
 
 // decryptAndGetOrCreateSession decrypts the packet and gets or creates its session.
+//
 // When called by findAccessKeyUDP, dst and src do not overlap, separateHeader must be nil,
 // so we allocate a temporary slice to store the decrypted separate header.
+//
 // When called by Serve, dst is nil. separateHeader must point to src[:16] so an in-place decryption is done on the buffer.
-func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAddr, dst, src, separateHeader []byte, nm *natmap) (buf []byte, csid uint64, ses *session, isNewSession bool, onetErr *onet.ConnectionError) {
+//
+// entrySes is the legacy Shadowsocks session associated with the NAT entry.
+func decryptAndGetOrCreateSession(id string, c *ss.Cipher, dst, src, separateHeader []byte, nm *natmap, entrySes *session) (buf []byte, csid uint64, ses *session, isNewSession bool, onetErr *onet.ConnectionError) {
 	var err error
 	cipherConfig := c.Config()
 
@@ -336,7 +363,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 			}
 
 			// Create session.
-			ses = newSession(separateHeader[:8], ssid, caead, saead, clientAddr)
+			ses = newSession(separateHeader[:8], ssid, nm.timeout, caead, saead)
 		}
 
 		buf, err = ss.UnpackAesWithSeparateHeader(dst, src, separateHeader, ses.caead)
@@ -362,7 +389,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 				onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to generate random server session ID", err)
 				return
 			}
-			ses = newSession(buf[:8], ssid, nil, nil, clientAddr)
+			ses = newSession(buf[:8], ssid, nm.timeout, nil, nil)
 		}
 
 	default:
@@ -370,6 +397,12 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 		if err != nil {
 			onetErr = onet.NewConnectionError("ERR_CIPHER", "Failed to unpack", err)
 			return
+		}
+
+		ses = entrySes
+		isNewSession = ses == nil
+		if isNewSession {
+			ses = newSession(nil, nil, nm.timeout, nil, nil)
 		}
 	}
 
@@ -379,7 +412,7 @@ func decryptAndGetOrCreateSession(id string, c *ss.Cipher, clientAddr *net.UDPAd
 // Given the decrypted contents of a UDP packet, return
 // the payload and the destination address, or an error if
 // this packet cannot or should not be forwarded.
-func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfig, clientAddr, clientLocalAddr *net.UDPAddr, clientLocation string, sid uint64, ses *session, isNewSession bool, nm *natmap) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
+func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfig, clientAddr, clientLocalAddr *net.UDPAddr, clientLocation string, ses *session, isNewSession bool, nm *natmap) ([]byte, *net.UDPAddr, *onet.ConnectionError) {
 	_, socksAddr, payload, err := ss.ParseUDPHeader(textData, ss.HeaderTypeClientPacket, nil, cipherConfig)
 	if err != nil {
 		logger.Warn("Failed to parse header",
@@ -435,13 +468,6 @@ func (s *udpService) validatePacket(textData []byte, cipherConfig ss.CipherConfi
 				zap.Error(err),
 			)
 			return nil, nil, onet.NewConnectionError("ERR_PACKET_REPLAY", "Detected packet replay", nil)
-		}
-
-		// Update existing session or add new session to table.
-		if isNewSession {
-			nm.AddSession(sid, ses)
-		} else {
-			ses.lastSeenAddr = clientAddr
 		}
 	}
 
