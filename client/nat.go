@@ -172,7 +172,7 @@ func (m *natmap) GetByClientAddress(key string) *natconn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) set(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, proxyConn ShadowsocksPacketConn, oobCache []byte, packetAdapter PacketAdapter) *natconn {
+func (m *natmap) Add(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte, proxyConn ShadowsocksPacketConn, packetAdapter PacketAdapter) *natconn {
 	entry := &natconn{
 		proxyConn:      proxyConn,
 		defaultTimeout: m.timeout,
@@ -183,32 +183,18 @@ func (m *natmap) set(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, pro
 	}
 
 	m.Lock()
-	defer m.Unlock()
-
 	m.keyConn[clientAddr.String()] = entry
-	return entry
-}
+	m.Unlock()
 
-func (m *natmap) del(key string) *natconn {
-	m.Lock()
-	defer m.Unlock()
-
-	entry, ok := m.keyConn[key]
-	if ok {
-		delete(m.keyConn, key)
-		return entry
-	}
-	return nil
-}
-
-func (m *natmap) Add(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte, proxyConn ShadowsocksPacketConn, packetAdapter PacketAdapter) *natconn {
-	entry := m.set(clientAddr, clientConn, proxyConn, oobCache, packetAdapter)
 	go func() {
 		entry.timedCopy()
-		if pc := m.del(clientAddr.String()); pc != nil {
-			pc.Close()
-		}
+		entry.Close()
+
+		m.Lock()
+		delete(m.keyConn, clientAddr.String())
+		m.Unlock()
 	}()
+
 	return entry
 }
 

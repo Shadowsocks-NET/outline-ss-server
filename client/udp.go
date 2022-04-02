@@ -15,7 +15,6 @@ import (
 
 type UDPTunnel struct {
 	listenAddress string
-	multiplexUDP  bool
 	natTimeout    time.Duration
 
 	client        Client
@@ -249,30 +248,27 @@ func (p *ShadowsocksNonePacketAdapter) EncapsulatePacket(decryptedFullPacket []b
 	return decryptedFullPacket[socksAddrStart : payloadStart+payloadLength], nil
 }
 
-func NewUDPSimpleTunnelService(tunnelListenAddress string, tunnelRemoteSocksAddr socks.Addr, multiplexUDP bool, natTimeout time.Duration, client Client) Service {
+func NewUDPSimpleTunnelService(tunnelListenAddress string, tunnelRemoteSocksAddr socks.Addr, natTimeout time.Duration, client Client) Service {
 	return &UDPTunnel{
 		listenAddress: tunnelListenAddress,
-		multiplexUDP:  multiplexUDP,
 		natTimeout:    natTimeout,
 		client:        client,
 		packetAdapter: NewSimpleTunnelPacketAdapter(tunnelRemoteSocksAddr),
 	}
 }
 
-func NewUDPSimpleSocks5Service(socks5ListenAddress string, multiplexUDP bool, natTimeout time.Duration, client Client) Service {
+func NewUDPSimpleSocks5Service(socks5ListenAddress string, natTimeout time.Duration, client Client) Service {
 	return &UDPTunnel{
 		listenAddress: socks5ListenAddress,
-		multiplexUDP:  multiplexUDP,
 		natTimeout:    natTimeout,
 		client:        client,
 		packetAdapter: &SimpleSocks5PacketAdapter{},
 	}
 }
 
-func NewUDPShadowsocksNoneService(ssNoneListenAddress string, multiplexUDP bool, natTimeout time.Duration, client Client) Service {
+func NewUDPShadowsocksNoneService(ssNoneListenAddress string, natTimeout time.Duration, client Client) Service {
 	return &UDPTunnel{
 		listenAddress: ssNoneListenAddress,
-		multiplexUDP:  multiplexUDP,
 		natTimeout:    natTimeout,
 		client:        client,
 		packetAdapter: &ShadowsocksNonePacketAdapter{},

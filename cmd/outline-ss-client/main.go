@@ -45,7 +45,6 @@ func main() {
 	var listenerTFO bool
 	var dialerTFO bool
 
-	var multiplexUDP bool
 	var natTimeout time.Duration
 
 	var suppressTimestamps bool
@@ -75,7 +74,6 @@ func main() {
 	flag.BoolVar(&listenerTFO, "tfoListener", false, "Enables TFO for TCP listener")
 	flag.BoolVar(&dialerTFO, "tfoDialer", false, "Enables TFO for TCP listener")
 
-	flag.BoolVar(&multiplexUDP, "muxUDP", false, "Whether to multiplex all UDP sessions into one UDPConn")
 	flag.DurationVar(&natTimeout, "natTimeout", defaultNatTimeout, "UDP NAT timeout")
 
 	flag.BoolVar(&suppressTimestamps, "suppressTimestamps", false, "Omit timestamps in logs")
@@ -132,7 +130,7 @@ func main() {
 	}
 
 	if tunnelUDP {
-		s := client.NewUDPSimpleTunnelService(tunnelListenAddress, tunnelRemoteSocksAddr, multiplexUDP, natTimeout, c)
+		s := client.NewUDPSimpleTunnelService(tunnelListenAddress, tunnelRemoteSocksAddr, natTimeout, c)
 		err = s.Start()
 		if err != nil {
 			logger.Fatal("Failed to start service",
@@ -156,7 +154,7 @@ func main() {
 	}
 
 	if socks5EnableUDP {
-		s := client.NewUDPSimpleSocks5Service(socks5ListenAddress, multiplexUDP, natTimeout, c)
+		s := client.NewUDPSimpleSocks5Service(socks5ListenAddress, natTimeout, c)
 		err = s.Start()
 		if err != nil {
 			logger.Fatal("Failed to start service",
@@ -192,7 +190,7 @@ func main() {
 	}
 
 	if ssNoneEnableUDP {
-		s := client.NewUDPShadowsocksNoneService(ssNoneListenAddress, multiplexUDP, natTimeout, c)
+		s := client.NewUDPShadowsocksNoneService(ssNoneListenAddress, natTimeout, c)
 		err = s.Start()
 		if err != nil {
 			logger.Fatal("Failed to start service",
