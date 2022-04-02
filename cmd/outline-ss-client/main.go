@@ -72,7 +72,7 @@ func main() {
 
 	flag.BoolVar(&TCPFastOpen, "tfo", false, "Enables TFO for both TCP listener and dialer")
 	flag.BoolVar(&listenerTFO, "tfoListener", false, "Enables TFO for TCP listener")
-	flag.BoolVar(&dialerTFO, "tfoDialer", false, "Enables TFO for TCP listener")
+	flag.BoolVar(&dialerTFO, "tfoDialer", false, "Enables TFO for TCP dialer")
 
 	flag.DurationVar(&natTimeout, "natTimeout", defaultNatTimeout, "UDP NAT timeout")
 
