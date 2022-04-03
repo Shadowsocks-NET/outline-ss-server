@@ -3,12 +3,13 @@ package client
 import (
 	"bytes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"math"
-	"math/rand"
+	mrand "math/rand"
 	"net"
 	"time"
 
@@ -287,7 +288,7 @@ type packetConn struct {
 func newPacketConn(proxyConn *net.UDPConn, c *ss.Cipher) (*packetConn, error) {
 	// Random session ID
 	csid := make([]byte, 8)
-	err := ss.Blake3KeyedHashSaltGenerator.GetSalt(csid)
+	_, err := rand.Read(csid)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +372,7 @@ func (c *packetConn) WriteToZeroCopy(b []byte, start, length int, socksAddr []by
 	var packetStart int
 
 	if cipherConfig.IsSpec2022 && len(socksAddr) > 1 && socksAddr[len(socksAddr)-2] == 0 && socksAddr[len(socksAddr)-1] == 53 {
-		paddingLen = rand.Intn(ss.MaxPaddingLength + 1)
+		paddingLen = mrand.Intn(ss.MaxPaddingLength + 1)
 	}
 
 	switch {
