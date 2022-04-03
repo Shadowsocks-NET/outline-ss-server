@@ -22,6 +22,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,6 +31,7 @@ import (
 	"github.com/Shadowsocks-NET/outline-ss-server/service/metrics"
 	ss "github.com/Shadowsocks-NET/outline-ss-server/shadowsocks"
 	"github.com/database64128/tfo-go"
+	"github.com/sagernet/uot"
 	"go.uber.org/zap"
 )
 
@@ -144,7 +146,28 @@ func (s *tcpService) SetTargetIPValidator(targetIPValidator onet.TargetIPValidat
 	s.targetIPValidator = targetIPValidator
 }
 
+type fakeDuplexConn struct {
+	net.Conn
+}
+
+func (c *fakeDuplexConn) CloseRead() error {
+	return nil
+}
+
+func (c *fakeDuplexConn) CloseWrite() error {
+	return nil
+}
+
 func dialTarget(address string, proxyMetrics *metrics.ProxyMetrics, targetIPValidator onet.TargetIPValidator, dialerTFO bool) (onet.DuplexConn, *onet.ConnectionError) {
+	if strings.HasPrefix(address, uot.UOTMagicAddress) {
+		packetConn, err := net.ListenUDP("udp", nil)
+		if err != nil {
+			return nil, onet.NewConnectionError("ERR_CONNECT", "Failed to listen udp", err)
+		} else {
+			return &fakeDuplexConn{uot.NewServerConn(packetConn)}, nil
+		}
+	}
+
 	var ipError *onet.ConnectionError
 	dialer := tfo.Dialer{
 		DisableTFO: !dialerTFO,

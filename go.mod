@@ -6,6 +6,7 @@ require (
 	github.com/database64128/tfo-go v1.0.3
 	github.com/oschwald/geoip2-golang v1.7.0
 	github.com/prometheus/client_golang v1.12.1
+	github.com/sagernet/uot v0.0.0-20220403125237-bf82029ad617
 	github.com/stretchr/testify v1.7.1
 	go.uber.org/zap v1.21.0
 	golang.org/x/crypto v0.0.0-20220307211146-efcb8507fb70
