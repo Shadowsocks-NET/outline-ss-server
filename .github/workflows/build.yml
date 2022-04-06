@@ -42,6 +42,7 @@ jobs:
           go build -v -trimpath -ldflags '-s -w -buildid=' -o build/ ./cmd/outline-ss-server
 
       - name: Test
+        if: matrix.os != 'macos-latest'
         run: go test -v -benchmem -bench . ./...
 
       - name: Upload Binaries
