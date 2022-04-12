@@ -1,8 +1,8 @@
 # Binaries for programs and plugins
-./outline-ss-server
-./outline-ss-server.exe
-./outline-ss-client
-./outline-ss-client.exe
+/outline-ss-server
+/outline-ss-server.exe
+/outline-ss-client
+/outline-ss-client.exe
 *.exe
 *.dll
 *.so
