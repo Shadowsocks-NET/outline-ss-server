@@ -122,7 +122,9 @@ func (p *SaltPool) Add(salt [32]byte) bool {
 
 	// Clean the pool
 	for salt, epoch := range p.pool {
-		if nowEpoch-epoch > 30 {
+		// We allow up to 30s of time diff.
+		// Therefore the pool retention should be 2*30s.
+		if nowEpoch-epoch > 60 {
 			delete(p.pool, salt)
 		}
 	}
