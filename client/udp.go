@@ -27,12 +27,7 @@ func (s *UDPTunnel) String() string {
 }
 
 func (s *UDPTunnel) Start() error {
-	laddr, err := net.ResolveUDPAddr("udp", s.listenAddress)
-	if err != nil {
-		return err
-	}
-
-	conn, err, serr := onet.ListenUDP("udp", laddr)
+	conn, err, serr := onet.ListenUDP("udp", s.listenAddress, 0)
 	if err != nil {
 		return err
 	}
@@ -43,7 +38,7 @@ func (s *UDPTunnel) Start() error {
 			zap.Error(serr),
 		)
 	}
-	s.conn = conn.(*net.UDPConn)
+	s.conn = conn
 
 	go func() {
 		defer s.conn.Close()
@@ -52,14 +47,23 @@ func (s *UDPTunnel) Start() error {
 		defer nm.Close()
 
 		packetBuf := make([]byte, service.UDPPacketBufferSize)
-		oobBuf := make([]byte, service.UDPOOBBufferSize)
+		oobBuf := make([]byte, onet.UDPOOBBufferSize)
 
 		for {
-			n, oobn, _, clientAddr, err := s.conn.ReadMsgUDP(packetBuf[ShadowsocksPacketConnFrontReserve:], oobBuf)
+			n, oobn, flags, clientAddr, err := s.conn.ReadMsgUDP(packetBuf[ShadowsocksPacketConnFrontReserve:], oobBuf)
 			if err != nil {
 				if errors.Is(err, net.ErrClosed) {
 					break
 				}
+				logger.Warn("Failed to read from UDPConn",
+					zap.Stringer("service", s),
+					zap.String("listenAddress", s.listenAddress),
+					zap.Error(err),
+				)
+				continue
+			}
+			err = onet.ParseFlagsForError(flags)
+			if err != nil {
 				logger.Warn("Failed to read from UDPConn",
 					zap.Stringer("service", s),
 					zap.String("listenAddress", s.listenAddress),
@@ -77,16 +81,6 @@ func (s *UDPTunnel) Start() error {
 					zap.Error(err),
 				)
 				continue
-			}
-
-			oobCache, err := onet.GetOobForCache(oobBuf[:oobn])
-			if err != nil {
-				logger.Debug("Failed to process OOB",
-					zap.Stringer("service", s),
-					zap.String("listenAddress", s.listenAddress),
-					zap.Stringer("clientAddress", clientAddr),
-					zap.Error(err),
-				)
 			}
 
 			proxyConn := nm.GetByClientAddress(clientAddr.String())
@@ -108,7 +102,7 @@ func (s *UDPTunnel) Start() error {
 					continue
 				}
 
-				proxyConn = nm.Add(clientAddr, s.conn, oobCache, spc, s.packetAdapter)
+				proxyConn = nm.Add(clientAddr, s.conn, spc, s.packetAdapter)
 			} else {
 				logger.Debug("found UDP session in NAT table",
 					zap.Stringer("service", s),
@@ -119,8 +113,17 @@ func (s *UDPTunnel) Start() error {
 					zap.Duration("defaultTimeout", proxyConn.defaultTimeout),
 					zap.Time("readDeadline", proxyConn.readDeadline),
 				)
+			}
 
-				proxyConn.oobCache = oobCache
+			oob := oobBuf[:oobn]
+			proxyConn.oobCache, err = onet.UpdateOobCache(proxyConn.oobCache, oob, logger)
+			if err != nil {
+				logger.Debug("Failed to process OOB",
+					zap.Stringer("service", s),
+					zap.String("listenAddress", s.listenAddress),
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Error(err),
+				)
 			}
 
 			_, err = proxyConn.WriteToZeroCopy(packetBuf, payloadStart, payloadLength, detachedSocksAddr)

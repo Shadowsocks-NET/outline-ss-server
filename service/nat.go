@@ -214,13 +214,12 @@ func (m *natmap) GetByClientSessionID(csid uint64) *session {
 	return m.sidConn[csid]
 }
 
-func (m *natmap) AddNatEntry(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte, cipher *ss.Cipher, clientLocation, keyID string, ses *session) *natconn {
+func (m *natmap) AddNatEntry(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, cipher *ss.Cipher, clientLocation, keyID string, ses *session) *natconn {
 	entry := &natconn{
 		session:        ses,
 		cipher:         cipher,
 		keyID:          keyID,
 		clientLocation: clientLocation,
-		oobCache:       oobCache,
 		lastSeenConn:   clientConn,
 	}
 

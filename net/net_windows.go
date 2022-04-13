@@ -8,7 +8,21 @@ import (
 	"unsafe"
 
 	"go.uber.org/zap"
-	"golang.org/x/sys/unix"
+	"golang.org/x/sys/windows"
+)
+
+const (
+	IP_MTU_DISCOVER   = 71
+	IPV6_MTU_DISCOVER = 71
+)
+
+// enum PMTUD_STATE from ws2ipdef.h
+const (
+	IP_PMTUDISC_NOT_SET = iota
+	IP_PMTUDISC_DO
+	IP_PMTUDISC_DONT
+	IP_PMTUDISC_PROBE
+	IP_PMTUDISC_MAX
 )
 
 // ListenUDP wraps Go's net.ListenConfig.ListenPacket and sets socket options on supported platforms.
@@ -24,27 +38,21 @@ func ListenUDP(network string, laddr string, fwmark int) (conn *net.UDPConn, err
 		Control: func(network, address string, c syscall.RawConn) error {
 			return c.Control(func(fd uintptr) {
 				// Set IP_PKTINFO, IP_MTU_DISCOVER for both v4 and v6.
-				if err := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1); err != nil {
+				if err := windows.SetsockoptInt(windows.Handle(fd), windows.IPPROTO_IP, windows.IP_PKTINFO, 1); err != nil {
 					serr = fmt.Errorf("failed to set socket option IP_PKTINFO: %w", err)
 				}
 
-				if err := unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO); err != nil {
+				if err := windows.SetsockoptInt(windows.Handle(fd), windows.IPPROTO_IP, IP_MTU_DISCOVER, IP_PMTUDISC_DO); err != nil {
 					serr = fmt.Errorf("failed to set socket option IP_MTU_DISCOVER: %w", err)
 				}
 
 				if network == "udp6" {
-					if err := unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_RECVPKTINFO, 1); err != nil {
-						serr = fmt.Errorf("failed to set socket option IPV6_RECVPKTINFO: %w", err)
+					if err := windows.SetsockoptInt(windows.Handle(fd), windows.IPPROTO_IPV6, windows.IPV6_PKTINFO, 1); err != nil {
+						serr = fmt.Errorf("failed to set socket option IPV6_PKTINFO: %w", err)
 					}
 
-					if err := unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_MTU_DISCOVER, unix.IP_PMTUDISC_DO); err != nil {
+					if err := windows.SetsockoptInt(windows.Handle(fd), windows.IPPROTO_IPV6, IPV6_MTU_DISCOVER, IP_PMTUDISC_DO); err != nil {
 						serr = fmt.Errorf("failed to set socket option IPV6_MTU_DISCOVER: %w", err)
-					}
-				}
-
-				if fwmark != 0 {
-					if err := unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, fwmark); err != nil {
-						serr = fmt.Errorf("failed to set socket option SO_MARK: %w", err)
 					}
 				}
 			})
@@ -58,6 +66,32 @@ func ListenUDP(network string, laddr string, fwmark int) (conn *net.UDPConn, err
 	conn = pconn.(*net.UDPConn)
 	return
 }
+
+// Structure CMSGHDR from ws2def.h
+type Cmsghdr struct {
+	Len   uint
+	Level int32
+	Type  int32
+}
+
+// Structure IN_PKTINFO from ws2ipdef.h
+type Inet4Pktinfo struct {
+	Addr    [4]byte
+	Ifindex uint32
+}
+
+// Structure IN6_PKTINFO from ws2ipdef.h
+type Inet6Pktinfo struct {
+	Addr    [16]byte
+	Ifindex uint32
+}
+
+// Defined for getting structure size using unsafe.Sizeof.
+var (
+	cmsghdrForSize      Cmsghdr
+	inet4PktinfoForSize Inet4Pktinfo
+	inet6PktinfoForSize Inet6Pktinfo
+)
 
 // UpdateOobCache filters out irrelevant OOB messages, saves
 // IP_PKTINFO or IPV6_PKTINFO socket control messages to the OOB cache,
@@ -77,23 +111,19 @@ func UpdateOobCache(oobCache, oob []byte, logger *zap.Logger) ([]byte, error) {
 	// and only socket control message returned.
 	// Therefore we simplify the process by not looping
 	// through the OOB data.
-	if len(oob) < unix.SizeofCmsghdr {
+	if len(oob) < int(unsafe.Sizeof(cmsghdrForSize)) {
 		return oobCache, fmt.Errorf("oob length %d shorter than cmsghdr length", len(oob))
 	}
 
-	cmsghdr := (*unix.Cmsghdr)(unsafe.Pointer(&oob[0]))
+	cmsghdr := (*Cmsghdr)(unsafe.Pointer(&oob[0]))
 
 	switch {
-	case cmsghdr.Level == unix.IPPROTO_IP && cmsghdr.Type == unix.IP_PKTINFO && len(oob) >= unix.SizeofCmsghdr+unix.SizeofInet4Pktinfo:
-		pktinfo := (*unix.Inet4Pktinfo)(unsafe.Pointer(&oob[unix.SizeofCmsghdr]))
-		// Clear destination address.
-		pktinfo.Addr = [4]byte{}
-		// logger.Debug("Matched Inet4Pktinfo", zap.Int32("ifindex", pktinfo.Ifindex))
-
-	case cmsghdr.Level == unix.IPPROTO_IPV6 && cmsghdr.Type == unix.IPV6_PKTINFO && len(oob) >= unix.SizeofCmsghdr+unix.SizeofInet6Pktinfo:
-		// pktinfo := (*unix.Inet6Pktinfo)(unsafe.Pointer(&oob[unix.SizeofCmsghdr]))
+	case cmsghdr.Level == windows.IPPROTO_IP && cmsghdr.Type == windows.IP_PKTINFO && len(oob) >= int(unsafe.Sizeof(cmsghdrForSize)+unsafe.Sizeof(inet4PktinfoForSize)):
+		// pktinfo := (*Inet4Pktinfo)(unsafe.Pointer(&oob[unsafe.Sizeof(cmsghdrForSize)]))
+		// logger.Debug("Matched Inet4Pktinfo", zap.Uint32("ifindex", pktinfo.Ifindex))
+	case cmsghdr.Level == windows.IPPROTO_IPV6 && cmsghdr.Type == windows.IPV6_PKTINFO && len(oob) >= int(unsafe.Sizeof(cmsghdrForSize)+unsafe.Sizeof(inet6PktinfoForSize)):
+		// pktinfo := (*Inet6Pktinfo)(unsafe.Pointer(&oob[unsafe.Sizeof(cmsghdrForSize)]))
 		// logger.Debug("Matched Inet6Pktinfo", zap.Uint32("ifindex", pktinfo.Ifindex))
-
 	default:
 		return oobCache, fmt.Errorf("unknown control message level %d type %d", cmsghdr.Level, cmsghdr.Type)
 	}

@@ -31,10 +31,7 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	UDPPacketBufferSize = 64 * 1024
-	UDPOOBBufferSize    = 0x10 + 0x14 // unix.SizeofCmsghdr + unix.SizeofInet6Pktinfo
-)
+const UDPPacketBufferSize = 64 * 1024
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
@@ -95,14 +92,23 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 	nm := newNATmap(s.natTimeout, s.m, &s.running)
 	defer nm.Close()
 	cipherBuf := make([]byte, UDPPacketBufferSize)
-	oobBuf := make([]byte, UDPOOBBufferSize)
+	oobBuf := make([]byte, onet.UDPOOBBufferSize)
 	textBuf := make([]byte, UDPPacketBufferSize)
 
 	stopped := false
 	for !stopped {
 		func() (connError *onet.ConnectionError) {
+			// An upstream packet should have been read.  Set up the metrics reporting
+			// for this forwarding event.
+			var clientLocation string
+			var keyID string
+			var clientProxyBytes int
+			var proxyTargetBytes int
+			var timeToCipher time.Duration
+			clientLocalAddr := s.clientConn.LocalAddr().(*net.UDPAddr)
+
 			// Attempt to read an upstream packet.
-			clientProxyBytes, clientConnOobBytes, _, clientAddr, err := clientConn.ReadMsgUDP(cipherBuf, oobBuf)
+			clientProxyBytes, clientConnOobBytes, flags, clientAddr, err := clientConn.ReadMsgUDP(cipherBuf, oobBuf)
 			if err != nil {
 				s.mu.RLock()
 				stopped = s.stopped
@@ -111,14 +117,6 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 					return nil
 				}
 			}
-
-			// An upstream packet should have been read.  Set up the metrics reporting
-			// for this forwarding event.
-			var clientLocation string
-			var keyID string
-			var proxyTargetBytes int
-			var timeToCipher time.Duration
-			clientLocalAddr := s.clientConn.LocalAddr().(*net.UDPAddr)
 
 			defer func() {
 				status := "OK"
@@ -135,15 +133,13 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 				)
 				return onet.NewConnectionError("ERR_READ", "Failed to read from client", err)
 			}
-
-			cipherData := cipherBuf[:clientProxyBytes]
-			oobCache, err := onet.GetOobForCache(oobBuf[:clientConnOobBytes])
+			err = onet.ParseFlagsForError(flags)
 			if err != nil {
-				logger.Debug("Failed to process OOB",
-					zap.Stringer("clientAddress", clientAddr),
+				logger.Warn("Failed to read from clientConn",
 					zap.Stringer("clientConnLocalAddress", clientLocalAddr),
 					zap.Error(err),
 				)
+				return onet.NewConnectionError("ERR_READ", "Failed to read from client", err)
 			}
 
 			var sid uint64
@@ -151,6 +147,7 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 			var isNewSession bool
 			var payload []byte
 			var tgtUDPAddr *net.UDPAddr
+			cipherData := cipherBuf[:clientProxyBytes]
 			targetConn := nm.GetByClientAddress(clientAddr.String())
 			if targetConn == nil {
 				var locErr error
@@ -204,9 +201,8 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 
 				// Store reference to targetConn
 				ses.targetConn = udpConn
-				ses.lastSeenAddr = clientAddr
 
-				targetConn = nm.AddNatEntry(clientAddr, clientConn, oobCache, c, clientLocation, keyID, ses)
+				targetConn = nm.AddNatEntry(clientAddr, clientConn, c, clientLocation, keyID, ses)
 
 				if cipherConfig.IsSpec2022 {
 					nm.AddSession(sid, ses, targetConn)
@@ -232,9 +228,6 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 					return onetErr
 				}
 
-				targetConn.oobCache = oobCache
-				ses.lastSeenAddr = clientAddr
-
 				if isNewSession {
 					// This code path is only reachable for Shadowsocks 2022.
 					logger.Info("New UDP session",
@@ -252,6 +245,18 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 					ses.targetConn = udpConn
 					nm.AddSession(sid, ses, targetConn)
 				}
+			}
+
+			ses.lastSeenAddr = clientAddr
+
+			oob := oobBuf[:clientConnOobBytes]
+			targetConn.oobCache, err = onet.UpdateOobCache(targetConn.oobCache, oob, logger)
+			if err != nil {
+				logger.Debug("Failed to process OOB",
+					zap.Stringer("clientAddress", clientAddr),
+					zap.Stringer("clientConnLocalAddress", clientLocalAddr),
+					zap.Error(err),
+				)
 			}
 
 			switch {

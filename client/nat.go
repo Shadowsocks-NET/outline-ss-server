@@ -172,11 +172,10 @@ func (m *natmap) GetByClientAddress(key string) *natconn {
 	return m.keyConn[key]
 }
 
-func (m *natmap) Add(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, oobCache []byte, proxyConn ShadowsocksPacketConn, packetAdapter PacketAdapter) *natconn {
+func (m *natmap) Add(clientAddr *net.UDPAddr, clientConn onet.UDPPacketConn, proxyConn ShadowsocksPacketConn, packetAdapter PacketAdapter) *natconn {
 	entry := &natconn{
 		proxyConn:      proxyConn,
 		defaultTimeout: m.timeout,
-		oobCache:       oobCache,
 		clientAddr:     clientAddr,
 		clientConn:     clientConn,
 		packetAdapter:  packetAdapter,

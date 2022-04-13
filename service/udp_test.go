@@ -265,7 +265,7 @@ func setupNAT() (*fakePacketConn, *fakePacketConn, *natconn) {
 	ses := newSession(nil, nil, timeout, nil, nil)
 	ses.lastSeenAddr = &clientAddr
 	ses.targetConn = targetConn
-	entry := nat.AddNatEntry(&clientAddr, clientConn, nil, natCipher, "ZZ", "key id", ses)
+	entry := nat.AddNatEntry(&clientAddr, clientConn, natCipher, "ZZ", "key id", ses)
 	nat.StartNatconn(&clientAddr, entry, natCipher.Config())
 	entry = nat.GetByClientAddress(clientAddr.String())
 	return clientConn, targetConn, entry

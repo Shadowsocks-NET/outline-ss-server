@@ -66,7 +66,7 @@ func (s *SSServer) startPort(portNum int) (err error) {
 	if err != nil {
 		return fmt.Errorf("failed to start TCP on port %v: %v", portNum, err)
 	}
-	udpPacketConn, err, serr := onet.ListenUDP("udp", &net.UDPAddr{Port: portNum})
+	udpPacketConn, err, serr := onet.ListenUDP("udp", fmt.Sprintf(":%d", portNum), 0)
 	if err != nil {
 		return fmt.Errorf("failed to start UDP on port %v: %v", portNum, err)
 	}

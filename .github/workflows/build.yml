@@ -38,8 +38,8 @@ jobs:
         run: |
           mkdir build
           export GOAMD64=v3
-          go build -v -trimpath -ldflags '-s -w -buildid=' -o build/ ./cmd/outline-ss-client
-          go build -v -trimpath -ldflags '-s -w -buildid=' -o build/ ./cmd/outline-ss-server
+          go build -v -trimpath -ldflags '-s -w' -o build/ ./cmd/outline-ss-client
+          go build -v -trimpath -ldflags '-s -w' -o build/ ./cmd/outline-ss-server
 
       - name: Test
         if: matrix.os != 'macos-latest'
