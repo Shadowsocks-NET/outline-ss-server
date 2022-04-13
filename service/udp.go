@@ -201,6 +201,7 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 
 				// Store reference to targetConn
 				ses.targetConn = udpConn
+				ses.lastSeenAddr = clientAddr
 
 				targetConn = nm.AddNatEntry(clientAddr, clientConn, c, clientLocation, keyID, ses)
 
@@ -228,6 +229,8 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 					return onetErr
 				}
 
+				ses.lastSeenAddr = clientAddr
+
 				if isNewSession {
 					// This code path is only reachable for Shadowsocks 2022.
 					logger.Info("New UDP session",
@@ -246,8 +249,6 @@ func (s *udpService) Serve(clientConn onet.UDPPacketConn) error {
 					nm.AddSession(sid, ses, targetConn)
 				}
 			}
-
-			ses.lastSeenAddr = clientAddr
 
 			oob := oobBuf[:clientConnOobBytes]
 			targetConn.oobCache, err = onet.UpdateOobCache(targetConn.oobCache, oob, logger)
