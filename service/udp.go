@@ -31,7 +31,9 @@ import (
 	"go.uber.org/zap"
 )
 
-const UDPPacketBufferSize = 64 * 1024
+// 2B length field in UDP header includes header length.
+// UDP jumbograms (size greater than 65535) are not supported.
+const UDPPacketBufferSize = 0xFFFF - 8
 
 // UDPService is a running UDP shadowsocks proxy that can be stopped.
 type UDPService interface {
