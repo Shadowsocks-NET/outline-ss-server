@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/cipher"
+	"errors"
 	"math/rand"
 	"net"
 	"sync"
@@ -105,6 +106,9 @@ func (c *natconn) timedCopy(ses *session, sm metrics.ShadowsocksMetrics) {
 						expired = true
 						return nil
 					}
+				}
+				if errors.Is(err, net.ErrClosed) { //FIXME: locate the bug and remove this mitigation.
+					expired = true
 				}
 				return onet.NewConnectionError("ERR_READ", "Failed to read from target", err)
 			}
