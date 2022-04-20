@@ -291,6 +291,8 @@ func WritePadding(b []byte, paddingLen int) int {
 	return 2 + paddingLen
 }
 
+// WriteRandomPadding writes padding with a random length
+// in the half-open interval (0, max].
 func WriteRandomPadding(b []byte, targetPort int, max int) int {
 	if max == 0 || targetPort != 53 || len(b) < max {
 		b[0] = 0
@@ -298,7 +300,8 @@ func WriteRandomPadding(b []byte, targetPort int, max int) int {
 		return 2
 	}
 
-	paddingLen := rand.Intn(max + 1)
+	paddingLen := rand.Intn(max)
+	paddingLen++
 	binary.BigEndian.PutUint16(b, uint16(paddingLen))
 	return 2 + paddingLen
 }
