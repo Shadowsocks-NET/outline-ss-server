@@ -5,7 +5,7 @@ go 1.18
 require (
 	github.com/database64128/tfo-go v1.0.3
 	github.com/oschwald/geoip2-golang v1.7.0
-	github.com/prometheus/client_golang v1.12.1
+	github.com/prometheus/client_golang v1.12.2
 	github.com/stretchr/testify v1.7.1
 	go.uber.org/zap v1.21.0
 	golang.org/x/crypto v0.0.0-20220331220935-ae2d96664a29
