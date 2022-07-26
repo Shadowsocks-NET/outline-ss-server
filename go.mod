@@ -6,12 +6,12 @@ require (
 	github.com/database64128/tfo-go v1.0.3
 	github.com/oschwald/geoip2-golang v1.7.0
 	github.com/prometheus/client_golang v1.12.2
-	github.com/stretchr/testify v1.7.1
+	github.com/stretchr/testify v1.7.2
 	go.uber.org/zap v1.21.0
 	golang.org/x/crypto v0.0.0-20220331220935-ae2d96664a29
 	golang.org/x/sys v0.0.0-20220405052023-b1e9470b6e64
 	golang.zx2c4.com/wireguard v0.0.0-20220318042302-193cf8d6a5d6
-	gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b
+	gopkg.in/yaml.v3 v3.0.1
 	lukechampine.com/blake3 v1.1.7
 )
 
